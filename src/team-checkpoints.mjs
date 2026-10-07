@@ -34,7 +34,6 @@ export function recordCheckpoint(team,input){
   const task=team.tasks.find(t=>t.id===data.taskId),attempt=task?.attempts.at(-1),member=team.members.find(m=>m.id===task?.memberId);
   if(team.mode!=='host-leader'||team.state==='delivered'||!['running','submitted'].includes(task?.status)||!attempt?.agentThreadId||!attempt.turnId||!member)throw new Error('Checkpoint requires a bound active native attempt');
   if(attempt.id!==data.attemptId)throw new Error('Stale checkpoint attempt');
-  if((team.checkpoints?.length??0)>=1000)throw new Error('Checkpoint history limit reached; archive this team before adding more checkpoints');
   const checkpoint={...data,id:randomUUID(),memberId:member.id,threadId:attempt.agentThreadId,turnId:attempt.turnId,source:'leader-recorded',createdAt:new Date().toISOString()};
   (team.checkpoints??=[]).push(checkpoint);
   return structuredClone(checkpoint);
@@ -53,13 +52,13 @@ export function buildHandoff(team,taskId){
     member:{id:task.memberId,role:member?.role??'',responsibility:member?.responsibility??'',writeScopes:member?.writeScopes??[]},
     dependencies:(task.dependencies??[]).map(d=>{
       const upstream=team.tasks.find(t=>t.id===d.taskId),attemptId=upstream?.attempts.at(-1)?.id??null;
-      return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};
+      return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,candidate:upstream?.attempts.at(-1)?.candidate??null,workspace:team.members.find(m=>m.id===upstream?.memberId)?.workspace??null,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};
     }),checkpoint,requiresLeaderDispatch:true});
 }
 
 export function validateCheckpoints(team){
   if(team.checkpoints===undefined)return;
-  if(!Array.isArray(team.checkpoints)||team.checkpoints.length>1000)throw new Error('Invalid checkpoint history');
+  if(!Array.isArray(team.checkpoints))throw new Error('Invalid checkpoint history');
   if(team.mode!=='host-leader'&&team.checkpoints.length)throw new Error('Checkpoints require host-leader mode');
   const ids=new Set(),requests=new Set();
   for(const c of team.checkpoints){

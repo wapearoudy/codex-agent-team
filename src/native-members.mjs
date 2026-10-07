@@ -1,12 +1,19 @@
 import {realpath} from 'node:fs/promises';
 import {AgentRpc} from './runtime.mjs';
 import {persistedActivity} from './native-lifecycle.mjs';
+import {NativePublicFeed} from './native-public.mjs';
 
 // Observation only. Never start/resume/fork a model session in the plugin.
 export class NativeMembers {
-  constructor({rpcFactory,lifecycleReader=persistedActivity}={}){this.rpcFactory=rpcFactory??(()=>new AgentRpc(process.env.TEAM_WORKSPACE_CODEX_BINARY,{snapshotOnly:true}));this.lifecycleReader=lifecycleReader;}
+  constructor({rpcFactory,lifecycleReader=persistedActivity,publicFeed=new NativePublicFeed()}={}){this.rpcFactory=rpcFactory??(()=>new AgentRpc(process.env.TEAM_WORKSPACE_CODEX_BINARY,{snapshotOnly:true}));this.lifecycleReader=lifecycleReader;this.publicFeed=publicFeed;}
   async connect(){if(!this.ready){this.rpc=this.rpcFactory();this.rpc.on?.('disconnected',()=>{this.ready=null;});this.ready=this.rpc.connect().catch(async error=>{await this.rpc.close();this.ready=null;throw error;});}await this.ready;return this.rpc;}
   async close(){await this.rpc?.close();this.ready=null;}
+  async historicalUsage(leaderThreadId,cwd,threadId,turnIds){
+    const rpc=await this.connect(),{thread}=await rpc.call('thread/read',{threadId,includeTurns:false});
+    const parent=thread?.parentThreadId??thread?.source?.subAgent?.thread_spawn?.parent_thread_id;
+    if(thread.id!==threadId||parent!==leaderThreadId||await realpath(thread.cwd)!==await realpath(cwd))throw new Error('Historical usage identity mismatch');
+    return Promise.all(turnIds.map(async turnId=>({turnId,usage:(await this.publicFeed.read(thread,turnId)).usage})));
+  }
   async inspect(leaderThreadId,cwd,threadId,marker,{allowPending=false}={}){
     const rpc=await this.connect();
       let agentPath=null;
@@ -41,9 +48,11 @@ export class NativeMembers {
         status=statusEvidence?.status??'unknown';
       }
       const outputs=turn.items.filter(i=>i.type==='agentMessage'&&(!i.phase||i.phase==='final_answer')).map(i=>({text:i.text,turnId:turn.id}));
-      const commands=turn.items.filter(i=>i.type==='commandExecution').map(i=>({command:i.command,exitCode:i.exitCode,status:i.status}));
+      const commands=turn.items.filter(i=>i.type==='commandExecution').map(i=>({command:i.command,exitCode:i.exitCode,status:i.status,...(typeof i.aggregatedOutput==='string'?{output:i.aggregatedOutput.slice(-16000)}:{})}));
+      let activity;try{activity=await this.publicFeed.read(thread,turn.id);}catch(error){activity={events:[],cursor:0,usage:null,source:'unavailable',error:error.message};}
+      const progress=turn.items.filter(i=>i.type==='agentMessage'&&i.phase==='commentary'&&typeof i.text==='string'&&!i.text.trim().startsWith('TEAM_WORKSPACE_')).slice(-5).map(i=>({text:i.text.slice(-4000),turnId:turn.id}));
       const messageAcknowledgements=[...new Set(turn.items.filter(i=>i.type==='agentMessage'&&typeof i.text==='string').flatMap(i=>i.text.split(/\r?\n/).map(s=>s.trim()).filter(s=>/^TEAM_WORKSPACE_MESSAGE:[0-9a-f-]{36}$/i.test(s))))];
-      return {threadId,agentPath,turnId:turn.id,status,statusEvidence,model:thread.model??null,outputs,commands,
+      return {threadId,agentPath,turnId:turn.id,status,statusEvidence,model:thread.model??null,outputs,commands,progress,activity,usage:activity.usage??null,
         messageAcknowledgements,
         attemptIdentitySource:prompt(turn)?'native-user-message':'public-member-acknowledgement',
         observedAt:new Date().toISOString(),source:'native-thread-persisted-snapshot',connection:'snapshot',

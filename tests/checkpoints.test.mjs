@@ -56,8 +56,8 @@ test('handoff marks historical checkpoints stale and includes only current depen
   assert.throws(()=>buildHandoff(team,'missing'),/not found/);
 });
 
-test('history cap refuses truncation and remains replayable',()=>{
+test('long-lived history exceeds the old cap without truncation and remains replayable',()=>{
   const team=fixture(),data=input();recordCheckpoint(team,data);
   for(let n=1;n<1000;n++)team.checkpoints.push({...structuredClone(team.checkpoints[0]),id:randomUUID(),requestId:randomUUID()});
-  assert.throws(()=>recordCheckpoint(team,input()),/history limit/);assert.equal(team.checkpoints.length,1000);assert.equal(recordCheckpoint(team,data).requestId,data.requestId);
+  const added=recordCheckpoint(team,input());assert.equal(team.checkpoints.length,1001);assert.equal(team.checkpoints.at(-1).id,added.id);assert.equal(recordCheckpoint(team,data).requestId,data.requestId);assert.equal(team.checkpoints.length,1001);
 });

@@ -27,3 +27,7 @@ test('host authorization is shared only within its own tool request, including c
   await Promise.all([context.run(()=>context.project(extra)),context.run(()=>context.project(extra))]);assert.equal(count,5,'parallel tool requests cannot reuse authorization');
   await context.project(extra);assert.equal(count,6);
 });
+test('Leader receipts keep unfinished work but do not retransmit a whole project history',()=>{
+  const tasks=Array.from({length:2200},(_,i)=>({id:'t'+i,title:'history',status:i===0?'running':'accepted',dependencies:[],attempts:[]})),data={team:{id:'team',revision:1,members:[],tasks},runs:[],readiness:[],checkpoints:Array.from({length:1000},()=>({id:'checkpoint'})),messages:[]};
+  const summary=teamResponse(data);assert.equal(summary.taskHistory.total,2200);assert.equal(summary.team.tasks.length,21);assert.equal(summary.team.tasks[0].id,'t0');assert.equal(summary.team.tasks[1].number,2181);assert.equal(summary.checkpoints.length,20);assert.ok(JSON.stringify(summary).length<6000);assert.equal(teamResponse(data,'full').team.tasks.length,2200);
+});

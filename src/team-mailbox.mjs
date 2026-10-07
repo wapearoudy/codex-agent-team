@@ -12,7 +12,6 @@ export function queueMessage(team,{taskId,text,requestId}){
   const prior=requestId&&team.messages.find(m=>m.requestId===requestId);
   if(prior){if(prior.taskId!==taskId||prior.text!==text.trim())throw new Error('Message request ID already has different contents');return prior;}
   const {attempt,member}=target(team,taskId);
-  if(team.messages.length>=2000)throw new Error('Message history limit reached; archive this team before adding more messages');
   const message={id:randomUUID(),requestId:requestId??randomUUID(),taskId,memberId:member.id,attemptId:attempt.id,threadId:attempt.agentThreadId,turnId:attempt.turnId??null,agentPath:member.agentPath??null,text:text.trim(),status:'queued',createdAt:now(),events:[]};
   message.marker=`TEAM_WORKSPACE_MESSAGE:${message.id}`;
   message.events.push({at:message.createdAt,status:'queued',source:'plugin-outbox'});team.messages.push(message);return message;
@@ -45,7 +44,7 @@ export function mailboxProjection(team){return (team.messages??[]).map(message=>
 
 export function validateMailbox(team){
   if(team.messages===undefined)return;
-  if(!Array.isArray(team.messages)||team.messages.length>2000)throw new Error('Invalid message history');
+  if(!Array.isArray(team.messages))throw new Error('Invalid message history');
   const ids=new Set(),requests=new Set();
   for(const m of team.messages){
     if(!m||typeof m.id!=='string'||ids.has(m.id)||typeof m.requestId!=='string'||requests.has(m.requestId)||typeof m.text!=='string'||!Array.isArray(m.events)||!['queued','host-accepted','unknown','failed','acknowledged'].includes(m.status))throw new Error('Invalid message record');

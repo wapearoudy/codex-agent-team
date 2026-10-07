@@ -32,7 +32,7 @@ export class AgentRpc extends EventEmitter {
         msg.error ? p.reject(new Error(`RPC ${p.method} failed (${msg.error.code})`)) : p.resolve(msg.result);
       } else if (msg.method) this.emit('notification', msg);
     });
-    await this.call('initialize', {clientInfo:{name:'team_workspace_probe',title:'Team Workspace Prototype',version:'0.6.0'}});
+    await this.call('initialize', {clientInfo:{name:'team_workspace_probe',title:'Team Workspace Prototype',version:'0.9.2'}});
     this.child.stdin.write(JSON.stringify({method:'initialized',params:{}})+'\n');
   }
   call(method, params) {

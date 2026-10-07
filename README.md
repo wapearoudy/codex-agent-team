@@ -2,7 +2,7 @@
 
 Team Workspace：当前 Codex 主会话担任 Leader，原生 subagent 作为固定团队成员，内嵌面板集中展示任务、执行、进度和依赖。
 
-源码版本 **0.8.6**。这是实验性插件，不代表已完成所有 Desktop 宿主能力验收。
+源码版本 **0.9.2**。这是实验性插件，能力与验证边界见 [能力清单](docs/CAPABILITIES.md)。
 
 ## 工作方式
 
@@ -13,6 +13,11 @@ Team Workspace：当前 Codex 主会话担任 Leader，原生 subagent 作为固
 - 任务预留、执行、提交、独立审查、最终验收分别记录，历史轮次不会冒充当前交付。
 - 状态先显示、详情后台加载，运行时轮询目标间隔 250ms。任务标签统一编号，依赖卡片 160×76px。
 - 原生会话导航依赖宿主消息能力，失效请求不会打开旧目标。
+- 执行完成前显示公开进度、命令输出和按轮次统计的 token 用量；不会展示隐藏推理。
+- 成员持久收件箱、接续包、重试上限和有界工作流由 Leader 控制，工具回执与已读分别记录。
+- 保存角色/模型/预算模板；压缩前置交付摘要，完整验收条件保留。
+- 写入成员可选择 Git worktree；已独立验收候选经冲突预检后暂存合并，由 Leader 验证并提交。
+- 任务号/状态搜索、公开报告导出、时延诊断和校验分卷保留长团队历史。
 
 ## 开发
 
@@ -33,7 +38,7 @@ npm run package
 
 ## 本地使用
 
-插件身份为 `team-workspace-probe`。构建后，将 `plugins/team-workspace-probe` 作为 Codex 本地插件来源，按宿主支持的本地 marketplace 流程安装。首次登记前阅读 [开发与安装说明](docs/DEVELOPMENT.md)。升级通过更新来源和官方安装命令完成，不直接修改缓存。
+插件身份为 `team-workspace-probe`。构建并通过检查后运行 `node scripts/install-plugin.mjs`，登记本地来源并调用官方安装命令。已有来源会保留备份，不直接修改缓存或强制重启宿主。详细步骤见 [开发与安装说明](docs/DEVELOPMENT.md)。
 
 Windows 默认发现当前用户安装的官方 Codex Desktop 可执行文件；自定义安装位置可设置 `TEAM_WORKSPACE_CODEX_BINARY`。仓库不包含开发者本机路径、登录信息或真实团队记录。
 

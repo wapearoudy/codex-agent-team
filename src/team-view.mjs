@@ -15,9 +15,9 @@ export function setupTeamView(app){
   const selectedMember=()=>current?.team.members.find(m=>m.id===ui.memberId);
   const taskState=t=>taskDisplayState(t,current?.runs??[]);
   const pollDelay=()=>document.hidden?10000:current?.team.tasks.some(t=>t.status==='running')?250:1000;
-  const liveFields=['status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','model'];
+  const liveFields=['status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','model','progress','activity','usage'];
   const liveRun=r=>Object.fromEntries(liveFields.filter(k=>r?.[k]!==undefined).map(k=>[k,r[k]]));
-  const runSignature=runs=>JSON.stringify(runs.map(r=>[r.taskId,r.attemptId,r.status,r.connection,r.observationError,r.model,runIsActive(r),r.outputs,r.commands]));
+  const runSignature=runs=>JSON.stringify(runs.map(r=>[r.taskId,r.attemptId,r.status,r.connection,r.observationError,r.model,runIsActive(r),r.outputs,r.commands,r.progress,r.activity?.cursor,r.usage]));
   const cleanDelivery=s=>String(s??'').replace(/^TEAM_WORKSPACE_ATTEMPT:[^\r\n]+\s*/, '');
   const storeState=()=>{if(!storageKey||restoring)return;try{localStorage.setItem(storageKey,JSON.stringify(ui));}catch{/* storage is optional */}};
   const saveScroll=()=>{if(!current||restoring)return;ui.scrollY=window.scrollY;ui.graphX=$('dependencyGraph').parentElement.scrollLeft;ui.graphY=$('dependencyGraph').parentElement.scrollTop;
@@ -34,7 +34,9 @@ export function setupTeamView(app){
       memberView:saved.memberView===true,membersOpen:saved.membersOpen!==false,overviewCollapsed:saved.overviewCollapsed===true,expanded:Array.isArray(saved.expanded)?saved.expanded.filter(k=>typeof k==='string').slice(0,100):[],
       scrollY:Number.isFinite(saved.scrollY)?Math.max(0,saved.scrollY):0,graphX:Number.isFinite(saved.graphX)?Math.max(0,saved.graphX):0,graphY:Number.isFinite(saved.graphY)?Math.max(0,saved.graphY):0,
       innerScroll:Object.fromEntries(Object.entries(saved.innerScroll??{}).filter(([k,v])=>typeof k==='string'&&Number.isFinite(v?.x)&&Number.isFinite(v?.y)).slice(-200)),
-      navigationId:typeof saved.navigationId==='string'?saved.navigationId:null,navigationError:typeof saved.navigationError==='string'?saved.navigationError:null};
+      navigationId:typeof saved.navigationId==='string'?saved.navigationId:null,navigationError:typeof saved.navigationError==='string'?saved.navigationError:null,
+      query:typeof saved.query==='string'?saved.query.slice(0,200):'',status:typeof saved.status==='string'?saved.status:''};
+    $('taskSearch').value=ui.query;$('taskStatusFilter').value=ui.status;
     validateSelection(team);
   }
   function validateSelection(team){
@@ -47,7 +49,8 @@ export function setupTeamView(app){
     const focused=document.activeElement?.dataset?.focusKey,scrollY=ui.scrollY??window.scrollY;
     restoring=true;
     const {team,runs}=current,tasks=team.tasks,active=runs.filter(r=>tasks.some(t=>t.status==='running'&&t.attempts.at(-1)?.id===r.attemptId)&&runIsActive(r));
-    taskNumbers=new Map(tasks.map((task,index)=>[task.id,'t'+(index+1)]));
+    taskNumbers=new Map(tasks.map((task,index)=>[task.id,'t'+(task.number??index+1)]));
+    const usage=current.usage;$('usageSummary').textContent=usage?'已观察 '+usage.totalTokens.toLocaleString()+' tokens'+(usage.unknownAttempts?' · '+usage.unknownAttempts+' 轮用量未知':'')+(usage.limit?' / 预算 '+usage.limit.toLocaleString():''):'';
     const unknown=tasks.filter(t=>taskState(t)==='unknown');
     $('projectName').textContent=team.projectPath.split(/[\\/]/).filter(Boolean).at(-1)||'Team Workspace';
     $('currentProject').textContent='当前主会话的固定团队 · '+(team.state==='delivered'?'已完成本批验收':'任务与成员执行');
@@ -119,7 +122,9 @@ export function setupTeamView(app){
   }
   function focusTaskId(){return ui.taskId??preview;}
   function renderGraph(){
-    const {team}=current,tasks=team.tasks,byId=new Map(tasks.map(t=>[t.id,t])),ranks=new Map(),rows=new Map(),positions=new Map();
+    const {team}=current,query=$('taskSearch').value.trim().toLowerCase(),status=$('taskStatusFilter').value;
+    const matching=team.tasks.filter(t=>(!status||t.status===status)&&(!query||[t.id,t.title,t.goal,taskNumbers.get(t.id)].some(v=>String(v??'').toLowerCase().includes(query))));
+    const tasks=(query||status?matching:team.tasks.length>100?team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-60)):matching).slice(-100),byId=new Map(tasks.map(t=>[t.id,t])),ranks=new Map(),rows=new Map(),positions=new Map();
     const cardWidth=160,cardHeight=76,columnStep=186,rowStep=88;
     function rank(id,seen=new Set()){if(ranks.has(id))return ranks.get(id);if(seen.has(id))return 0;seen.add(id);const t=byId.get(id),r=t?.dependencies.length?1+Math.max(...t.dependencies.map(d=>rank(d.taskId,new Set(seen)))):0;ranks.set(id,r);return r;}
     for(const t of tasks){const col=rank(t.id),row=rows.get(col)??0;positions.set(t.id,{x:col*columnStep,y:row*rowStep});rows.set(col,row+1);}
@@ -132,7 +137,7 @@ export function setupTeamView(app){
     if(!parallel){const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('width',graph.style.width);svg.setAttribute('height',graph.style.height);svg.setAttribute('aria-hidden','true');
       for(const t of tasks)for(const d of t.dependencies){const from=positions.get(d.taskId),to=positions.get(t.id);if(!from||!to)continue;
         const path=document.createElementNS(svg.namespaceURI,'path'),x=from.x+cardWidth,y=from.y+cardHeight/2,targetY=to.y+cardHeight/2;path.setAttribute('d','M '+x+' '+y+' C '+(x+13)+' '+y+', '+(to.x-13)+' '+targetY+', '+to.x+' '+targetY);
-        path.dataset.dimmed=String(!!related&&!(related.has(t.id)&&related.has(d.taskId)));svg.append(path);
+        path.dataset.from=d.taskId;path.dataset.to=t.id;path.dataset.dimmed=String(!!related&&!(related.has(t.id)&&related.has(d.taskId)));svg.append(path);
       }graph.append(svg);
     }
     for(const t of tasks){const p=positions.get(t.id),b=button('',()=>chooseTask(t.id),'dependency-node '+taskState(t),'graph:'+t.id);b.dataset.taskId=t.id;
@@ -142,12 +147,13 @@ export function setupTeamView(app){
       b.dataset.selected=String(t.id===ui.taskId);b.dataset.related=String(!!related&&related.has(t.id));b.dataset.dimmed=String(!!related&&!related.has(t.id));
       b.onmouseenter=()=>schedulePreview(t.id);b.onmouseleave=()=>schedulePreview(null);b.onfocus=()=>previewTask(t.id);b.onblur=()=>previewTask(null);graph.append(b);
     }
+    if(!tasks.length)graph.append(node('p','没有符合条件的任务。','muted'));
+    if(matching.length>tasks.length)$('dependencyHint').textContent+=' · 显示 '+tasks.length+'/'+matching.length+' 项，可按任务号查找';
   }
   function updateGraphFocus(){
     const focused=focusTaskId(),related=focused?dependencyFamily(current.team.tasks,focused):null;
     for(const b of $('dependencyGraph').querySelectorAll('[data-task-id]')){b.dataset.related=String(!!related&&related.has(b.dataset.taskId));b.dataset.dimmed=String(!!related&&!related.has(b.dataset.taskId));}
-    const paths=$('dependencyGraph').querySelectorAll('path');let n=0;
-    for(const t of current.team.tasks)for(const d of t.dependencies){if(!current.team.tasks.some(t=>t.id===d.taskId))continue;const path=paths[n++];if(path)path.dataset.dimmed=String(!!related&&!(related.has(t.id)&&related.has(d.taskId)));}
+    for(const path of $('dependencyGraph').querySelectorAll('path'))path.dataset.dimmed=String(!!related&&!(related.has(path.dataset.to)&&related.has(path.dataset.from)));
     renderDetails();syncInspection();
   }
   function syncInspection(){
@@ -214,10 +220,16 @@ export function setupTeamView(app){
     const run=current.runs.find(r=>r.attemptId===attempt?.attemptId&&r.memberId===member.id);
     if(attempt){box.append(node('p',attempt.taskId+' · 第 '+attempt.number+' 轮 · '+label(attempt.status),'member-action'));
       if(run?.model)box.append(node('span',run.model,'model-tag'));
+      if(run?.usage)box.append(node('small','本轮已观察 '+run.usage.totalTokens+' tokens','muted'));
+      if(run?.progress?.length||run?.activity?.events?.length){const live=node('div',undefined,'live-events');live.dataset.scrollKey='live:'+attempt.attemptId;live.append(node('strong','当前轮次 · 公开执行进度'));
+        for(const p of run.progress??[])live.append(node('p',cleanDelivery(p.text)));
+        for(const e of (run.activity?.events??[]).slice(-12)){if(e.command)live.append(node('pre',e.command));if(e.text)live.append(node('pre',e.text));if(e.type==='file_change')live.append(node('small','文件：'+e.paths.join('、')));}
+        box.append(live);
+      }
       for(const [index,output] of (run?.outputs??[]).entries()){const el=node('div',cleanDelivery(output.text),'public-output');el.dataset.scrollKey='output:'+attempt.attemptId+':'+index;box.append(el);}
       if(!run?.outputs?.length)box.append(node('p',attempt.active?'正在执行，尚未提交最终结果。':'当前轮次没有可读取的公开最终输出。','muted'));
       const commands=node('details');commands.dataset.key='commands:'+attempt.attemptId;commands.append(node('summary','公开命令记录 · '+(run?.commands?.length??0)));
-      for(const command of run?.commands??[]){const line=node('div',undefined,'command-record');line.append(node('small',label(command.status)+' · 退出码 '+(command.exitCode??'未结束')),node('pre',command.command));commands.append(line);}box.append(commands);
+      for(const command of run?.commands??[]){const line=node('div',undefined,'command-record');line.append(node('small',label(command.status)+' · 退出码 '+(command.exitCode??'未结束')),node('pre',command.command));if(command.output)line.append(node('pre',command.output));commands.append(line);}box.append(commands);
     }else box.append(node('p','成员已初始化，尚未执行任务。','muted'));
     const actions=node('div',undefined,'detail-actions');const open=button('打开原生 subagent 会话',()=>void requestNavigation(member.id,attempt?.taskId,attempt?.attemptId),'subtle-button','member-native');
     open.disabled=!member.agentThreadId||!member.rosterVerified;actions.append(open,button('返回主会话',()=>void requestNavigation(member.id,attempt?.taskId,attempt?.attemptId,'leader'),'subtle-button','leader-native'));box.append(actions);
@@ -300,10 +312,10 @@ export function setupTeamView(app){
     const updates=new Map(data.runs.map(r=>[JSON.stringify([r.taskId,r.attemptId]),r]));
     const runs=current.runs.map(r=>{const key=JSON.stringify([r.taskId,r.attemptId]),update=updates.get(key);updates.delete(key);return {...r,...update};});runs.push(...updates.values());
     const stale=row=>team.tasks.find(t=>t.id===row.taskId)?.attempts.at(-1)?.id!==row.attemptId;
-    current={...current,team,runs,readiness:data.readiness??current.readiness,observedAt:data.observedAt,observationMode:data.observationMode,latestStateAt:Math.max(current.latestStateAt??0,Date.parse(data.observedAt)||0),
+    current={...current,team,runs,usage:data.usage??current.usage,workflow:data.workflow??current.workflow,readiness:data.readiness??current.readiness,observedAt:data.observedAt,observationMode:data.observationMode,latestStateAt:Math.max(current.latestStateAt??0,Date.parse(data.observedAt)||0),
       messages:current.messages?.map(m=>({...m,stale:stale(m)})),checkpoints:current.checkpoints?.map(c=>({...c,stale:stale(c)}))};
     validateSelection(team);
-    if(before.team.revision!==team.revision||runSignature(before.runs)!==runSignature(runs))render();
+    if(before.team.revision!==team.revision||runSignature(before.runs)!==runSignature(runs)||JSON.stringify(before.usage)!==JSON.stringify(current.usage))render();
   }
   async function accept(data){
     if(!data)return;const generation=connectionGeneration;
@@ -366,6 +378,17 @@ export function setupTeamView(app){
   $('toggleMembers').onclick=()=>{ui.membersOpen=!ui.membersOpen;storeState();render();};
   $('toggleOverview').onclick=()=>{ui.overviewCollapsed=!ui.overviewCollapsed;storeState();render();};
   $('retryConnection').onclick=()=>void reconnect();$('refreshTeam').onclick=()=>void reconnect();
+  $('taskSearch').oninput=()=>{ui.query=$('taskSearch').value;storeState();if(current)renderGraph();};$('taskStatusFilter').onchange=()=>{ui.status=$('taskStatusFilter').value;storeState();if(current)renderGraph();};
+  let report=null;
+  async function showRecord(name,args={}){if(!current)return;const id=current.team.id,generation=connectionGeneration;try{const data=await call(name,{teamId:id,...args});if(id!==current?.team.id||generation!==connectionGeneration)return;const box=$('recordOutput');$('teamRecords').open=true;
+    if(data.kind==='team-export'){report=data;box.textContent=data.text;$('downloadReport').hidden=false;}
+    else if(data.kind==='team-recovery')box.textContent=data.members.map(m=>memberName(current.team,current.team.members.find(x=>x.id===m.memberId))+'：'+label(m.status)+' · '+(m.control?.status==='available'?'原生控制已核对':'原生控制待核对')).join('\n')+'\n插件不会自动恢复模型轮次；请在原主会话核对现有成员的控制能力。';
+    else box.textContent=JSON.stringify(data,null,2);
+  }catch(error){$('feedback').textContent='记录读取失败：'+error.message;}}
+  $('exportReport').onclick=()=>void showRecord('export_team_report');
+  $('showRecovery').onclick=()=>void showRecord('read_team_recovery');
+  $('showDiagnostics').onclick=()=>{if(current){$('teamRecords').open=true;$('recordOutput').textContent=(current.diagnostics?.stages??[]).map(s=>s.taskId+' · 预留到绑定 '+(s.reservationToBindMs??'未知')+' ms · 执行 '+(s.executionMs??'未知')+' ms').join('\n')||'尚无可计算的执行时间记录。';}};
+  $('downloadReport').onclick=()=>{if(!report)return;const url=URL.createObjectURL(new Blob([report.text],{type:report.mimeType})),a=document.createElement('a');a.href=url;a.download=report.filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   return {accept,connect:async()=>{linked=true;const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('loadingState').hidden=!current;$('emptyState').hidden=true;
     try{const data=await call('open_team_workspace');if(linked&&generation===connectionGeneration)await accept(data);}
     catch(e){if(linked&&generation===connectionGeneration)errorState(e.message);}

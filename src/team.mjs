@@ -6,12 +6,14 @@ import {DurableStore} from './durable-store.mjs';
 import {validateMailbox} from './team-mailbox.mjs';
 import {validateCheckpoints} from './team-checkpoints.mjs';
 import {validateRoster} from './team-roster.mjs';
+import {TeamArchive} from './team-archive.mjs';
+import {TeamDocument} from './team-document.mjs';
 const now=()=>new Date().toISOString();
 const allowedStatuses=new Set(['waiting','ready','running','submitted','accepted','blocked','cancelled']);
 
 export function validatePlan({members,tasks}) {
   if(!Array.isArray(members)||members.length<1||members.length>8) throw new Error('A team plan needs 1–8 role-specific members');
-  if(!Array.isArray(tasks)||tasks.length<1||tasks.length>2000||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks and 2000 historical tasks plus at most one final integration review');
+  if(!Array.isArray(tasks)||tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
   const memberIds=new Set();
   for(const m of members){
     if(!m||typeof m.id!=='string'||!m.id||memberIds.has(m.id)) throw new Error('Member IDs must be unique');
@@ -56,16 +58,16 @@ export function createTeam({projectId,projectPath,goal,plan,maxParallel=3}) {
     createdAt:time,updatedAt:time,members,tasks:plan.tasks.map(t=>({...structuredClone(t),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:time,updatedAt:time})),events:[{at:time,type:'team-planned'}]};
 }
 
-function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.events.push({at,type,...details});team.events=team.events.slice(-500);}
+function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.events.push({at,type,...details});if(team.mode!=='host-leader')team.events=team.events.slice(-500);}
 function dependenciesReady(team,task){return task.dependencies.every(d=>{const pre=team.tasks.find(t=>t.id===d.taskId);return d.when==='submitted'?['submitted','accepted'].includes(pre.status):pre.status==='accepted';});}
-function conflict(a,b){const normalize=p=>p.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();const A=(a.writeScopes??[]).map(normalize),B=(b.writeScopes??[]).map(normalize);if(!A.length&&!B.length)return false;return !A.length||!B.length||A.some(x=>B.some(y=>x==='.'||y==='.'||x===y||x.startsWith(y+'/')||y.startsWith(x+'/')));}
+function conflict(a,b){const normalize=p=>p.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();const A=(a.writeScopes??[]).map(normalize),B=(b.writeScopes??[]).map(normalize);if(A.length&&B.length&&a.workspace?.mode==='git-worktree'&&b.workspace?.mode==='git-worktree'&&a.workspace.path!==b.workspace.path)return false;if(!A.length&&!B.length)return false;return !A.length||!B.length||A.some(x=>B.some(y=>x==='.'||y==='.'||x===y||x.startsWith(y+'/')||y.startsWith(x+'/')));}
 
 export function consumedAttempts(task){return task.attempts?.length?task.attempts.filter(a=>a.state!=='released').length:task.attempt??0;}
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
-  if(consumedAttempts(task)>=3)add('attempt-limit','已达到 3 次实际执行/预留上限，保留历史等待 Leader 调整范围');
+  if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
   for(const d of task.dependencies){const pre=team.tasks.find(t=>t.id===d.taskId);if(!(d.when==='submitted'?['submitted','accepted'].includes(pre?.status):pre?.status==='accepted'))add('dependency',`等待 ${d.taskId} ${d.when==='accepted'?'验收':'提交'}`,d.taskId);}
   const member=team.members.find(m=>m.id===task.memberId),active=team.tasks.filter(t=>t.status==='running'&&t.id!==task.id);
   if(!member||!['planned','idle'].includes(member.status))add('member-busy','负责成员尚未空闲');
@@ -86,7 +88,7 @@ export function schedule(team){
   if(team.dispatchPaused)return [];
   const active=team.tasks.filter(t=>t.status==='running'),slots=Math.max(0,team.maxParallel-active.length),selected=[];
   for(const task of readyTasks(team)){
-    if(consumedAttempts(task)>=3){task.status='blocked';task.blockReason='Task attempt limit reached (3); history and budget are retained';continue;}
+    if(consumedAttempts(task)>=(team.policy?.maxAttempts??3)){task.status='blocked';task.blockReason=`Task attempt limit reached (${team.policy?.maxAttempts??3}); history and budget are retained`;continue;}
     if(selected.length>=slots)break;
     const member=team.members.find(m=>m.id===task.memberId);
     if(dispatchBlockers(team,task).length)continue;
@@ -122,12 +124,12 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
 export function validateTeam(team){validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
 
 export class TeamStore {
-  constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);}
+  constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}
   ownerId(hostThreadId){if(typeof hostThreadId!=='string'||!hostThreadId)throw new Error('Current Desktop conversation is required');return createHash('sha256').update(hostThreadId).digest('hex');}
   path(id){if(!/^[0-9a-f-]{36}$/i.test(id))throw new Error('Invalid team ID');return join(this.root,`${id}.json`);}
-  document(id){return new DurableStore(this.path(id),{},value=>{if(Object.keys(value).length)validateTeam(value);});}
+  document(id){return new TeamDocument(this.path(id),this.archive,validateTeam);}
   async create(input,owner){const team=createTeam(input);team.ownerId=owner;team.revision=1;await this.document(team.id).transaction(d=>{if(d.id)throw new Error('Team already exists');Object.assign(d,team);});return team;}
-  async get(id,owner){const team=await this.document(id).read();if(team.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');return team;}
-  async list(owner){let names;try{names=await readdir(this.root);}catch(e){if(e.code==='ENOENT')return[];throw e;}const rows=[];for(const name of names){if(!/^[0-9a-f-]{36}\.json$/i.test(name))continue;const row=await this.document(name.slice(0,-5)).read();if(row.ownerId===owner)rows.push(row);}return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
-  async update(id,owner,expectedRevision,mutate){return this.document(id).transaction(async team=>{if(team.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');if(team.revision!==expectedRevision)throw new Error('Team changed in another Desktop window; refresh the board before retrying');const result=await mutate(team);team.revision++;team.updatedAt=now();return{team,result};});}
+  async get(id,owner){const saved=await this.document(id).read();if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');const team=await this.archive.hydrate(saved);validateTeam(team);return team;}
+  async list(owner){let names;try{names=await readdir(this.root);}catch(e){if(e.code==='ENOENT')return[];throw e;}const rows=[];const ids=[...new Set(names.filter(n=>/^[0-9a-f-]{36}(?:\.v2)?\.json$/i.test(n)).map(n=>n.replace(/(?:\.v2)?\.json$/,'')))];for(const tid of ids){const saved=await this.document(tid).read();if(saved.ownerId===owner){const row=await this.archive.hydrate(saved);validateTeam(row);rows.push(row);}}return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
+  async update(id,owner,expectedRevision,mutate){return this.document(id).transaction(async saved=>{if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');if(saved.revision!==expectedRevision)throw new Error('Team changed in another Desktop window; refresh the board before retrying');const team=await this.archive.hydrate(structuredClone(saved));validateTeam(team);const result=await mutate(team);team.revision++;team.updatedAt=now();validateTeam(team);const compact=await this.archive.compact(team);for(const key of Object.keys(saved))delete saved[key];Object.assign(saved,compact);return{team,result};});}
 }

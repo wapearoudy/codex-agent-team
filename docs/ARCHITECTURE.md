@@ -13,6 +13,12 @@
 | `src/team-navigation.mjs` | 有时限的用户导航请求和宿主回执 |
 | `src/team-responses.mjs`、`src/panel-snapshot.mjs` | 轻量状态、完整历史和短期详情快照 |
 | `src/team-view.mjs`、`src/team-projection.mjs`、`src/host.html` | 展示、依赖关系、轮次选择和阅读位置恢复 |
+| `src/native-public.mjs` | 已授权原生记录的增量公开事件、精确轮次 token 基线 |
+| `src/team-peer-mailbox.mjs`、`src/team-recovery.mjs` | 任务限定的成员收件箱、恢复交接与真实控制回执 |
+| `src/team-policy.mjs`、`src/team-workflow.mjs` | 模板/路由/预算/摘要与有上限的 Leader 动作建议 |
+| `src/team-worktrees.mjs` | 可选 Git 隔离、操作日志、验收提交绑定及暂存集成 |
+| `src/team-diagnostics.mjs` | 版本绑定分页、公开报告与原始时间诊断 |
+| `src/team-document.mjs`、`src/team-archive.mjs` | v2 事务、旧写入保护、原始备份、不可变校验分卷 |
 
 旧隔离团队模块保留兼容读取、停止及必要的历史写回/恢复；主路径禁止重新启动旧调度器。
 
@@ -21,3 +27,7 @@
 控制操作先核对真实项目与 Leader，公开快照不包含隐藏推理或登录信息。`read_team` 提供 summary/state/full；详情缓存匹配 owner/team/revision/token，保留原观察时间，返回前重新授权。
 
 运行数据存放在当前用户 Codex 数据目录，源码仓库不追踪该数据。原团队记录、截图和私有项目证据不作为公共测试样本。
+
+0.9 系列在事务内保存 worktree 候选提交；审查接受和集成必须核对该提交，验收后的额外修改不能沿用旧结论。Git 副作用的操作日志独立落盘，记录提交失败时通过身份/HEAD/索引核对既有结果，不重复合并。
+
+分卷先写入并同步，再提交清单；固定段边界避免每次追加都生成历史尾卷。业务读取仍完整还原并验证团队，以保留依赖、attempt、requestId 去重和旧证据语义。summary 返回未完成及最近已完成任务，其他历史按任务检索；这不是无限历史常数内存承诺。

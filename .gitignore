@@ -14,6 +14,7 @@ plugins/*/dist/
 docs/*
 !docs/ARCHITECTURE.md
 !docs/DEVELOPMENT.md
+!docs/CAPABILITIES.md
 scripts/*
 !scripts/build.mjs
 !scripts/package.py
@@ -21,3 +22,4 @@ scripts/*
 !scripts/register-probe.ps1
 !scripts/stage-upgrade.py
 !scripts/verify-installed-current.mjs
+!scripts/install-plugin.mjs

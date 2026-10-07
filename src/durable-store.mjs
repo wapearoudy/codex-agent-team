@@ -82,4 +82,11 @@ export class DurableStore {
       await release();
     }
   }
+  async commitUnlocked(data){
+    // Caller must hold this store's exclusive lock. Used only to install the
+    // v1 compatibility fence while a v2 team transaction commits separately.
+    const tmp=`${this.file}.${randomUUID()}.tmp`,fd=await open(tmp,'wx');
+    try{await fd.writeFile(JSON.stringify(data,null,2));await fd.sync();}finally{await fd.close();}
+    try{await replaceFile(tmp,this.file,{renameFile:this.renameFile});}finally{await unlink(tmp).catch(()=>{});}
+  }
 }

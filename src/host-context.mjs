@@ -26,7 +26,7 @@ export class HostContext {
       const {thread}=await rpc.call('thread/read',{threadId,includeTurns:false});
       if(thread?.id!==threadId||typeof thread.cwd!=='string'||!isAbsolute(thread.cwd))throw new Error('宿主未返回当前会话的有效项目目录，团队未启动。');
       const cwd=await realpath(thread.cwd);
-      return{threadId,cwd,source:'host-thread-metadata',observedAt:new Date().toISOString()};
+      return{threadId,cwd,parentThreadId:thread.parentThreadId??thread.source?.subAgent?.thread_spawn?.parent_thread_id??null,source:'host-thread-metadata',observedAt:new Date().toISOString()};
     }catch(error){if(this.rpc===rpc)await this.close();throw error;}
     finally{this.active--;if(!this.active&&this.rpc){this.idleTimer=setTimeout(()=>void this.close(),this.idleMs);this.idleTimer.unref?.();}}
   }
