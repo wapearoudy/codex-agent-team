@@ -1,5 +1,5 @@
 {
-  "name": "codex-ageng-team",
+  "name": "codex-agent-team",
   "version": "0.8.6",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "package": "python scripts/package.py"
   },
   "engines": { "node": ">=22" },
-  "repository": { "type": "git", "url": "https://github.com/wapearoudy/codex-ageng-team.git" },
+  "repository": { "type": "git", "url": "https://github.com/wapearoudy/codex-agent-team.git" },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.1",

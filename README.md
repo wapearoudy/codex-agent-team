@@ -1,4 +1,4 @@
-# codex-ageng-team
+# codex-agent-team
 
 Team Workspace：当前 Codex 主会话担任 Leader，原生 subagent 作为固定团队成员，内嵌面板集中展示任务、执行、进度和依赖。
 
@@ -19,8 +19,8 @@ Team Workspace：当前 Codex 主会话担任 Leader，原生 subagent 作为固
 需要 Node.js 22+，打包需要 Python 3，浏览器检查使用 Chrome。
 
 ```powershell
-git clone https://github.com/wapearoudy/codex-ageng-team.git
-cd codex-ageng-team
+git clone https://github.com/wapearoudy/codex-agent-team.git
+cd codex-agent-team
 npm ci
 npm run build
 npx playwright install chrome
