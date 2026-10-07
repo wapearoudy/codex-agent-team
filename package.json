@@ -1,0 +1,26 @@
+{
+  "name": "codex-ageng-team",
+  "version": "0.8.6",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "validate": "node scripts/validate-package.mjs",
+    "package": "python scripts/package.py"
+  },
+  "engines": { "node": ">=22" },
+  "repository": { "type": "git", "url": "https://github.com/wapearoudy/codex-ageng-team.git" },
+  "dependencies": {
+    "@modelcontextprotocol/ext-apps": "1.7.5",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@openai/mcp-extensions": "0.1.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "esbuild": "0.28.2"
+  }
+}

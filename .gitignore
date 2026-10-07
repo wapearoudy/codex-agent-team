@@ -1,0 +1,23 @@
+node_modules/
+artifacts/
+evidence/
+plugins/*/dist/
+.env
+.env.*
+!.env.example
+.codex/
+*.log
+*.zip
+*.tmp
+
+# Local host reports and historical business/session records stay on this machine.
+docs/*
+!docs/ARCHITECTURE.md
+!docs/DEVELOPMENT.md
+scripts/*
+!scripts/build.mjs
+!scripts/package.py
+!scripts/validate-package.mjs
+!scripts/register-probe.ps1
+!scripts/stage-upgrade.py
+!scripts/verify-installed-current.mjs
