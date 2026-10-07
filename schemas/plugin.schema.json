@@ -63,4 +63,3 @@
   "required": ["$schema", "name"],
   "additionalProperties": false
 }
-
