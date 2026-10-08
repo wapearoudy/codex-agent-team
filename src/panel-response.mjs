@@ -1,7 +1,7 @@
 // Display previews have a separate budget. Saved observations and full evidence
 // are never rewritten, and remain available through read_team(view=full).
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
-const attemptKeys=['id','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection'];
+const attemptKeys=['id','memberId','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection'];
 const runKeys=['taskId','memberId','attemptId','threadId','turnId','status','statusEvidence','observedAt','connection','source','attemptIdentitySource','model','usage'];
 export const PANEL_MAX_BYTES=256*1024;
 export function panelTasks(tasks){
@@ -44,13 +44,14 @@ export function panelResponse(data,detailToken){
   const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','fixedRoster']);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
-  team.members=data.team.members.map(m=>({...pick(m,['id','role','displayName','threadTitle','taskName','status','agentThreadId','agentPath','rosterVerified']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','workspace','recoveryControl']))}));
-  team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','parentTaskId','priority']),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[]}));
+  team.members=data.team.members.map(m=>({...pick(m,['id','role','displayName','threadTitle','taskName','status','agentThreadId','agentPath','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','workspace','recoveryControl']))}));
+  team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound']),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
   const relevant=data.runs.filter(r=>ids.has(r.taskId));
   const latest=new Set(rows.map(t=>t.attempts.at(-1)?.id));
   const selected=relevant.toReversed().sort((a,b)=>Number(latest.has(b.attemptId))-Number(latest.has(a.attemptId))||Number(b.status==='inProgress')-Number(a.status==='inProgress')).slice(0,40);
   const runs=selected.map(r=>({...stateRun(r,budget),outputs:(r.outputs??[]).slice(-2).map(o=>({...pick(o,['id','type','at']),text:budget.text(o.text,6000)})),commands:(r.commands??[]).slice(-6).map(c=>({...pick(c,['id','status','exitCode','startedAt','endedAt']),command:budget.text(c.command,1000),output:budget.text(c.output,2000)}))}));
   const output={kind:'team-detail',team,runs,detailToken,observedAt:data.observedAt,observationMode:data.observationMode,readiness:budget.value((data.readiness??[]).filter(r=>ids.has(r.taskId))),usage:budget.value(data.usage),workflow:budget.value(data.workflow),diagnostics:budget.value(data.diagnostics),messages:budget.value((data.messages??[]).slice(-10)),checkpoints:budget.value((data.checkpoints??[]).slice(-10)),displayLimits:{preview:true,maxBytes:PANEL_MAX_BYTES,totalTasks:data.team.tasks.length,totalRuns:data.runs.length,truncated:false},evidenceAccess:{tool:'read_team',arguments:{teamId:team.id,view:'full'},handoffTool:'read_team_handoff'}};
+  if(data.quality)output.quality={...pick(data.quality,['source','resolvedFindingCount','repairCount','scopeEvidenceSource','scopeIsSandbox']),coverage:budget.value(data.quality.coverage),openFindingCount:data.quality.openFindings.length,openFindings:budget.value(data.quality.openFindings.slice(0,20).map(f=>pick(f,['id','rootTaskId','severity','status','description'])))};
   // Bound structural overhead as well as text, including very long histories.
   const size=()=>Buffer.byteLength(JSON.stringify(output));
   let shortened=false;

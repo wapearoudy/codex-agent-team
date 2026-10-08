@@ -1,3 +1,5 @@
+// Frozen compatibility fixture from d57c8e2 (0.9.4). Do not modernize this reader:
+// new quality/lifecycle manifests must make the shipped old decoder refuse writes.
 import {mkdir, open, readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -29,10 +31,7 @@ export class TeamArchive {
       }
       out[field]=rows.slice(split);
     }
-    // 0.9 readers reject manifest v2 before mutating a hydrated team. Keep an
-    // empty manifest too: contracts and lifecycle changes need that write fence
-    // even when this team has not accumulated enough rows for archive segments.
-    if(segments.length||team.requiresTeamWorkspaceVersion)out.archiveManifest={schemaVersion:team.requiresTeamWorkspaceVersion?2:1,segments};return out;
+    if(segments.length)out.archiveManifest={schemaVersion:1,segments};return out;
   }
   async backupOriginal(team,body) {
     const root=join(this.root,team.id);await mkdir(root,{recursive:true});const hash=digest(body),path=join(root,'original-'+hash+'.json');
@@ -41,7 +40,7 @@ export class TeamArchive {
   }
   async hydrate(stored) {
     const manifest=stored.archiveManifest;if(!manifest)return stored;
-    if(![1,2].includes(manifest.schemaVersion)||!Array.isArray(manifest.segments)||manifest.schemaVersion===2&&stored.requiresTeamWorkspaceVersion!=='0.10.0')throw new Error('Unsupported archive manifest; use the required Team Workspace version');
+    if(manifest.schemaVersion!==1||!Array.isArray(manifest.segments))throw new Error('Unsupported archive manifest');
     const team=structuredClone(stored),groups=new Map();
     for(const segment of manifest.segments) {
       if(!fields.includes(segment.field)||!Number.isSafeInteger(segment.offset)||segment.offset<0||!Number.isSafeInteger(segment.count)||segment.count<1||!/^[a-f0-9]{64}$/.test(segment.hash))throw new Error('Invalid archive segment');

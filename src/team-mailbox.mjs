@@ -32,7 +32,7 @@ export function recordMessageDelivery(team,messageId,status,note){
 export function acknowledgeMessage(team,messageId,observation){
   const message=team.messages?.find(m=>m.id===messageId);if(!message)throw new Error('Message not found');
   const task=team.tasks.find(t=>t.id===message.taskId),attempt=task?.attempts.find(a=>a.id===message.attemptId);
-  if(!attempt?.turnId||attempt.agentThreadId!==message.threadId||task.memberId!==message.memberId||observation.threadId!==message.threadId||observation.turnId!==attempt.turnId||(message.turnId!=null&&observation.turnId!==message.turnId)||!observation.messageAcknowledgements?.includes(message.marker))throw new Error('No exact public member receipt in the original message turn');
+  if(!attempt?.turnId||attempt.agentThreadId!==message.threadId||(attempt.memberId??task.memberId)!==message.memberId||observation.threadId!==message.threadId||observation.turnId!==attempt.turnId||(message.turnId!=null&&observation.turnId!==message.turnId)||!observation.messageAcknowledgements?.includes(message.marker))throw new Error('No exact public member receipt in the original message turn');
   if(message.turnId==null){
     message.turnId=observation.turnId;
     message.events.push({at:now(),type:'turn-bound',status:message.status,source:'native-public-member-receipt',previousTurnId:null,threadId:observation.threadId,turnId:observation.turnId,observedAt:observation.observedAt});
@@ -40,7 +40,7 @@ export function acknowledgeMessage(team,messageId,observation){
   if(message.status!=='acknowledged'){message.status='acknowledged';message.events.push({at:now(),status:'acknowledged',source:'native-public-member-receipt',threadId:observation.threadId,turnId:observation.turnId,observedAt:observation.observedAt});}
   return message;
 }
-export function mailboxProjection(team){return (team.messages??[]).map(message=>({...message,stale:team.tasks.find(t=>t.id===message.taskId)?.attempts.at(-1)?.id!==message.attemptId}));}
+export function mailboxProjection(team){return (team.messages??[]).map(message=>{const task=team.tasks.find(t=>t.id===message.taskId);return {...message,stale:task?.attempts.at(-1)?.id!==message.attemptId||task?.memberId!==message.memberId||task?.status!=='running'};});}
 
 export function validateMailbox(team){
   if(team.messages===undefined)return;
@@ -53,7 +53,7 @@ export function validateMailbox(team){
     // stays unknown when binding or settlement discovers the turn; it is not a receipt.
     const unknownTurn=m.turnId==null;
     const invalidTurn=unknownTurn?m.status==='acknowledged'||m.events.some(e=>e?.status==='acknowledged'||e?.type==='turn-bound'):typeof m.turnId!=='string'||!m.turnId||attempt?.turnId!==m.turnId;
-    if(!attempt||typeof m.threadId!=='string'||!m.threadId||attempt.agentThreadId!==m.threadId||invalidTurn||task.memberId!==m.memberId||m.marker!==`TEAM_WORKSPACE_MESSAGE:${m.id}`)throw new Error('Message identity mismatch');
+    if(!attempt||typeof m.threadId!=='string'||!m.threadId||attempt.agentThreadId!==m.threadId||invalidTurn||(attempt.memberId??task.memberId)!==m.memberId||m.marker!==`TEAM_WORKSPACE_MESSAGE:${m.id}`)throw new Error('Message identity mismatch');
     ids.add(m.id);requests.add(m.requestId);
   }
 }

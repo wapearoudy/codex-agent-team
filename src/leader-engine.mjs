@@ -14,6 +14,8 @@ import {diagnostics} from './team-diagnostics.mjs';
 import {workflowActions} from './team-workflow.mjs';
 import {peerActions} from './team-peer-mailbox.mjs';
 import {TeamWorktrees} from './team-worktrees.mjs';
+import {assertContractDelivery,assertContractPass,recordFindings,planRepair,qualityReport,assertQualityFinish,openFindings} from './team-quality.mjs';
+import {lifecycleRequest,reassignTask,removeMember,verifyQuiescence} from './team-lifecycle.mjs';
 
 const now=()=>new Date().toISOString();
 const terminal=s=>['completed','failed','interrupted'].includes(s);
@@ -42,13 +44,15 @@ export class LeaderEngine {
       prompt:[a.marker,`Before working, emit this exact marker as a standalone public commentary message: ${a.marker}. Include it as the first line of your final delivery, or as attemptMarker in a JSON review. Do not repeat markers from earlier attempts.`, `Leader: ${team.leaderThreadId}. Project: ${team.projectPath}.`,
         `Fixed member name: ${memberNaming(team,m).displayName}. Role: ${m.role}. Responsibility: ${m.responsibility}.`, `Task: ${task.title}\n${task.goal}`,`Acceptance: ${task.acceptance}`,
         `Team goal: ${handoff.teamGoal}`,`Acceptance criteria: ${JSON.stringify(task.acceptanceCriteria??[])}`,`Additional context: ${task.context??''}`,`Upstream evidence: ${JSON.stringify(handoff.dependencies)}`,
+        `Quality contract: ${JSON.stringify(task.contract??null)}. Declared goal coverage: ${JSON.stringify(team.goalCriteria??[])}. Scope paths are project-relative; explicit outOfScope paths must never be changed.`,
+        `Open findings for this delivery: ${JSON.stringify(openFindings(team,task.kind==='review'?team.tasks.find(t=>t.id===task.reviewOfTaskId):task).map(({history,...f})=>f))}. Keep their IDs and severities across repair/review rounds. Only an independent reviewer can resolve them with concrete resolutionEvidence.`,
         `Saved checkpoint (Leader-recorded; stale checkpoints are not current validation): ${JSON.stringify(handoff.checkpoint)}`,
         `Validation scope: ${task.validationMode??'execute'}. Report actual commands and results; source-only review is not proof that tests ran.`,
         `Allowed source writes: ${m.writeScopes.join(', ')||'none (read-only reviewer)'}. Shared project: other members are working here; do not revert their edits. Read only what this task needs.`,
         m.workspace?`Your assigned Git worktree is ${m.workspace.path}. Use this directory for every file write and command workdir. The native conversation remains in the Leader project. Commit the candidate in this worktree; do not merge or write back to the Leader workspace.`:'Work in the current shared project.',
         'The current main conversation is your Leader. Do not create a separate team or change team records. Report blockers to the Leader; do not install dependencies or expand scope without authorization.',
         `For task-scoped coordination, use send_team_peer_message with teamId ${team.id}, attemptId ${a.id} and a stable requestId. Send only to a roster member or leader. The returned nativeAction may be delivered using the existing native send_message tool; record its actual result with record_team_peer_sender_delivery. Never auto-resend an unknown delivery. Read your own inbox and acknowledge the original message/recipient attempt.`,
-        task.kind==='review'?`Return JSON with attemptMarker, summary, decision (accept or rework), reason, checks [{name,criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], findings [{severity:blocker|high|medium|low,status:open|resolved,description}]. Use findings:[] if none. Every PASS check requires concrete evidence. Cover these target criteria: ${JSON.stringify(team.tasks.find(t=>t.id===task.reviewOfTaskId)?.acceptanceCriteria??[])}. Review independently; do not fix the implementation.`:'Return a summary, changed file paths, test commands/results and remaining limitations. Completion is a submission, not acceptance.'
+        task.kind==='review'?`Return JSON with attemptMarker, summary, decision (accept or rework), reason, checks [{name,criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], findings [{id,severity:blocker|high|medium|low,status:open|resolved,description,resolutionEvidence}]. Use stable IDs for new findings and preserve supplied IDs when resolving earlier findings. Use findings:[] if none. Every PASS check requires concrete evidence. Cover these target criteria: ${JSON.stringify(team.tasks.find(t=>t.id===task.reviewOfTaskId)?.acceptanceCriteria??[])}. Review independently; do not fix the implementation.`:task.contract?'Return JSON with attemptMarker, summary, changedPaths (project-relative), acceptanceResults [{criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], commandsRun and limitations. Execute every exact contract.verify command using native command tools, so the host records its exit code. Report missing/failed checks honestly; submission is not acceptance.':'Return a summary, changed file paths, test commands/results and remaining limitations. Completion is a submission, not acceptance.'
       ].join('\n\n')};
   }
   async claim(owner,id,revision,taskId){
@@ -60,7 +64,7 @@ export class LeaderEngine {
     if(rosterTeam.revision!==revision)throw new Error('Team changed; refresh before controlling members');
     if(rosterTeam.state==='superseded')throw new Error('Historical team cannot dispatch; use the project’s current team');
     if(rosterTeam.policy?.tokenLimit)assertBudget(rosterTeam,await this.observations(rosterTeam));
-    if(rosterTeam.members.some(m=>m.recoveryControl?.status==='unavailable'))throw new Error('A native member handle is unavailable; preserve the roster and verify recovery before dispatch');
+    if(rosterTeam.members.some(m=>!m.removedAt&&m.recoveryControl?.status==='unavailable'))throw new Error('A native member handle is unavailable; preserve the roster and verify recovery before dispatch');
     if(rosterTeam.fixedRoster){
       const required=requiredRosterMembers(rosterTeam,taskIds);
       if(required.some(m=>!m.agentThreadId))throw new Error('Initialize and bind every fixed native member required by these tasks before dispatching');
@@ -118,7 +122,7 @@ export class LeaderEngine {
     if(!assignments?.length||assignments.length>8||new Set(assignments.map(x=>x.memberId)).size!==assignments.length)throw new Error('Provide 1–8 unique roster bindings');
     const team=await this.native(owner,id);if(team.revision!==revision)throw new Error('Team changed; refresh before controlling members');
     const verified=await Promise.all(assignments.map(async input=>{
-      const member=team.members.find(m=>m.id===input.memberId);if(!team.fixedRoster||!member)throw new Error('A fixed roster member is required');
+      const member=team.members.find(m=>m.id===input.memberId&&!m.removedAt);if(!team.fixedRoster||!member)throw new Error('An active fixed roster member is required');
       return {...input,snapshot:await this.observer.inspect(team.leaderThreadId,team.projectPath,input.threadId,member.rosterMarker,{allowPending:true})};
     }));
     await this.store.update(id,owner,revision,t=>{for(const {memberId,snapshot} of verified){const m=t.members.find(m=>m.id===memberId);
@@ -132,7 +136,7 @@ export class LeaderEngine {
     return Promise.all(team.tasks.flatMap(t=>t.attempts.filter(a=>a.agentThreadId).map(async a=>{
       let observation=a.observation;
       if(observe&&t.attempts.at(-1)?.id===a.id&&t.status==='running')try{observation=await this.observer.inspect(team.leaderThreadId,team.projectPath,a.agentThreadId,a.marker,{allowPending:a.state==='linking'});}catch(error){observation={...observation,status:'unknown',observationError:error.message,connection:'unavailable',observedAt:now()};}
-      return {...observation,taskId:t.id,memberId:t.memberId,attemptId:a.id,threadId:a.agentThreadId};
+      return {...observation,taskId:t.id,memberId:a.memberId??t.memberId,attemptId:a.id,threadId:a.agentThreadId};
     })));
   }
   async receipt(owner,id){return this.read(owner,id,{observe:false});}
@@ -140,7 +144,7 @@ export class LeaderEngine {
     const stored=await this.native(owner,id),team={...stored,members:stored.members.map(member=>({...member,...memberNaming(stored,member)}))},runs=await this.observations(team,{observe});
     const readiness=team.tasks.map(task=>({taskId:task.id,ready:task.status==='waiting'&&!dispatchBlockers(team,task).length,blockers:dispatchBlockers(team,task)}));
     const recovery=team.tasks.flatMap(task=>{const a=task.attempts.at(-1),run=runs.find(r=>r.attemptId===a?.id);if(task.status==='running')return [{taskId:task.id,attemptId:a.id,threadId:a.agentThreadId,agentPath:team.members.find(m=>m.id===task.memberId)?.agentPath??null,action:a.state==='reserved'?'verify-host-before-bind-or-release':terminal(run?.status)?'settle-confirmed-turn':'observe-existing-member',message:a.state==='reserved'?'核对宿主是否已启动；绑定失败不能重建成员':terminal(run?.status)?'成员已有终态，等待 Leader 接收':'继续核对现有成员；未知状态不自动重派'}];if(task.status==='blocked')return[{taskId:task.id,action:'leader-rework-decision',message:task.blockReason}];return[];});
-    return {team,runs,readiness,recovery,usage:usageReport(team,runs),workflow:workflowActions(team,runs),diagnostics:diagnostics(team,runs),peerDelivery:peerActions(team),initializations:team.fixedRoster?team.members.filter(m=>!m.rosterVerified).map(m=>({...rosterPacket(team,m),spawnOptions:nativeRoute(m),workspace:m.workspace??{mode:'shared',path:team.projectPath}})):[],messages:mailboxProjection(team),checkpoints:checkpointProjection(team),observedAt:now(),observationMode:observe?'fresh':'saved',runtimeSource:'native-thread-persisted-snapshot',limitations:[
+    return {team,runs,readiness,recovery,quality:qualityReport(team),usage:usageReport(team,runs),workflow:workflowActions(team,runs),diagnostics:diagnostics(team,runs),peerDelivery:peerActions(team),initializations:team.fixedRoster?team.members.filter(m=>!m.removedAt&&!m.rosterVerified).map(m=>({...rosterPacket(team,m),spawnOptions:nativeRoute(m),workspace:m.workspace??{mode:'shared',path:team.projectPath}})):[],messages:mailboxProjection(team),checkpoints:checkpointProjection(team),observedAt:now(),observationMode:observe?'fresh':'saved',runtimeSource:'native-thread-persisted-snapshot',limitations:[
       '当前主会话负责原生成员派发、消息和停止；插件不启动模型轮次。',
       '面板读取宿主已持久化的轮次记录，可能滞后；执行结束不代表已验收。',
       '成员共用当前项目，写入范围由 Leader 和成员遵守，并发冲突在派发时检查；不是文件系统沙箱。'
@@ -159,6 +163,7 @@ export class LeaderEngine {
       a.observation=run;a.runtimeStatus=run.status;
       if(run.status!=='completed'){task.status='blocked';task.blockReason=`Native turn ${run.status}; Leader must decide next step`;a.state=run.status;member.status='idle';pauseDispatch(t);return;}
       const output=run.outputs.at(-1)?.text?.trim();if(!output)throw new Error('Completed turn has no public delivery');
+      const delivery=assertContractDelivery(task,member,output,run.commands??[]);if(delivery)a.delivery=delivery;
       if(member.workspace?.mode==='git-worktree'){
         const candidate=await this.worktrees.inspect(t,member.id);if(candidate.dirty)throw new Error('Commit the isolated candidate before submitting it for independent review');
         a.candidate={head:candidate.head,path:candidate.workspace.path,branch:candidate.workspace.branch,base:candidate.workspace.base,observedAt:now()};
@@ -172,23 +177,29 @@ export class LeaderEngine {
     await this.store.update(id,owner,revision,async t=>{
       const task=t.tasks.find(x=>x.id===taskId),a=task?.attempts.at(-1);
       if(!a||a.id!==attemptId||task.kind!=='review')throw new Error('Current independent review required');
+      const target=t.tasks.find(x=>x.id===task.reviewOfTaskId);
+      let verdict;try{verdict=parseReview(task.evidence.at(-1)?.summary);}catch(error){if(decision==='accept'||t.policy?.autoRepair)throw error;}
+      if(verdict&&t.policy?.autoRepair&&verdict.decision!==decision)throw new Error('Leader decision must match the structured review before automatic repair');
+      if(t.policy?.autoRepair&&(!verdict?.summary?.trim()||!verdict.reason?.trim()||!Array.isArray(verdict.findings)))throw new Error('Automatic repair requires a structured review summary, reason and explicit findings array');
       if(decision==='accept'){
-        const verdict=parseReview(task.evidence.at(-1)?.summary);
-        const target=t.tasks.find(x=>x.id===task.reviewOfTaskId);
         const member=t.members.find(m=>m.id===target?.memberId);
         if(member?.workspace?.mode==='git-worktree'){
           const candidate=await this.worktrees.inspect(t,member.id),submitted=target.attempts.at(-1)?.candidate;
           if(candidate.dirty||!submitted||candidate.head!==submitted.head||candidate.workspace.path!==submitted.path)throw new Error('Isolated candidate changed after submission; rework and independently review the new commit');
         }
         assertReviewPass(verdict,a.observation?.commands??[],target?.acceptanceCriteria??[],nonValidationFailures);
+        assertContractPass(target);
         if(nonValidationFailures.length)a.commandExplanations={source:'main-conversation-leader',note,items:structuredClone(nonValidationFailures),at:now()};
       }
+      if(verdict?.findings)recordFindings(t,task,target,verdict,{accept:decision==='accept'});
       reviewTask(t,taskId,{attemptId,decision,note});t.state=t.tasks.every(x=>['accepted','cancelled'].includes(x.status))?'awaiting-leader-acceptance':'active';
+      if(decision==='rework'&&t.policy?.autoRepair)planRepair(t,task,target,note);
     });return this.receipt(owner,id);
   }
   async finish(owner,id,revision,note,checks){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(!t.tasks.every(x=>['accepted','cancelled'].includes(x.status)))throw new Error('All deliveries require independent acceptance first');
     if(!checks?.length||checks.some(c=>c.status!=='PASS'||!c.evidence?.trim()))throw new Error('Leader must supply final project validation evidence; missing checks are not a pass');
+    assertQualityFinish(t);for(const task of t.tasks.filter(t=>t.status==='accepted'))assertContractPass(task);
     t.state='delivered';t.finalAcceptance={source:'main-conversation-leader',note,checks,at:now()};t.dispatchPaused=true;
   });return this.receipt(owner,id);}
   async start(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{if(t.state==='superseded')throw new Error('Historical team cannot restart');if(t.state==='delivered')return;t.dispatchPaused=false;t.state='active';});return this.receipt(owner,id);}
@@ -233,9 +244,33 @@ export class LeaderEngine {
   async addTasks(owner,id,revision,tasks){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(t.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
     const timestamp=now();t.tasks.push(...tasks.map(task=>({...task,status:'waiting',attempt:0,attempts:[],evidence:[],history:[{at:timestamp,type:'added'}],blockReason:null,createdAt:timestamp,updatedAt:timestamp})));
+    if(tasks.some(task=>task.contract))t.requiresTeamWorkspaceVersion='0.10.0';
     validatePlan(t);for(const task of t.tasks.filter(x=>x.kind!=='review'))if(t.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('New deliveries require one independent review');
     if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}t.state='active';t.dispatchPaused=false;t.events.push({at:timestamp,type:'tasks-added-to-fixed-team',taskIds:tasks.map(t=>t.id)});
   });return this.receipt(owner,id);}
+  async changeMember(owner,id,revision,requestId,payload){
+    if(typeof payload.note!=='string'||!payload.note.trim()||payload.note.length>3000)throw new Error('Member changes require an explicit reason');
+    const team=await this.native(owner,id),check=lifecycleRequest(team,requestId,payload);
+    if(check.prior)return {...await this.receipt(owner,id),memberChange:{...check.prior.result,replayed:true,requestId}};
+    if(team.revision!==revision)throw new Error('Team changed; refresh before changing members');
+    const task=payload.type==='reassign'?team.tasks.find(t=>t.id===payload.taskId):undefined;
+    const source=team.members.find(m=>m.id===(task?.memberId??payload.memberId)&&!m.removedAt);
+    if(!source)throw new Error('Active source member not found');
+    // Check business invariants on a clone before reading any native transcript.
+    const preview=structuredClone(team);if(payload.type==='reassign')reassignTask(preview,payload);else removeMember(preview,payload);validatePlan(preview);
+    await verifyQuiescence(team,source,this.observer,{task});
+    let result;
+    try{
+      ({result}=await this.store.update(id,owner,revision,t=>{
+        lifecycleRequest(t,requestId,payload);
+        const result=payload.type==='reassign'?reassignTask(t,payload):removeMember(t,payload);
+        (t.memberChanges??=[]).push({requestId,hash:check.hash,at:now(),result});return result;
+      }));
+    }catch(error){const {prior}=lifecycleRequest(await this.native(owner,id),requestId,payload);if(!prior)throw error;return {...await this.receipt(owner,id),memberChange:{...prior.result,replayed:true,requestId}};}
+    return {...await this.receipt(owner,id),memberChange:{...result,replayed:false,requestId}};
+  }
+  async reassign(owner,id,revision,taskId,memberId,note,requestId){return this.changeMember(owner,id,revision,requestId,{type:'reassign',taskId,memberId,note});}
+  async removeMember(owner,id,revision,memberId,note,requestId){return this.changeMember(owner,id,revision,requestId,{type:'remove',memberId,note});}
   async pause(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,pauseDispatch);return this.receipt(owner,id);}
   async stop(owner,id,revision){const data=await this.pause(owner,id,revision);return {...data,leaderAction:{type:'interrupt-native-members',targets:data.team.tasks.filter(t=>t.status==='running').map(t=>({taskId:t.id,threadId:t.attempts.at(-1)?.agentThreadId,agentPath:data.team.members.find(m=>m.id===t.memberId)?.agentPath??null,attemptId:t.attempts.at(-1)?.id})),note:'Dispatch paused only. Leader must interrupt native members and settle confirmed terminal records.'}};}
   async release(owner,id,revision,taskId,attemptId,note){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
@@ -286,7 +321,7 @@ export class LeaderEngine {
   async usage(owner,id,{refreshHistorical=false}={}) {
     const data=await this.read(owner,id);
     if(refreshHistorical&&this.observer.historicalUsage)for(const member of data.team.members.filter(m=>m.agentThreadId)){
-      const attempts=data.team.tasks.filter(t=>t.memberId===member.id).flatMap(t=>t.attempts).filter(a=>a.agentThreadId===member.agentThreadId&&a.turnId);
+      const attempts=data.team.tasks.flatMap(t=>t.attempts.filter(a=>(a.memberId??t.memberId)===member.id)).filter(a=>a.agentThreadId===member.agentThreadId&&a.turnId);
       const observed=await this.observer.historicalUsage(data.team.leaderThreadId,data.team.projectPath,member.agentThreadId,[...new Set(attempts.map(a=>a.turnId))]);
       for(const a of attempts){const run=data.runs.find(r=>r.attemptId===a.id);if(run)run.usage=observed.find(o=>o.turnId===a.turnId)?.usage??null;}
     }

@@ -2,6 +2,7 @@ import {buildHandoff} from './team-checkpoints.mjs';
 
 export async function recoveryPacket(team,observer) {
   const members=await Promise.all(team.members.map(async m=>{
+    if(m.removedAt)return {memberId:m.id,threadId:m.agentThreadId??null,status:'removed',action:'history-only'};
     const task=team.tasks.find(t=>t.memberId===m.id&&t.status==='running'),a=task?.attempts.at(-1),marker=a?.marker??m.rosterMarker;
     if(!m.agentThreadId||!marker)return {memberId:m.id,status:'not-bound',action:'initialize-original-roster'};
     try {
@@ -17,7 +18,7 @@ export async function recoveryPacket(team,observer) {
 }
 export function recordRecoveryControl(team,{memberId,threadId,status,tool,note}) {
   const m=team.members.find(m=>m.id===memberId);
-  if(!m||m.agentThreadId!==threadId||!['available','unavailable'].includes(status)||!tool?.trim()||!note?.trim())throw new Error('Record the actual native tool receipt for the original member');
+  if(!m||m.removedAt||m.agentThreadId!==threadId||!['available','unavailable'].includes(status)||!tool?.trim()||!note?.trim())throw new Error('Record the actual native tool receipt for the original active member');
   m.recoveryControl={status,tool,note,threadId,at:new Date().toISOString(),source:'leader-native-tool-receipt'};
   if(status==='unavailable')team.dispatchPaused=true;
   return m.recoveryControl;

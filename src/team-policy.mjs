@@ -7,7 +7,9 @@ export function normalizePolicy(input={}) {
   if(tokenLimit!==null&&(!Number.isSafeInteger(tokenLimit)||tokenLimit<1))throw new Error('Token limit must be a positive integer');
   if(!Number.isInteger(contextChars)||contextChars<4000||contextChars>100000)throw new Error('Context budget must be 4000–100000 characters');
   if(!Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)throw new Error('Attempt limit must be 1–10');
-  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true};
+  const maxReviewRounds=input.maxReviewRounds??3;
+  if(!Number.isInteger(maxReviewRounds)||maxReviewRounds<1||maxReviewRounds>10)throw new Error('Review round limit must be 1–10');
+  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds};
 }
 export function nativeRoute(member){return {fork_turns:'none',...(member.route?.model?{model:member.route.model}:{}),...(member.route?.reasoningEffort?{reasoning_effort:member.route.reasoningEffort}:{})};}
 export function usageReport(team,runs=[]) {
@@ -17,9 +19,10 @@ export function usageReport(team,runs=[]) {
     for(const a of task.attempts??[]) {
       if(!a.agentThreadId)continue;
       const u=runs.find(r=>r.attemptId===a.id)?.usage??a.observation?.usage;
-      if(Number.isSafeInteger(u?.totalTokens)&&u.totalTokens>=0) {row.totalTokens+=u.totalTokens;row.knownAttempts++;}else row.unknownAttempts++;
+      const m=members.find(m=>m.memberId===(a.memberId??task.memberId));
+      if(Number.isSafeInteger(u?.totalTokens)&&u.totalTokens>=0) {row.totalTokens+=u.totalTokens;row.knownAttempts++;if(m){m.totalTokens+=u.totalTokens;m.knownAttempts++;}}else {row.unknownAttempts++;if(m)m.unknownAttempts++;}
     }
-    tasks.push(row);const m=members.find(m=>m.memberId===row.memberId);if(m)for(const k of ['totalTokens','knownAttempts','unknownAttempts'])m[k]+=row[k];
+    tasks.push(row);
   }
   const totalTokens=tasks.reduce((s,t)=>s+t.totalTokens,0),unknownAttempts=tasks.reduce((s,t)=>s+t.unknownAttempts,0),knownAttempts=tasks.reduce((s,t)=>s+t.knownAttempts,0),policy=normalizePolicy(team.policy);
   return {source:'host-observed-attempts',totalTokens,knownAttempts,unknownAttempts,complete:unknownAttempts===0,members,tasks,limit:policy.tokenLimit,

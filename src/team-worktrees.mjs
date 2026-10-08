@@ -10,7 +10,7 @@ const clean=async path=>{if(await git(path,['status','--porcelain','--untracked-
 export class TeamWorktrees {
   constructor(root){this.root=resolve(root);}
   async prepare(team,memberId) {
-    const m=team.members.find(m=>m.id===memberId);if(!m||!m.writeScopes.length)throw new Error('Choose a writing team member');
+    const m=team.members.find(m=>m.id===memberId&&!m.removedAt);if(!m||!m.writeScopes.length)throw new Error('Choose an active writing team member');
     if(team.tasks.some(t=>t.memberId===memberId&&t.status==='running'))throw new Error('The member must be idle before configuring isolation');
     if(m.workspace)return m.workspace;
     const name='team/'+team.id+'/'+memberId,path=resolve(this.root,team.id,memberId),rel=relative(this.root,path);
@@ -37,7 +37,7 @@ export class TeamWorktrees {
     return {memberId,workspace:w,head:await git(actual,['rev-parse','HEAD']),dirty:!!(await git(actual,['status','--porcelain'])),changedFiles:(await git(actual,['diff','--name-only',w.base,'HEAD'])).split('\n').filter(Boolean)};
   }
   async integrate(team,memberId) {
-    const m=team.members.find(m=>m.id===memberId),rows=team.tasks.filter(t=>t.memberId===memberId&&t.kind!=='review');
+    const m=team.members.find(m=>m.id===memberId),rows=team.tasks.filter(t=>t.memberId===memberId&&t.kind!=='review'&&!t.supersededBy);
     if(!rows.length||rows.some(t=>t.status!=='accepted')||team.tasks.some(t=>t.status==='running'))throw new Error('All member deliveries need independent acceptance and every writer must be idle');
     const candidate=await this.inspect(team,memberId);if(candidate.dirty)throw new Error('Commit the accepted candidate in its worktree before integration');
     const submitted=rows.map(t=>t.attempts.at(-1)?.candidate);

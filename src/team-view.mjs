@@ -1,7 +1,7 @@
 import {memberExecutions,orderedMembers,memberHasWork,memberWorkSummary,taskRelationships,dependencyFamily,taskDisplayState,runIsActive} from './team-projection.mjs';
 import {memberName} from './team-naming.mjs';
 
-const labels={reserved:'待 Leader 派发',observed:'执行记录待更新',waiting:'待执行',running:'工作中',submitted:'待审查',accepted:'已验收',blocked:'阻塞',cancelled:'已取消',planned:'待创建',starting:'关联中',idle:'待命',unknown:'状态未知',completed:'执行已结束',inProgress:'执行中',failed:'执行失败',interrupted:'已中断'};
+const labels={removed:'岗位已移除',reserved:'待 Leader 派发',observed:'执行记录待更新',waiting:'待执行',running:'工作中',submitted:'待审查',accepted:'已验收',blocked:'阻塞',cancelled:'已取消',planned:'待创建',starting:'关联中',idle:'待命',unknown:'状态未知',completed:'执行已结束',inProgress:'执行中',failed:'执行失败',interrupted:'已中断'};
 const storagePrefix='team-workspace:interaction:v1:';
 export function setupTeamView(app){
   const $=id=>document.getElementById(id);
@@ -42,7 +42,7 @@ export function setupTeamView(app){
   function validateSelection(team){
     const task=team.tasks.find(t=>t.id===ui.taskId);if(!task){ui.taskId=null;ui.attemptId=null;}
     if(!team.members.some(m=>m.id===ui.memberId))ui.memberId=null;
-    if(task){ui.memberId=task.memberId;if(!task.attempts.some(a=>a.id===ui.attemptId))ui.attemptId=null;}
+    if(task){if(!task.attempts.some(a=>a.id===ui.attemptId))ui.attemptId=null;ui.memberId=task.attempts.find(a=>a.id===ui.attemptId)?.memberId??task.memberId;}
   }
   function render(){
     if(!current)return;
@@ -55,10 +55,11 @@ export function setupTeamView(app){
     $('projectName').textContent=team.projectPath.split(/[\\/]/).filter(Boolean).at(-1)||'Team Workspace';
     $('currentProject').textContent='当前主会话的固定团队 · '+(team.state==='delivered'?'已完成本批验收':'任务与成员执行');
     $('teamGoalText').textContent=team.goal;$('goalDetails').hidden=false;
-    $('headerSummary').replaceChildren(node('span',team.members.length+' 名成员'),node('span',tasks.filter(t=>t.status==='accepted').length+'/'+tasks.length+' 已验收'));
+    const memberCount=team.members.filter(m=>!m.removedAt).length;
+    $('headerSummary').replaceChildren(node('span',memberCount+' 名成员'),node('span',tasks.filter(t=>t.status==='accepted').length+'/'+tasks.length+' 已验收'));
     $('captainSummary').textContent='已派发 '+tasks.filter(t=>t.attempts.some(a=>a.agentThreadId)).length+' 项任务';
     $('activeCount').textContent=active.length?active.length+' 人执行中':unknown.length?unknown.length+' 项状态待核对':'当前无执行中的成员';
-    $('collapsedSummary').textContent=team.members.length+' 名固定成员 · '+$('activeCount').textContent;
+    $('collapsedSummary').textContent=memberCount+' 名固定成员 · '+$('activeCount').textContent;
     $('toggleOverview').textContent=ui.overviewCollapsed?'展开团队':'收起面板';$('toggleOverview').setAttribute('aria-expanded',String(!ui.overviewCollapsed));
     $('collapsedSummary').hidden=!ui.overviewCollapsed;$('teamBoard').hidden=!!ui.overviewCollapsed;
     $('emptyState').hidden=true;$('loadingState').hidden=true;
@@ -73,6 +74,8 @@ export function setupTeamView(app){
     const pending=(current.readiness??[]).filter(r=>tasks.find(t=>t.id===r.taskId)?.status==='waiting');
     $('dispatchSummary').hidden=!pending.length&&!team.dispatchPaused;
     $('dispatchSummary').textContent=(team.dispatchPaused?'新任务派发已暂停 · ':'')+pending.filter(r=>r.ready).length+' 项就绪 · '+pending.filter(r=>!r.ready).length+' 项等待前置条件';
+    const quality=current.quality;$('qualitySummary').hidden=!quality||!quality.coverage?.length&&!quality.repairCount&&!quality.openFindingCount;
+    $('qualitySummary').textContent=quality?(quality.coverage.length?'目标覆盖 '+quality.coverage.filter(c=>c.status==='accepted').length+'/'+quality.coverage.length+' 已验收':'未声明目标覆盖')+' · '+quality.repairCount+' 次修复 · '+quality.openFindingCount+' 项未关闭问题':'';
     renderMembers();renderGraph();renderDetails();renderMember();syncInspection();renderNavigation();
     for(const d of document.querySelectorAll('details[data-key]'))d.open=ui.expanded.includes(d.dataset.key);
     for(const d of document.querySelectorAll('details[data-key]')){const summary=d.querySelector('summary');if(summary&&!summary.dataset.focusKey)summary.dataset.focusKey='disclosure:'+d.dataset.key;}
@@ -90,7 +93,7 @@ export function setupTeamView(app){
   function renderMembers(){
     const {team,runs}=current,ordered=orderedMembers(team,runs),visible=ui.membersOpen?ordered:ordered.filter(({member})=>memberHasWork(member,team.tasks)||!team.tasks.some(t=>t.memberId===member.id));
     const hidden=ordered.length-visible.length;
-    $('membersHeading').textContent=team.members.length+' 名成员';
+    $('membersHeading').textContent=team.members.filter(m=>!m.removedAt).length+' 名成员'+(team.members.some(m=>m.removedAt)?' · 含历史岗位':'');
     $('toggleMembers').textContent=ui.membersOpen?'收起已结束成员':hidden?'展开已结束 '+hidden+' 名成员':'展开全部';
     $('toggleMembers').setAttribute('aria-expanded',String(ui.membersOpen));$('memberTree').hidden=false;
     $('memberTree').replaceChildren(...visible.map(({member:m,index:i,state})=>{
@@ -169,7 +172,7 @@ export function setupTeamView(app){
   }
   function chooseTask(id,attemptId=null,memberView=false){
     const task=current?.team.tasks.find(t=>t.id===id);if(!task)return;clearNavigation();
-    const unpin=ui.taskId===id&&!attemptId&&!memberView;ui.taskId=unpin?null:id;ui.attemptId=unpin?null:attemptId;ui.memberId=unpin?null:task.memberId;
+    const unpin=ui.taskId===id&&!attemptId&&!memberView;ui.taskId=unpin?null:id;ui.attemptId=unpin?null:attemptId;ui.memberId=unpin?null:task.attempts.find(a=>a.id===attemptId)?.memberId??task.memberId;
     ui.memberView=memberView;preview=null;ui.overviewCollapsed=false;storeState();render();
   }
   function chooseMember(id){
@@ -187,17 +190,22 @@ export function setupTeamView(app){
     const member=current.team.members.find(m=>m.id===task.memberId),attempt=task.attempts.find(a=>a.id===ui.attemptId)??task.attempts.at(-1),relationship=taskRelationships(current.team,task);
     const head=node('div',undefined,'detail-heading');head.append(node('h2',task.id+' · '+task.title),node('span',label(taskState(task)),'status-pill '+taskState(task)));box.append(head);
     const actions=node('div',undefined,'detail-actions');actions.append(button('定位负责人 · '+memberName(current.team,member),()=>locateMember(member.id),'subtle-button','locate:'+task.id),button('查看成员执行',()=>{ui.taskId=task.id;chooseMember(member.id);},'subtle-button','member-detail:'+task.id));
-    const open=button('打开对应 subagent',()=>void requestNavigation(member.id,task.id,attempt?.id),'subtle-button','task-open:'+task.id);open.disabled=!member.agentThreadId||!member.rosterVerified;actions.append(open);if(ui.taskId)box.append(actions);
+    const executor=current.team.members.find(m=>m.id===(attempt?.memberId??member.id))??member;
+    const open=button('打开对应 subagent',()=>void requestNavigation(executor.id,task.id,attempt?.id),'subtle-button','task-open:'+task.id);open.disabled=!executor.agentThreadId||!executor.rosterVerified;actions.append(open);if(ui.taskId)box.append(actions);
     const dl=node('dl'),field=(name,value)=>dl.append(node('dt',name),node('dd',value));field('负责人',memberName(current.team,member));field('目标',task.goal);field('验收',task.acceptance);
     field('前置',task.dependencies.map(d=>d.taskId+' '+(d.when==='accepted'?'验收后':'提交后')).join('；')||'无，可并行执行');
     field('等待条件',relationship.waiting.length?relationship.waiting.map(d=>d.taskId+' · '+d.memberLabel+' · 等待'+(d.when==='accepted'?'验收':'提交')).join('；'):'前置已满足');
     field('完成后解锁',relationship.downstream.map(d=>d.id+' · '+d.memberLabel+'（'+(d.when==='accepted'?'验收后':'提交后')+'）').join('；')||'无后续依赖');
     if(task.blockReason)field('阻塞原因',task.blockReason);
+    if(task.supersededBy)field('修复替代',task.supersededBy+'（原交付和审查证据保留）');
+    if(task.repairRound)field('审查轮次','第 '+task.repairRound+' 轮');
+    if(task.contract){field('阶段',task.contract.stage);field('写入范围',(task.contract.inScope??[]).join('；')||'无');field('排除范围',(task.contract.outOfScope??[]).join('；')||'无');field('验证命令',(task.contract.verify??[]).join('；')||'源代码审查');}
+    for(const f of current.quality?.openFindings??[])if(f.rootTaskId===(task.repairRootTaskId??task.reviewOfTaskId??task.id))field(f.severity+' · '+f.id,f.description);
     const readiness=current.readiness?.find(r=>r.taskId===task.id);if(task.status==='waiting')field('派发条件',readiness?.blockers.length?readiness.blockers.map(r=>r.message).join('；'):'已就绪，等待 Leader 派发');
     for(const criterion of task.acceptanceCriteria??[])field(criterion.id,criterion.description);
     box.append(dl);
     if(task.status==='submitted')box.append(node('p','成员已经交付；独立审查和 Leader 验收尚未完成。','muted'));
-    if(attempt)box.append(node('p','所选执行：第 '+attempt.number+' 轮'+(attempt.id===task.attempts.at(-1)?.id?' · 当前轮次':' · 历史轮次'),'muted'));
+    if(attempt)box.append(node('p','所选执行：第 '+attempt.number+' 轮 · '+memberName(current.team,executor)+(attempt.id===task.attempts.at(-1)?.id&&task.memberId===executor.id?' · 当前轮次':' · 历史轮次'),'muted'));
     for(const e of task.evidence){const el=node('div',undefined,'evidence');el.append(node('small','第 '+e.attempt+' 轮交付'),node('p',cleanDelivery(e.summary)));box.append(el);}
     for(const cp of (current.checkpoints??[]).filter(c=>c.taskId===task.id).slice(-3).reverse()){
       const el=node('section',undefined,'evidence');el.append(node('small','进度检查点 · Leader 记录'+(cp.stale?' · 历史轮次，需重新核对':'')),node('p',cp.summary));

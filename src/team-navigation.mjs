@@ -18,8 +18,8 @@ export class TeamNavigation {
     const member=team.members.find(m=>m.id===args.memberId);
     if(!member?.agentThreadId||!member.rosterVerified)throw new Error('成员尚未完成原生绑定，不能打开替代会话');
     const task=args.taskId?team.tasks.find(t=>t.id===args.taskId):null;
-    if(args.taskId&&(!task||task.memberId!==member.id))throw new Error('任务与成员不匹配');
     const attempt=args.attemptId?task?.attempts.find(a=>a.id===args.attemptId):task?.attempts.at(-1);
+    if(args.taskId&&(!task||(attempt?.memberId??task.memberId)!==member.id))throw new Error('任务轮次与成员不匹配');
     if(args.attemptId&&!attempt)throw new Error('任务轮次不存在');
     if(attempt?.agentThreadId&&attempt.agentThreadId!==member.agentThreadId)throw new Error('历史轮次不属于当前固定成员');
     const marker=attempt?.agentThreadId?attempt.marker:member.rosterMarker;

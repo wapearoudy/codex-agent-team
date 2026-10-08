@@ -14,7 +14,7 @@ description: 在当前 Codex 对话中由主会话担任 Leader，使用宿主�
 1. plan_team 和所有团队工具都会核对宿主当前项目；已有上下文时无需先重复调用 get_current_project。只有需要了解项目目录时调用它，不扫描或复制全项目。Leader 按需读文件并复用当前对话的信息。若没有宿主原生 subagent 创建、接续、等待和中断能力，如实报告缺失，不退回独立 app-server 模型会话。
 2. 使用 plan_team 保存最小必要角色和任务 DAG。执行时先按返回的 initializations 为初始团队所有成员初始化原生 subagent（只回复 ready 并结束初始化轮次），立即使用 bind_team_roster_member 保存宿主返回的路径；成员与 subagent 一对一固定对应，包括暂时等待依赖的成员。确认初始团队全部初始化完成后才派发任务。追加岗位仅要求完成该新岗位的初始化，不暂停原成员任务。后续每项任务使用 followup_task 接续该成员，不另建执行者。绑定回执未落盘时保留关联并重读，不重复创建。每项 work 有不同成员的 review，review 的 writeScopes=[]，依赖目标的 submitted。只有下游需要通过验收的结果时才依赖 accepted。task.context 填必要需求、接口契约、用户约束；完整的验收条件不可省略。execute=true 仅允许 Leader 派发，插件不会启动模型。
 3. 对本次可同时执行的就绪任务一次调用 claim_team_tasks（taskIds），使用最新 revision。返回 dispatches 是预留，不能报告成员已启动。它逐项检查依赖、并发、共享资源和写范围冲突，全部通过才一次提交。单项也可用 claim_team_task。不要为每项任务重复读全历史；控制回执已经返回最新 revision、readiness 和 recovery。
-4. 由主会话调用宿主原生 spawn_agent（首次）或 followup_task（已绑定成员接续），使用返回的 prompt 和 spawnOptions，保留 TEAM_WORKSPACE_ATTEMPT 标记，要求成员先发仅含该标记的公开 commentary，最终交付首行也包含该标记；JSON 审查用 attemptMarker 字段。某些宿主会加密派发输入，公开回执用于关联本轮，不解密输入。不同 attempt 不可复用标记；已启动而未落盘时等待观察，不能重复 spawn。不要用 create_thread 创建侧栏聊天。向成员说明共同工作区、文件责任，禁止覆盖他人修改。首次默认 fork_turns=none，以派发包传递必要背景；模型/推理档位仅使用明确配置的 route。接续不能清空已有原生线程上下文，不为省 token 静默换成员。
+4. 由主会话调用宿主原生 spawn_agent（首次）或 followup_task（已绑定成员接续），使用返回的 prompt 和 spawnOptions，保留 TEAM_WORKSPACE_ATTEMPT 标记，要求成员先发仅含该标记的公开 commentary，最终交付首行也包含该标记；JSON 交付/审查用 attemptMarker 字段。某些宿主会加密派发输入，公开回执用于关联本轮，不解密输入。不同 attempt 不可复用标记；已启动而未落盘时等待观察，不能重复 spawn。不要用 create_thread 创建侧栏聊天。向成员说明共同工作区、文件责任，禁止覆盖他人修改。首次默认 fork_turns=none，以派发包传递必要背景；模型/推理档位仅使用明确配置的 route。接续不能清空已有原生线程上下文，不为省 token 静默换成员。
 5. 使用原生工具返回的真实 thread ID 或成员路径（例如 /root/reader）调用 bind_team_member。插件会从本 Leader 的宿主活动记录解析路径，不要求用户查 ID。插件核对该成员的 Leader、cwd 和本轮 marker。若宿主记录尚未落盘，保留返回的 ID 并稍后重试绑定，不再 spawn。启动结果不明时先查宿主成员状态，不重派、不释放预留。只有明确未启动时使用 release_team_reservation。
 6. 用宿主原生等待/消息能力管理成员。完成通知后调用 settle_team_task，插件读取真实终态和公开输出，任务变为 submitted。read_team 只观察，不派发、不代替 Leader 接收结果。
 7. 派发独立 review，成员返回 JSON：summary、decision（accept/rework）、reason、checks（name/status/evidence/criterionId）、findings（severity/status/description，无问题用 []）。任务可以用 acceptanceCriteria [{id,description}] 定义逐项条件，审查必须覆盖所有 ID。只有相关检查实际 PASS 才能 accept，静态审阅必须写明边界。Leader 收到审查后 settle，再调用 accept_team_review。每项 PASS 必须有证据，存在未解决 blocker/high 问题不能接受。非零命令默认阻止通过；仅对 rg 无匹配、非 Git 目录的 git 探测等非验收命令，Leader 核实公开记录后可在 accept_team_review 的 nonValidationFailures [{commandIndex,reason}] 中明确解释，保留来源审计；禁止借此把真正失败的验收检查改为 PASS。失败返工保留历史，同一成员接续新 attempt。重新验收下游旧结论。
@@ -102,3 +102,13 @@ destination=leader 表示回到原 Leader；面板通过当前项目、Leader �
 - prepare_team_worktree 为闲置写入成员配置隔离目录，保留同一原生线程及 Leader cwd。成员所有命令和写入使用 workspace.path；审查者独立读取候选目录，不能将主目录旧代码当候选。交付独立验收且成员停止写入后，integrate_team_worktree 仅预检并暂存合并；Leader 完整验证后明确提交。失败保留工作区/日志，不清理、强制重置或重复合并。
 - read_team_recovery 核对原记录并给出交接；Leader 用实际原生工具回执 record_team_recovery_control。只读记录不等于句柄可控。跨 Leader 用 read_project_team_takeover 返回原 Leader 入口；宿主不能转移原生父关系，不能改 owner 冒充移交。
 - 搜索用 query_team_tasks，后续页传 nextCursor；版本或筛选改变须从首页重查。export_team_report 只导出公开数据。校验分卷保留总历史，当前未完成任务 40/成员 8 是调度限制。0.9.0 首次写入旧团队备份原文并拒绝旧连接写入；不要降级、删除分卷或因旧连接报错重建业务团队。安装版本和驻留连接版本分别核对。
+
+## 0.10.0 质量合同与成员生命周期
+
+新计划可声明 goalCriteria [{id,description}]，任务用 contract {stage,inScope,outOfScope,verify,coverageOf} 关联目标与检查。stage 为 requirements/implementation/verification/review/repair/integration；仍用 kind=work/review 保持独立审查。合同任务必须有 acceptanceCriteria；实施/修复的 inScope 不得超出成员 writeScopes，execute 模式须声明验证命令，source-only 不得宣称执行命令。已登记需求阶段全部独立验收后才能派发其他合同工作。目标覆盖仅核对已声明条目，不能替代 Leader 从用户需求判断是否遗漏。
+
+合同工作交付 JSON：attemptMarker、summary、changedPaths、acceptanceResults [{criterionId,status,evidence}]、commandsRun、limitations。每个验收 ID 都要有实际结果；verify 的原样命令必须通过宿主命令工具执行，模型写在 commandsRun 中不能算成功。失败/未运行结果可提交供审查，但不能接受。范围核对的是申报路径，Leader 仍须检查实际 diff，特别是共享目录里的并发修改。
+
+configure_team_policy 可设置 autoRepair=true、maxReviewRounds=3（含首次审查，1–10）。仅在 Leader 接收并确认结构化 rework 后创建修复与不同成员的复审，不自动启动模型。原任务/审查置为被替代的历史，supersededBy 指向新任务，下游依赖指向新修复/复审；旧证据不作废删除。findings 用稳定 id/severity/status/description；resolved 还须 resolutionEvidence。严重问题不能遗漏或降低严重度绕过，独立复审必须按同一 ID 明确关闭。轮次超限暂停并升级给 Leader；不要用改派重置 attempts 或自动无限返工。
+
+reassign_team_task 用 taskId/memberId/note/稳定 requestId 改派 waiting/blocked 任务。running 先停止并 settle；submitted/accepted 先显式 rework。原执行身份固化到 attempt.memberId，原消息、检查点和用量保持归属；旧结果不能接收到新轮次。改派不复制或合并旧 worktree 修改，必要时先由 Leader 核对交接与候选。remove_team_member 只移除无未完成任务且宿主最新轮次确认空闲的成员，不删除原生线程或历史。移除释放活跃岗位名额（最多 8），旧 ID 不复用；不能给移除岗位分配任务或继续发送协调消息。升级后重启宿主再控制团队，勿让旧驻留连接操作新版状态。

@@ -8,11 +8,13 @@ import {validateCheckpoints} from './team-checkpoints.mjs';
 import {validateRoster,requiredRosterMembers} from './team-roster.mjs';
 import {TeamArchive} from './team-archive.mjs';
 import {TeamDocument} from './team-document.mjs';
+import {validateQualityPlan,qualityBlockers} from './team-quality.mjs';
 const now=()=>new Date().toISOString();
 const allowedStatuses=new Set(['waiting','ready','running','submitted','accepted','blocked','cancelled']);
 
-export function validatePlan({members,tasks}) {
-  if(!Array.isArray(members)||members.length<1||members.length>8) throw new Error('A team plan needs 1–8 role-specific members');
+export function validatePlan(plan) {
+  const {members,tasks}=plan;
+  if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
   if(!Array.isArray(tasks)||tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
   const memberIds=new Set();
   for(const m of members){
@@ -26,6 +28,7 @@ export function validatePlan({members,tasks}) {
     if(!t||typeof t.id!=='string'||!t.id||taskIds.has(t.id)) throw new Error('Task IDs must be unique'); taskIds.add(t.id);
     for(const f of ['title','goal','acceptance']) if(typeof t[f]!=='string'||!t[f].trim()) throw new Error(`Task ${f} is required`);
     if(!memberIds.has(t.memberId)) throw new Error(`Task ${t.id} has no valid member`);
+    if(members.find(m=>m.id===t.memberId).removedAt&&!['accepted','cancelled'].includes(t.status))throw new Error('Unfinished tasks cannot belong to removed members');
     if(t.validationMode!==undefined&&!['execute','source-only'].includes(t.validationMode))throw new Error('Invalid task validation mode');
     if(t.acceptanceCriteria!==undefined&&(!Array.isArray(t.acceptanceCriteria)||!t.acceptanceCriteria.length||t.acceptanceCriteria.length>30||t.acceptanceCriteria.some(c=>!c||typeof c.id!=='string'||!c.id.trim()||typeof c.description!=='string'||!c.description.trim())||new Set(t.acceptanceCriteria.map(c=>c.id)).size!==t.acceptanceCriteria.length))throw new Error('Acceptance criteria need unique IDs and descriptions');
     if(t.timeoutSeconds!==undefined&&(!Number.isInteger(t.timeoutSeconds)||t.timeoutSeconds<60||t.timeoutSeconds>7200))throw new Error('Task timeout must be 60–7200 seconds');
@@ -45,6 +48,7 @@ export function validatePlan({members,tasks}) {
   const visiting=new Set(),visited=new Set(),byId=new Map(tasks.map(t=>[t.id,t]));
   function visit(id){if(visiting.has(id))throw new Error('Task dependencies contain a cycle');if(visited.has(id))return;visiting.add(id);for(const d of byId.get(id).dependencies)visit(d.taskId);visiting.delete(id);visited.add(id);}
   for(const t of tasks)visit(t.id);
+  validateQualityPlan(plan);
   return true;
 }
 
@@ -55,7 +59,8 @@ export function createTeam({projectId,projectPath,goal,plan,maxParallel=3}) {
   if(!Number.isInteger(maxParallel)||maxParallel<1||maxParallel>8)throw new Error('Parallel member limit must be 1–8');
   const time=now(),members=plan.members.map(m=>({...structuredClone(m),status:'planned',agentThreadId:null,lastActivityAt:time}));
   return {id:randomUUID(),projectId,projectPath,goal:goal.trim(),state:'planned',dispatchPaused:false,maxParallel,
-    createdAt:time,updatedAt:time,members,tasks:plan.tasks.map(t=>({...structuredClone(t),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:time,updatedAt:time})),events:[{at:time,type:'team-planned'}]};
+    ...(plan.goalCriteria||plan.tasks.some(t=>t.contract)?{requiresTeamWorkspaceVersion:'0.10.0'}:{}),
+    ...(plan.goalCriteria?{goalCriteria:structuredClone(plan.goalCriteria)}:{}),createdAt:time,updatedAt:time,members,tasks:plan.tasks.map(t=>({...structuredClone(t),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:time,updatedAt:time})),events:[{at:time,type:'team-planned'}]};
 }
 
 function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.events.push({at,type,...details});if(team.mode!=='host-leader')team.events=team.events.slice(-500);}
@@ -68,6 +73,7 @@ export function dispatchBlockers(team,task){
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
   if(requiredRosterMembers(team,[task.id]).some(m=>!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
+  reasons.push(...qualityBlockers(team,task));
   if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
   for(const d of task.dependencies){const pre=team.tasks.find(t=>t.id===d.taskId);if(!(d.when==='submitted'?['submitted','accepted'].includes(pre?.status):pre?.status==='accepted'))add('dependency',`等待 ${d.taskId} ${d.when==='accepted'?'验收':'提交'}`,d.taskId);}
   const member=team.members.find(m=>m.id===task.memberId),active=team.tasks.filter(t=>t.status==='running'&&t.id!==task.id);
@@ -93,7 +99,7 @@ export function schedule(team){
     if(selected.length>=slots)break;
     const member=team.members.find(m=>m.id===task.memberId);
     if(dispatchBlockers(team,task).length)continue;
-    const attempt={id:randomUUID(),number:task.attempt+1,state:'running',agentThreadId:null,startedAt:now(),endedAt:null,summary:null,
+    const attempt={id:randomUUID(),memberId:task.memberId,number:task.attempt+1,state:'running',agentThreadId:null,startedAt:now(),endedAt:null,summary:null,
       dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null}))};
     task.attempt++;task.status='running';task.blockReason=null;task.attempts.push(attempt);task.updatedAt=now();
     member.status='starting';member.lastActivityAt=now();selected.push(task);addEvent(team,'task-dispatched',{taskId:task.id,attemptId:attempt.id,memberId:member.id});
@@ -122,14 +128,14 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&team.requiresTeamWorkspaceVersion!=='0.10.0')throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}
   ownerId(hostThreadId){if(typeof hostThreadId!=='string'||!hostThreadId)throw new Error('Current Desktop conversation is required');return createHash('sha256').update(hostThreadId).digest('hex');}
   path(id){if(!/^[0-9a-f-]{36}$/i.test(id))throw new Error('Invalid team ID');return join(this.root,`${id}.json`);}
   document(id){return new TeamDocument(this.path(id),this.archive,validateTeam);}
-  async create(input,owner){const team=createTeam(input);team.ownerId=owner;team.revision=1;await this.document(team.id).transaction(d=>{if(d.id)throw new Error('Team already exists');Object.assign(d,team);});return team;}
+  async create(input,owner){const team=createTeam(input);team.ownerId=owner;team.revision=1;const saved=team.requiresTeamWorkspaceVersion?await this.archive.compact(team):team;await this.document(team.id).transaction(d=>{if(d.id)throw new Error('Team already exists');Object.assign(d,saved);});return team;}
   async get(id,owner){const saved=await this.document(id).read();if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');const team=await this.archive.hydrate(saved);validateTeam(team);return team;}
   async list(owner){let names;try{names=await readdir(this.root);}catch(e){if(e.code==='ENOENT')return[];throw e;}const rows=[];const ids=[...new Set(names.filter(n=>/^[0-9a-f-]{36}(?:\.v2)?\.json$/i.test(n)).map(n=>n.replace(/(?:\.v2)?\.json$/,'')))];for(const tid of ids){const saved=await this.document(tid).read();if(saved.ownerId===owner){const row=await this.archive.hydrate(saved);validateTeam(row);rows.push(row);}}return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
   async update(id,owner,expectedRevision,mutate){return this.document(id).transaction(async saved=>{if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');if(saved.revision!==expectedRevision)throw new Error('Team changed in another Desktop window; refresh the board before retrying');const team=await this.archive.hydrate(structuredClone(saved));validateTeam(team);const result=await mutate(team);team.revision++;team.updatedAt=now();validateTeam(team);const compact=await this.archive.compact(team);for(const key of Object.keys(saved))delete saved[key];Object.assign(saved,compact);return{team,result};});}

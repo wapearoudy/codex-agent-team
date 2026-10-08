@@ -40,7 +40,7 @@ export function recordCheckpoint(team,input){
 }
 
 export function checkpointProjection(team){
-  return (team.checkpoints??[]).map(c=>({...structuredClone(c),stale:team.tasks.find(t=>t.id===c.taskId)?.attempts.at(-1)?.id!==c.attemptId}));
+  return (team.checkpoints??[]).map(c=>{const task=team.tasks.find(t=>t.id===c.taskId);return {...structuredClone(c),stale:task?.attempts.at(-1)?.id!==c.attemptId||task?.memberId!==c.memberId};});
 }
 
 export function buildHandoff(team,taskId){
@@ -49,7 +49,7 @@ export function buildHandoff(team,taskId){
   const member=team.members.find(m=>m.id===task.memberId);
   const checkpoint=checkpointProjection(team).filter(c=>c.taskId===taskId).at(-1)??null;
   return structuredClone({source:'leader-recorded',teamGoal:team.goal??'',taskId:task.id,title:task.title??'',goal:task.goal??'',context:task.context??'',acceptance:task.acceptance??'',acceptanceCriteria:task.acceptanceCriteria??[],status:task.status,attemptId:task.attempts.at(-1)?.id??null,
-    member:{id:task.memberId,role:member?.role??'',responsibility:member?.responsibility??'',writeScopes:member?.writeScopes??[]},
+    contract:task.contract??null,repairFindingIds:task.repairFindingIds??[],member:{id:task.memberId,role:member?.role??'',responsibility:member?.responsibility??'',writeScopes:member?.writeScopes??[]},
     dependencies:(task.dependencies??[]).map(d=>{
       const upstream=team.tasks.find(t=>t.id===d.taskId),attemptId=upstream?.attempts.at(-1)?.id??null;
       return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,candidate:upstream?.attempts.at(-1)?.candidate??null,workspace:team.members.find(m=>m.id===upstream?.memberId)?.workspace??null,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};
@@ -66,7 +66,7 @@ export function validateCheckpoints(team){
     const data=normalized(c);
     if(requests.has(data.requestId)||JSON.stringify(data)!==JSON.stringify({taskId:c.taskId,attemptId:c.attemptId,requestId:c.requestId,summary:c.summary,decisions:c.decisions,remainingWork:c.remainingWork,validation:c.validation,evidence:c.evidence}))throw new Error('Invalid checkpoint normalized payload');
     const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.find(a=>a.id===c.attemptId);
-    if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||attempt.turnId!==c.turnId||task.memberId!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
+    if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||attempt.turnId!==c.turnId||(attempt.memberId??task.memberId)!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
     ids.add(c.id.toLowerCase());requests.add(data.requestId);
   }
 }

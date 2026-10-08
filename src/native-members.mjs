@@ -14,7 +14,7 @@ export class NativeMembers {
     if(thread.id!==threadId||parent!==leaderThreadId||await realpath(thread.cwd)!==await realpath(cwd))throw new Error('Historical usage identity mismatch');
     return Promise.all(turnIds.map(async turnId=>({turnId,usage:(await this.publicFeed.read(thread,turnId)).usage})));
   }
-  async inspect(leaderThreadId,cwd,threadId,marker,{allowPending=false}={}){
+  async inspect(leaderThreadId,cwd,threadId,marker,{allowPending=false,requireIdle=false}={}){
     const rpc=await this.connect();
       let agentPath=null;
       if(threadId.startsWith('/')){
@@ -33,6 +33,11 @@ export class NativeMembers {
       agentPath??=recordedPath??null;
       const response=await rpc.call('thread/read',{threadId,includeTurns:true});
       const turns=response.thread?.turns??[];
+      if(requireIdle){
+        const latest=turns.at(-1);
+        const status=latest?.status==='interrupted'?(await this.lifecycleReader(thread,latest.id))?.status:latest?.status;
+        if(!latest||!['completed','failed','interrupted'].includes(status))throw new Error('Native member is not confirmed idle; stop and settle the latest host turn before changing ownership');
+      }
       // A reused member must have received THIS attempt, not merely finished an old task.
       // Some hosts encrypt collaboration input and omit it from thread/read. A public
       // acknowledgement ties the opaque prompt to this attempt without decrypting it.

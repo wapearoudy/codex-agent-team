@@ -23,14 +23,15 @@ export function taskDisplayState(task,runs=[]){
   return task.status;
 }
 export function memberExecutions(member,tasks,runs){
-  return tasks.filter(t=>t.memberId===member.id).flatMap(task=>(task.attempts??[]).map(attempt=>{
+  return tasks.flatMap(task=>(task.attempts??[]).filter(a=>(a.memberId??task.memberId)===member.id).map(attempt=>{
     const run=runs.find(r=>r.attemptId===attempt.id&&r.taskId===task.id&&r.memberId===member.id);
     return {taskId:task.id,attemptId:attempt.id,number:attempt.number,threadId:run?.threadId??attempt.agentThreadId,
       turnId:run?.turnId??attempt.turnId,model:run?.model??null,status:run?.status==='inProgress'&&run?.statusEvidence?.freshUntil&&Date.parse(run.statusEvidence.freshUntil)<=Date.now()?'unknown':run?.status??attempt.runtimeStatus??'unknown',
-      connection:run?.connection??attempt.connection,active:runIsActive(run),current:task.attempts.at(-1).id===attempt.id,startedAt:attempt.startedAt,endedAt:attempt.endedAt};
+      connection:run?.connection??attempt.connection,active:task.memberId===member.id&&task.status==='running'&&runIsActive(run),current:task.memberId===member.id&&task.attempts.at(-1).id===attempt.id,startedAt:attempt.startedAt,endedAt:attempt.endedAt};
   }));
 }
 export function memberState(member,tasks,runs){
+  if(member.removedAt)return 'removed';
   const assigned=tasks.filter(t=>t.memberId===member.id);
   const current=memberExecutions(member,tasks,runs).filter(e=>e.current&&assigned.some(t=>t.id===e.taskId&&t.status==='running'));
   if(assigned.some(t=>t.status==='running'&&t.attempts.at(-1)?.state==='reserved'))return 'reserved';
@@ -63,6 +64,7 @@ export function taskRelationships(team,task){
   }),downstream:team.tasks.filter(t=>t.dependencies.some(d=>d.taskId===task.id)).map(t=>{const member=team.members.find(m=>m.id===t.memberId);return {id:t.id,title:t.title,memberLabel:member?memberName(team,member):'未分配',when:t.dependencies.find(d=>d.taskId===task.id).when};})};
 }
 export function memberWorkSummary(team,member,runs,readiness=[]){
+  if(member.removedAt)return {taskId:null,kind:'removed',text:'岗位已移除，执行历史保留'};
   const tasks=team.tasks.filter(t=>t.memberId===member.id),running=tasks.find(t=>t.status==='running');
   if(running)return {taskId:running.id,kind:taskDisplayState(running,runs),text:running.title};
   const submitted=tasks.find(t=>t.status==='submitted');if(submitted)return {taskId:submitted.id,kind:'submitted',text:'已交付，等待独立审查和验收'};

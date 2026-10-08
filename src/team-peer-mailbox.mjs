@@ -2,9 +2,9 @@ import {randomUUID} from 'node:crypto';
 
 export function queuePeerMessage(team,{senderMemberId,senderThreadId,attemptId,toMemberId,text,requestId}) {
   const sender=team.members.find(m=>m.id===senderMemberId);
-  if(!sender||sender.agentThreadId!==senderThreadId)throw new Error('Only the authenticated current member attempt may send');
+  if(!sender||sender.removedAt||sender.agentThreadId!==senderThreadId)throw new Error('Only the authenticated current member attempt may send');
   const recipient=toMemberId==='leader'?null:team.members.find(m=>m.id===toMemberId);
-  if(toMemberId!=='leader'&&(!recipient?.agentThreadId||recipient.id===sender.id))throw new Error('Recipient must be a different bound team member or leader');
+  if(toMemberId!=='leader'&&(!recipient?.agentThreadId||recipient.removedAt||recipient.id===sender.id))throw new Error('Recipient must be a different active bound team member or leader');
   if(typeof text!=='string'||!text.trim()||text.length>4000||!/^[a-f0-9-]{36}$/i.test(requestId))throw new Error('A message and stable request ID are required');
   const payload={senderMemberId,senderThreadId,attemptId,toMemberId,text:text.trim(),requestId};
   team.peerMessages??=[];const prior=team.peerMessages.find(m=>m.requestId===requestId);
@@ -28,7 +28,7 @@ export function acknowledgePeerMessage(team,{messageId,threadId,turnId,attemptId
   m.status='acknowledged';m.acknowledgedTurnId=turnId??null;m.events.push({at:new Date().toISOString(),source:threadId===team.leaderThreadId?'authenticated-leader-inbox':'authenticated-recipient',turnId:turnId??null,status:'acknowledged'});return m;
 }
 export function peerActions(team) {
-  return (team.peerMessages??[]).filter(m=>m.status==='queued').map(m=>({messageId:m.id,threadId:m.recipientThreadId,agentPath:team.members.find(x=>x.agentThreadId===m.recipientThreadId)?.agentPath??null,
+  return (team.peerMessages??[]).filter(m=>m.status==='queued'&&team.tasks.some(t=>t.id===m.taskId&&t.status==='running'&&t.memberId===m.senderMemberId&&t.attempts.at(-1)?.id===m.attemptId)&&(m.toMemberId==='leader'||team.members.some(x=>x.id===m.toMemberId&&!x.removedAt&&x.agentThreadId===m.recipientThreadId))).map(m=>({messageId:m.id,threadId:m.recipientThreadId,agentPath:team.members.find(x=>x.agentThreadId===m.recipientThreadId)?.agentPath??null,
     text:m.marker+'\nFrom '+m.senderMemberId+': '+m.text+'\nRead your team inbox and acknowledge this exact message ID.',action:m.toMemberId==='leader'?'leader-inbox':'send-native-message',note:'Leader controls delivery; reading this queue never sends or retries a message.'}));
 }
 export function recordPeerDelivery(team,{messageId,status,note,source='leader-host-tool'}) {

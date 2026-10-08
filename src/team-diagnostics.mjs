@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {qualityReport} from './team-quality.mjs';
 
 const elapsed=(a,b)=>{const n=Date.parse(b)-Date.parse(a);return Number.isFinite(n)&&n>=0?n:null;};
 export function taskQuery(team,{query='',status,memberId,offset=0,limit=50,cursor}={}) {
@@ -21,13 +22,18 @@ export function diagnostics(team,runs=[]) {
 }
 export function exportTeam(team,{format='markdown',runs=[],usage=null}={}) {
   if(!['markdown','json'].includes(format))throw new Error('Unsupported report format');
-  const data={schemaVersion:1,team,publicRuns:runs,usage,diagnostics:diagnostics(team,runs)};
+  const quality=qualityReport(team),data={schemaVersion:1,team,publicRuns:runs,usage,quality,diagnostics:diagnostics(team,runs)};
   const text=format==='json'?JSON.stringify(data,null,2):[
     '# '+team.projectPath.split(/[\\/]/).at(-1)+' · 团队报告',
     '团队：'+team.id+' · 版本：'+team.revision,'',
     ...team.tasks.flatMap((t,i)=>['## t'+(t.number??i+1)+' · '+t.title,'状态：'+t.status+' · 成员：'+t.memberId,'',t.goal??'','',
       '验收：'+(t.acceptance??''),...(t.acceptanceCriteria??[]).map(c=>'- '+c.id+'：'+c.description),
+      ...(t.contract?['阶段：'+t.contract.stage+'；写入范围：'+(t.contract.inScope??[]).join(', ')+'；排除范围：'+(t.contract.outOfScope??[]).join(', '),'验证命令：'+(t.contract.verify??[]).join(' / ')]:[]),
+      ...(t.supersededBy?['修复替代：'+t.supersededBy]:[]),
+      ...(t.attempts??[]).map(a=>'执行第 '+a.number+' 轮：'+(a.memberId??t.memberId)+' · '+a.id),
       ...(t.evidence??[]).map(e=>'\n交付：\n'+(e.summary??'')),'']),
+    '## 质量与目标覆盖',...quality.coverage.map(c=>'- '+c.id+'：'+c.description+' · '+c.status+' · '+c.taskIds.join(', ')),
+    ...(team.findings??[]).map(f=>'- '+f.id+' · '+f.severity+' · '+f.status+'：'+f.description+(f.resolutionEvidence?'；关闭证据：'+f.resolutionEvidence:'')),
     '## 用量','已观察 token：'+(usage?.totalTokens??'未知')+'；未提供用量的执行：'+(usage?.unknownAttempts??'未知')
   ].join('\n');
   return {format,mimeType:format==='json'?'application/json':'text/markdown',filename:'team-report.'+(format==='json'?'json':'md'),text,sha256:createHash('sha256').update(text).digest('hex'),scope:'public-task-records-only'};
