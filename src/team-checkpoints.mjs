@@ -23,7 +23,7 @@ function normalized(input){
 }
 function payload(record){return normalized(record);}
 
-export function recordCheckpoint(team,input){
+export function recordCheckpoint(team,input,{source='leader-recorded'}={}){
   const data=normalized(input);
   validateCheckpoints(team);
   const prior=team.checkpoints?.find(c=>c.requestId===data.requestId);
@@ -34,13 +34,13 @@ export function recordCheckpoint(team,input){
   const task=team.tasks.find(t=>t.id===data.taskId),attempt=task?.attempts.at(-1),member=team.members.find(m=>m.id===task?.memberId);
   if(team.mode!=='host-leader'||team.state==='delivered'||!['running','submitted'].includes(task?.status)||!attempt?.agentThreadId||!attempt.turnId||!member)throw new Error('Checkpoint requires a bound active native attempt');
   if(attempt.id!==data.attemptId)throw new Error('Stale checkpoint attempt');
-  const checkpoint={...data,id:randomUUID(),memberId:member.id,threadId:attempt.agentThreadId,turnId:attempt.turnId,source:'leader-recorded',createdAt:new Date().toISOString()};
+  const checkpoint={...data,contractRevision:task.contractRevision??1,id:randomUUID(),memberId:member.id,threadId:attempt.agentThreadId,turnId:attempt.turnId,source,createdAt:new Date().toISOString()};
   (team.checkpoints??=[]).push(checkpoint);
   return structuredClone(checkpoint);
 }
 
 export function checkpointProjection(team){
-  return (team.checkpoints??[]).map(c=>{const task=team.tasks.find(t=>t.id===c.taskId);return {...structuredClone(c),stale:task?.attempts.at(-1)?.id!==c.attemptId||task?.memberId!==c.memberId};});
+  return (team.checkpoints??[]).map(c=>{const task=team.tasks.find(t=>t.id===c.taskId);return {...structuredClone(c),stale:task?.attempts.at(-1)?.id!==c.attemptId||task?.memberId!==c.memberId||(c.contractRevision??1)!==(task?.contractRevision??1)};});
 }
 
 export function buildHandoff(team,taskId){
@@ -62,7 +62,7 @@ export function validateCheckpoints(team){
   if(team.mode!=='host-leader'&&team.checkpoints.length)throw new Error('Checkpoints require host-leader mode');
   const ids=new Set(),requests=new Set();
   for(const c of team.checkpoints){
-    if(!c||typeof c.id!=='string'||!UUID.test(c.id)||ids.has(c.id.toLowerCase())||c.source!=='leader-recorded'||typeof c.createdAt!=='string'||!Number.isFinite(Date.parse(c.createdAt)))throw new Error('Invalid checkpoint record');
+    if(!c||typeof c.id!=='string'||!UUID.test(c.id)||ids.has(c.id.toLowerCase())||!['leader-recorded','authenticated-member'].includes(c.source)||typeof c.createdAt!=='string'||!Number.isFinite(Date.parse(c.createdAt)))throw new Error('Invalid checkpoint record');
     const data=normalized(c);
     if(requests.has(data.requestId)||JSON.stringify(data)!==JSON.stringify({taskId:c.taskId,attemptId:c.attemptId,requestId:c.requestId,summary:c.summary,decisions:c.decisions,remainingWork:c.remainingWork,validation:c.validation,evidence:c.evidence}))throw new Error('Invalid checkpoint normalized payload');
     const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.find(a=>a.id===c.attemptId);

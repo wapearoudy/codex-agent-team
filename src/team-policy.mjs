@@ -1,6 +1,6 @@
 import {join} from 'node:path';
 import {DurableStore} from './durable-store.mjs';
-import {validatePlan} from './team.mjs';
+import {validatePlan,validateMembers} from './team.mjs';
 
 export function normalizePolicy(input={}) {
   const tokenLimit=input.tokenLimit??null,contextChars=input.contextChars??24000,maxAttempts=input.maxAttempts??3;
@@ -46,12 +46,13 @@ export function compactHandoff(handoff,{contextChars=24000}={}) {
 }
 export class TeamProfiles {
   constructor(root){this.store=new DurableStore(join(root,'profiles.json'),{profiles:{}});}
-  async save(name,plan,policy={},note='') {
+  async save(name,plan,policy={},note='',{taskPlanning='seed',constraints=''}={}) {
     if(!/^[a-zA-Z0-9_-]{1,64}$/.test(name))throw new Error('Invalid profile name');
     if(!Array.isArray(plan.members)||!plan.members.length)throw new Error('A profile needs a roster');
-    validatePlan(plan);
-    const value={name,plan:structuredClone(plan),policy:normalizePolicy(policy),note:String(note).slice(0,2000),updatedAt:new Date().toISOString()};
+    if(!['seed','leader'].includes(taskPlanning))throw new Error('Invalid profile task planning mode');
+    if(taskPlanning==='leader'){validateMembers(plan.members);if(plan.tasks?.length)throw new Error('A leader-planned profile stores roles and constraints, not a fixed DAG');}else validatePlan(plan);
+    const value={name,taskPlanning,constraints:String(constraints).slice(0,6000),plan:structuredClone(plan),policy:normalizePolicy(policy),note:String(note).slice(0,2000),updatedAt:new Date().toISOString()};
     await this.store.transaction(d=>{d.profiles[name]=value;});return value;
   }
-  async read(name){const d=await this.store.read();if(name){if(!d.profiles[name])throw new Error('Profile not found');return d.profiles[name];}return Object.values(d.profiles).map(({name,note,updatedAt,plan})=>({name,note,updatedAt,members:plan.members.length}));}
+  async read(name){const d=await this.store.read();if(name){if(!d.profiles[name])throw new Error('Profile not found');return d.profiles[name];}return Object.values(d.profiles).map(({name,note,updatedAt,plan,taskPlanning})=>({name,note,updatedAt,taskPlanning:taskPlanning??'seed',members:plan.members.length}));}
 }

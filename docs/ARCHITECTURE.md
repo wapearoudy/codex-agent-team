@@ -17,6 +17,9 @@
 | `src/team-peer-mailbox.mjs`、`src/team-recovery.mjs` | 任务限定的成员收件箱、恢复交接与真实控制回执 |
 | `src/team-policy.mjs`、`src/team-workflow.mjs` | 模板/路由/预算/摘要与有上限的 Leader 动作建议 |
 | `src/team-worktrees.mjs` | 可选 Git 隔离、操作日志、验收提交绑定及暂存集成 |
+| `src/team-control.mjs`、`src/team-version.mjs` | 停止请求、最新宿主终态核实、明确恢复及最低读取版本 |
+| `src/team-contracts.mjs` | 合同修订审计、版本与旧证据失效、通过合同冻结 |
+| `src/model-catalog.mjs`、`src/member-work.mjs` | 宿主模型目录/档位验证与成员自身任务权限 |
 | `src/team-diagnostics.mjs` | 版本绑定分页、公开报告与原始时间诊断 |
 | `src/team-document.mjs`、`src/team-archive.mjs` | v2 事务、旧写入保护、原始备份、不可变校验分卷 |
 
@@ -31,3 +34,5 @@
 0.9 系列在事务内保存 worktree 候选提交；审查接受和集成必须核对该提交，验收后的额外修改不能沿用旧结论。Git 副作用的操作日志独立落盘，记录提交失败时通过身份/HEAD/索引核对既有结果，不重复合并。
 
 分卷先写入并同步，再提交清单；固定段边界避免每次追加都生成历史尾卷。业务读取仍完整还原并验证团队，以保留依赖、attempt、requestId 去重和旧证据语义。summary 返回未完成及最近已完成任务，其他历史按任务检索；这不是无限历史常数内存承诺。
+
+0.12 新计划默认按需启动：岗位先登记，首项任务就绪后才由 Leader 以任务交接包创建原生成员；原有团队保留初始化方式。停止使用 stopping/halted，与独立审查升级分开；停止核实必须检查宿主最新轮次，不能用旧初始化的 completed 冒充空闲。成员报告保存来源与原始草稿，只有真实宿主终态接收才产生 submitted，独立审查和最终验收保持 Leader 权限。

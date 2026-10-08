@@ -33,10 +33,12 @@ export class NativeMembers {
       agentPath??=recordedPath??null;
       const response=await rpc.call('thread/read',{threadId,includeTurns:true});
       const turns=response.thread?.turns??[];
+      let quiescence;
       if(requireIdle){
         const latest=turns.at(-1);
         const status=latest?.status==='interrupted'?(await this.lifecycleReader(thread,latest.id))?.status:latest?.status;
         if(!latest||!['completed','failed','interrupted'].includes(status))throw new Error('Native member is not confirmed idle; stop and settle the latest host turn before changing ownership');
+        quiescence={turnId:latest.id,status,source:'native-latest-turn'};
       }
       // A reused member must have received THIS attempt, not merely finished an old task.
       // Some hosts encrypt collaboration input and omit it from thread/read. A public
@@ -44,7 +46,7 @@ export class NativeMembers {
       const ack=i=>i.type==='agentMessage'&&typeof i.text==='string'&&(i.text.trim()===marker||i.text.split(/\r?\n/)[0].trim()===marker||(()=>{try{return JSON.parse(i.text).attemptMarker===marker;}catch{return false;}})());
       const prompt=t=>t.items?.some(i=>i.type==='userMessage'&&i.content?.some(c=>c.type==='text'&&c.text?.includes(marker)));
       const matching=turns.filter(t=>prompt(t)||t.items?.some(ack));
-      if(!matching.length&&allowPending)return {threadId,agentPath,turnId:null,status:'starting',outputs:[],commands:[],messageAcknowledgements:[],attemptIdentitySource:'awaiting-public-member-acknowledgement',observedAt:new Date().toISOString(),source:'native-child-metadata',connection:'snapshot',parentThreadId:parent};
+      if(!matching.length&&allowPending)return {threadId,agentPath,quiescence,turnId:null,status:'starting',outputs:[],commands:[],messageAcknowledgements:[],attemptIdentitySource:'awaiting-public-member-acknowledgement',observedAt:new Date().toISOString(),source:'native-child-metadata',connection:'snapshot',parentThreadId:parent};
       if(matching.length!==1)throw new Error('Attempt identity is not uniquely visible in the native member history; member must publicly acknowledge the exact marker. Retry observation without respawning');
       const turn=matching[0];
       let status=turn.status,statusEvidence=null;
@@ -57,7 +59,7 @@ export class NativeMembers {
       let activity;try{activity=await this.publicFeed.read(thread,turn.id);}catch(error){activity={events:[],cursor:0,usage:null,source:'unavailable',error:error.message};}
       const progress=turn.items.filter(i=>i.type==='agentMessage'&&i.phase==='commentary'&&typeof i.text==='string'&&!i.text.trim().startsWith('TEAM_WORKSPACE_')).slice(-5).map(i=>({text:i.text.slice(-4000),turnId:turn.id}));
       const messageAcknowledgements=[...new Set(turn.items.filter(i=>i.type==='agentMessage'&&typeof i.text==='string').flatMap(i=>i.text.split(/\r?\n/).map(s=>s.trim()).filter(s=>/^TEAM_WORKSPACE_MESSAGE:[0-9a-f-]{36}$/i.test(s))))];
-      return {threadId,agentPath,turnId:turn.id,status,statusEvidence,model:thread.model??null,outputs,commands,progress,activity,usage:activity.usage??null,
+      return {threadId,agentPath,quiescence,turnId:turn.id,status,statusEvidence,model:thread.model??null,outputs,commands,progress,activity,usage:activity.usage??null,
         messageAcknowledgements,
         attemptIdentitySource:prompt(turn)?'native-user-message':'public-member-acknowledgement',
         observedAt:new Date().toISOString(),source:'native-thread-persisted-snapshot',connection:'snapshot',

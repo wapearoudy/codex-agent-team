@@ -8,10 +8,13 @@ export function setupTeamView(app){
   let current=null,linked=false,timer=null,expiryTimer=null,loading=false,lastDiscovery=0,connectionGeneration=0,selectionGeneration=0;
   let detailsRequest=null,detailsWanted=null,polling=null,wakeRequested=false,navigationRead=null,targetTeamId=null;
   let ui={},storageKey='',preview=null,hoverTimer=null,navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
+  let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',controlBusy=false;
   let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='';
   const label=s=>labels[s]??s;
   const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const button=(text,action,cls,key)=>{const b=node('button',text,cls);b.type='button';b.onclick=action;if(key)b.dataset.focusKey=key;return b;};
+  if($('teamStop'))$('teamStop').onclick=()=>void controlTeam('stop');
+  if($('teamResume'))$('teamResume').onclick=()=>void controlTeam('resume');
   const selectedTask=()=>current?.team.tasks.find(t=>t.id===ui.taskId);
   const selectedMember=()=>current?.team.members.find(m=>m.id===ui.memberId);
   const taskState=t=>taskDisplayState(t,current?.runs??[]);
@@ -59,20 +62,55 @@ export function setupTeamView(app){
   }
   function renderPlanDocument(){
     const box=$('planReviewContent');box.replaceChildren();const doc=planDocument,c=doc.configuration,pending=doc.review.status==='pending',initial=doc.review.scope==='initial';
-    const members=initial?c.plan.members:c.members??[],tasks=initial?c.plan.tasks:c.tasks??[];
-    const markDirty=()=>{planDirty=true;$('planApprove').disabled=true;$('planSave').disabled=false;planStatus('修改尚未保存；保存后将生成新的待确认版本。');};
-    const field=(parent,title,value,set,multiline=false)=>{const label=node('label',title),input=node(multiline?'textarea':'input');input.value=value??'';input.disabled=!pending;input.setAttribute('aria-label',title);input.oninput=()=>{set(input.value);const json=$('planJson');if(json)json.value=JSON.stringify(c,null,2);markDirty();};label.append(input);parent.append(label);return input;};
-    if(initial)field(box,'任务目标',c.goal,value=>c.goal=value,true);
-    box.append(node('p',members.length+' 个'+(initial?'岗位':'新增岗位')+' · '+tasks.length+' 项'+(initial?'任务':'新增任务')+' · '+(c.maxParallel?'最多 '+c.maxParallel+' 人并发':'沿用现有并发')));
-    box.append(node('p','Token 预算：'+(c.policy?.tokenLimit??'未设置上限')+'；费用随实际模型和执行量变化。','muted'));
-    if(!initial&&doc.review.brief)box.append(node('p','变更说明：'+doc.review.brief));
-    const roles=node('details');roles.append(node('summary','岗位、职责与模型 · '+members.length));const rolesBox=node('div',undefined,'plan-items');roles.append(rolesBox);box.append(roles);
-    for(const m of members){const row=node('div',undefined,'plan-item');row.append(node('strong',m.id));field(row,'岗位 '+m.id,m.role,value=>m.role=value);field(row,'职责 '+m.id,m.responsibility,value=>m.responsibility=value,true);field(row,'设置理由 '+m.id,m.reason,value=>m.reason=value,true);field(row,'写入范围 '+m.id,(m.writeScopes??[]).join('\n'),value=>m.writeScopes=value.split('\n').map(s=>s.trim()).filter(Boolean),true);row.append(node('p','模型：'+(m.route?.model??'宿主默认')+' · 思考强度：'+(m.route?.reasoningEffort??'宿主默认'),'muted'));rolesBox.append(row);}
-    const jobs=node('details');jobs.append(node('summary','交付、验收与依赖 · '+tasks.length));const jobsBox=node('div',undefined,'plan-items');jobs.append(jobsBox);box.append(jobs);
-    for(const t of tasks){const row=node('div',undefined,'plan-item');row.append(node('strong',t.id+' · '+t.memberId));field(row,'任务名称 '+t.id,t.title,value=>t.title=value);field(row,'任务目标 '+t.id,t.goal,value=>t.goal=value,true);field(row,'验收条件 '+t.id,t.acceptance,value=>t.acceptance=value,true);row.append(node('p','依赖：'+(t.dependencies?.map(d=>d.taskId+' '+d.when).join('；')||'无')));if(t.contract)row.append(node('p','包含：'+t.contract.inScope.join('、')+'；排除：'+t.contract.outOfScope.join('、')+'；验证：'+t.contract.verify.join('；')));jobsBox.append(row);}
-    const advanced=node('details');advanced.append(node('summary','完整配置 · 增删岗位、依赖、模型和预算'));field(advanced,'完整计划 JSON',JSON.stringify(c,null,2),()=>{},true).id='planJson';const json=advanced.querySelector('textarea');json.className='plan-json';json.oninput=markDirty;box.append(advanced);
+    const members=initial?c.plan.members:(c.members??=[]),tasks=initial?c.plan.tasks:(c.tasks??=[]);
+    const roster=()=>initial?members:[...current.team.members,...members],allTasks=()=>initial?tasks:[...current.team.tasks,...tasks];
+    const sync=()=>{const json=$('planJson');if(json)json.value=JSON.stringify(c,null,2);};
+    const markDirty=()=>{planDirty=true;sync();if($('planApprove'))$('planApprove').disabled=true;if($('planSave'))$('planSave').disabled=false;planStatus('修改尚未保存；保存后将生成新的待确认版本。');};
+    const field=(parent,title,value,set,multiline=false)=>{const label=node('label',title),input=node(multiline?'textarea':'input');input.value=value??'';input.disabled=!pending;input.setAttribute('aria-label',title);input.oninput=()=>{set(input.value);markDirty();};label.append(input);parent.append(label);return input;};
+    const select=(parent,title,value,options,set)=>{const label=node('label',title),input=node('select');input.setAttribute('aria-label',title);for(const [v,text] of options){const option=node('option',text);option.value=v;input.append(option);}input.value=value??'';input.disabled=!pending;input.onchange=()=>{set(input.value);markDirty();};label.append(input);parent.append(label);return input;};
+    const number=(parent,title,value,set,min,max)=>{const input=field(parent,title,value,v=>set(v===''?null:Number(v)));input.type='number';if(min!==undefined)input.min=min;if(max!==undefined)input.max=max;return input;};
+    const lines=value=>value.split('\n').map(s=>s.trim()).filter(Boolean);
+    const unique=prefix=>prefix+'_'+crypto.randomUUID().slice(0,8);
+    const change=fn=>{try{fn();markDirty();renderPlanDocument();}catch(e){planStatus(e.message);}};
+    if(initial){field(box,'任务目标',c.goal,value=>c.goal=value,true);select(box,'成员启动方式',c.memberStartup??'eager',[['on-demand','首个任务就绪时创建'],['eager','先初始化全部成员']],v=>c.memberStartup=v);}
+    box.append(node('p',members.length+' 个'+(initial?'岗位':'新增岗位')+' · '+tasks.length+' 项'+(initial?'任务':'新增任务')));
+    const budget=node('details');budget.append(node('summary','并发与执行预算'));box.append(budget);
+    number(budget,'最大并发',c.maxParallel??current.team.maxParallel,v=>c.maxParallel=v,1,8);
+    const policy=c.policy??(c.policy={...current.team.policy});
+    number(budget,'Token 上限（留空表示不限）',policy.tokenLimit,v=>policy.tokenLimit=v,1);
+    number(budget,'交接上下文字符数',policy.contextChars??24000,v=>policy.contextChars=v,4000,100000);
+    number(budget,'每项任务最大尝试次数',policy.maxAttempts??3,v=>policy.maxAttempts=v,1,10);
+    number(budget,'最大审查修复轮数',policy.maxReviewRounds??3,v=>policy.maxReviewRounds=v,1,10);
+    select(budget,'自动生成修复任务',String(policy.autoRepair===true),[['false','关闭'],['true','开启（仍须独立审查）']],v=>policy.autoRepair=v==='true');
+    select(budget,'用量未知时阻止新派发',String(policy.requireKnownUsage===true),[['false','允许，明确保留未知'],['true','阻止']],v=>policy.requireKnownUsage=v==='true');
+    const roles=node('details');roles.open=true;roles.append(node('summary','岗位、职责与模型 · '+members.length));const rolesBox=node('div',undefined,'plan-items');roles.append(rolesBox);box.append(roles);
+    const catalogButton=button(modelCatalogLoading?'读取模型目录中…':'读取宿主模型目录',()=>void loadModelCatalog(),'subtle-button');catalogButton.id='planLoadModels';catalogButton.disabled=modelCatalogLoading;roles.append(catalogButton);
+    if(modelCatalogError)roles.append(node('p','模型目录暂不可用：'+modelCatalogError+'。沿用已有路由；可以重新读取。','muted'));
+    for(const m of members){const row=node('div',undefined,'plan-item');row.dataset.memberId=m.id;row.append(node('strong',m.id));field(row,'岗位 '+m.id,m.role,value=>m.role=value);field(row,'职责 '+m.id,m.responsibility,value=>m.responsibility=value,true);field(row,'设置理由 '+m.id,m.reason,value=>m.reason=value,true);field(row,'写入范围 '+m.id,(m.writeScopes??[]).join('\n'),value=>m.writeScopes=lines(value),true);
+      const choices=[['','沿用宿主（实际模型在运行时记录）'],...modelCatalogModels.map(model=>[model.model,model.displayName])];if(m.route?.model&&!choices.some(([id])=>id===m.route.model))choices.push([m.route.model,m.route.model+'（待宿主核实）']);
+      const model=select(row,'模型 '+m.id,m.route?.model,choices,v=>{if(v){m.route={model:v};}else delete m.route;renderEfforts();});model.disabled=!pending||!modelCatalogModels.length;
+      const effortsBox=node('div');row.append(effortsBox);const renderEfforts=()=>{effortsBox.replaceChildren();const found=modelCatalogModels.find(model=>model.model===m.route?.model),efforts=found?.supportedReasoningEfforts??[];const choices=[['','沿用所选模型默认'],...efforts.map(e=>[e,e])];if(m.route?.reasoningEffort&&!efforts.includes(m.route.reasoningEffort))choices.push([m.route.reasoningEffort,m.route.reasoningEffort+'（待核实）']);const effort=select(effortsBox,'思考档位 '+m.id,m.route?.reasoningEffort,choices,v=>{if(v)m.route.reasoningEffort=v;else if(m.route)delete m.route.reasoningEffort;});effort.disabled=!pending||!found;};renderEfforts();
+      if(pending)row.append(button('删除岗位 '+m.id,()=>change(()=>{if(tasks.some(t=>t.memberId===m.id))throw new Error('请先在任务中改派或删除该岗位的任务。');members.splice(members.indexOf(m),1);})));
+      rolesBox.append(row);
+    }
+    if(pending){const add=button('新增岗位',()=>change(()=>{if(roster().length>=8)throw new Error('最多 8 个活跃岗位。');members.push({id:unique('role'),role:'新岗位',responsibility:'请填写职责',reason:'请填写设置理由',writeScopes:[]});}));add.id='planAddMember';roles.append(add);}
+    const jobs=node('details');jobs.open=true;jobs.append(node('summary','交付、验收与依赖 · '+tasks.length));const jobsBox=node('div',undefined,'plan-items');jobs.append(jobsBox);box.append(jobs);
+    for(const t of tasks){const row=node('div',undefined,'plan-item');row.dataset.taskId=t.id;row.append(node('strong',t.id));field(row,'任务名称 '+t.id,t.title,value=>t.title=value);field(row,'任务目标 '+t.id,t.goal,value=>t.goal=value,true);field(row,'验收条件 '+t.id,t.acceptance,value=>t.acceptance=value,true);
+      select(row,'负责岗位 '+t.id,t.memberId,roster().filter(m=>!m.removedAt&&(t.kind!=='review'||!m.writeScopes?.length&&m.id!==allTasks().find(x=>x.id===t.reviewOfTaskId)?.memberId)).map(m=>[m.id,m.role+' · '+m.id]),v=>t.memberId=v);
+      number(row,'优先级 '+t.id,t.priority,v=>t.priority=v,1,5);
+      if(t.kind==='review')select(row,'审查对象 '+t.id,t.reviewOfTaskId,allTasks().filter(x=>x.id!==t.id&&x.kind!=='review'&&x.memberId!==t.memberId).map(x=>[x.id,x.title]),v=>{const old=t.reviewOfTaskId;t.reviewOfTaskId=v;t.dependencies=t.dependencies.filter(d=>d.taskId!==old&&d.taskId!==v);t.dependencies.push({taskId:v,when:'submitted'});});
+      const deps=node('details');deps.append(node('summary','任务依赖 '+t.id));row.append(deps);
+      for(const other of allTasks().filter(x=>x.id!==t.id)){const existing=t.dependencies.find(d=>d.taskId===other.id);select(deps,'依赖 '+t.id+' ← '+other.id,existing?.when??'',[['','无依赖'],['submitted','等待提交'],['accepted','等待验收']],v=>{t.dependencies=t.dependencies.filter(d=>d.taskId!==other.id);if(v)t.dependencies.push({taskId:other.id,when:v});});}
+      if(t.acceptanceCriteria)field(row,'逐项验收 '+t.id,t.acceptanceCriteria.map(x=>x.id+' | '+x.description).join('\n'),v=>t.acceptanceCriteria=lines(v).map(line=>{const i=line.indexOf('|');return {id:line.slice(0,i).trim(),description:line.slice(i+1).trim()};}),true);
+      if(t.contract){for(const [key,title] of [['inScope','包含路径'],['outOfScope','排除路径'],['verify','验证命令'],['coverageOf','覆盖目标']])field(row,title+' '+t.id,(t.contract[key]??[]).join('\n'),v=>t.contract[key]=lines(v),true);}
+      if(pending)row.append(button('删除任务 '+t.id,()=>change(()=>{const ids=new Set([t.id,...tasks.filter(x=>x.reviewOfTaskId===t.id).map(x=>x.id)]);if(tasks.some(x=>!ids.has(x.id)&&x.dependencies.some(d=>ids.has(d.taskId))))throw new Error('其他任务仍依赖此任务，请先调整依赖。');for(let i=tasks.length-1;i>=0;i--)if(ids.has(tasks[i].id))tasks.splice(i,1);})));
+      jobsBox.append(row);
+    }
+    if(pending){const add=button('新增交付与独立审查',()=>change(()=>{if(tasks.length>38)throw new Error('最多 40 项待执行任务。');const owner=roster().find(m=>!m.removedAt&&m.writeScopes?.length)??roster()[0],reviewer=roster().find(m=>!m.removedAt&&m.id!==owner?.id&&!m.writeScopes?.length);if(!owner||!reviewer)throw new Error('请先设置交付岗位和另一名只读审查岗位。');const work=unique('work');tasks.push({id:work,title:'新交付',goal:'请填写交付目标',acceptance:'请填写验收要求',memberId:owner.id,priority:3,kind:'work',validationMode:'execute',resources:[],dependencies:[]},{id:unique('review'),title:'独立审查新交付',goal:'核实交付符合验收要求',acceptance:'提供独立验证证据',memberId:reviewer.id,priority:3,kind:'review',reviewOfTaskId:work,validationMode:'execute',resources:[],dependencies:[{taskId:work,when:'submitted'}]});}));add.id='planAddTask';jobs.append(add);}
+    const advanced=node('details');advanced.append(node('summary','高级：完整配置 JSON'));field(advanced,'完整计划 JSON',JSON.stringify(c,null,2),()=>{},true).id='planJson';const json=advanced.querySelector('textarea');json.className='plan-json';json.oninput=()=>{planDirty=true;if($('planApprove'))$('planApprove').disabled=true;if($('planSave'))$('planSave').disabled=false;planStatus('修改尚未保存；保存后将生成新的待确认版本。');};box.append(advanced);
     if(doc.history?.length)box.append(node('p','保留计划版本：'+doc.history.map(h=>'v'+h.version).join('、'),'muted'));
   }
+  async function loadModelCatalog(){if(modelCatalogLoading)return;modelCatalogLoading=true;modelCatalogError='';try{const catalog=await call('read_team_model_catalog');modelCatalogModels=catalog.models??[];}catch(e){modelCatalogError=e.message;}finally{modelCatalogLoading=false;if(planDocument)renderPlanDocument();}}
   async function savePlan(){
     if(planBusy||!planDocument||!planDirty)return;const key=planKey,generation=connectionGeneration,teamId=current.team.id;
     planBusy=true;renderPlanReview();
@@ -87,10 +125,25 @@ export function setupTeamView(app){
       if(key!==planKey||generation!==connectionGeneration||teamId!==current?.team.id)return;
       if(action==='approve'){
         planStatus('计划已确认，正在通知主会话继续。');
-        try{if(!app.getHostCapabilities?.()?.message||!app.sendMessage)throw new Error('宿主未提供消息能力');const sent=await app.sendMessage({role:'user',content:[{type:'text',text:'我已在团队面板确认计划。teamId='+teamId+'，planVersion='+p.version+'，planHash='+p.hash+'，requestId='+requestId+'。请先 read_team_plan 核对当前确认仍有效，再继续初始化已批准岗位、执行已批准任务；无需再次要求确认。'}]});if(sent?.isError)throw new Error('宿主没有接受通知');planStatus('计划已确认，已通知主会话继续；实际执行进度以成员记录为准。');}catch{planStatus('计划已确认。请回到主会话说“继续执行已确认计划”；确认记录已保存。');}
+        try{if(!app.getHostCapabilities?.()?.message||!app.sendMessage)throw new Error('宿主未提供消息能力');const sent=await app.sendMessage({role:'user',content:[{type:'text',text:'我已在团队面板确认计划。teamId='+teamId+'，planVersion='+p.version+'，planHash='+p.hash+'，requestId='+requestId+'。请先 read_team_plan 核对当前确认仍有效，再按成员启动方式派发已批准任务；按需模式在首个就绪任务时创建成员；无需再次要求确认。'}]});if(sent?.isError)throw new Error('宿主没有接受通知');planStatus('计划已确认，已通知主会话继续；实际执行进度以成员记录为准。');}catch{planStatus('计划已确认。请回到主会话说“继续执行已确认计划”；确认记录已保存。');}
       }else planStatus('已取消本次'+(p.scope==='expansion'?'变更；原团队继续沿用已有授权。':'计划，未启动成员。'));
       if(teamId===current?.team.id&&generation===connectionGeneration)await accept(await call('read_team',{teamId,view:'state'}));
     }catch(e){if(key===planKey)planStatus('操作未确认成功：'+e.message+'。请重新读取当前计划；不要重复启动成员。');}finally{planBusy=false;renderPlanReview();}
+  }
+  function renderControl(){
+    const box=$('teamControl');if(!box)return;box.hidden=!current||current.team.mode!=='host-leader'||current.team.state==='superseded';if(box.hidden)return;
+    const control=current.team.executionControl,status=control?.status??'active';$('teamControlStatus').textContent=status==='stopping'?'正在停止：等待 Leader 中断并核实全部轮次':status==='halted'?'团队已停止：宿主终态已核实':'团队执行控制';
+    $('teamStop').hidden=status!=='active';$('teamResume').hidden=status!=='halted';$('teamStop').disabled=controlBusy;$('teamResume').disabled=controlBusy;
+    const list=$('teamRetryTasks'),signature=JSON.stringify([current.team.id,status,current.team.tasks.filter(t=>t.status==='blocked').map(t=>t.id)]);if(list.dataset.signature!==signature){list.dataset.signature=signature;list.replaceChildren();if(status==='halted')for(const task of current.team.tasks.filter(t=>t.status==='blocked'&&['stopped','failed','interrupted'].includes(t.attempts.at(-1)?.state))){const label=node('label'),input=node('input');input.type='checkbox';input.value=task.id;label.append(input,document.createTextNode(' 恢复时重试 '+task.title));list.append(label);}}
+  }
+  async function controlTeam(action){
+    if(controlBusy||!current)return;const reason=$('teamControlReason').value.trim(),feedback=$('teamControlFeedback');if(!reason){feedback.textContent='请填写停止或恢复原因。';return;}
+    const teamId=current.team.id,revision=current.team.revision,requestId=crypto.randomUUID();controlBusy=true;renderControl();
+    try{await call(action==='stop'?'stop_team':'resume_team',{teamId,revision,reason,requestId,...(action==='resume'?{retryTaskIds:[...$('teamRetryTasks').querySelectorAll('input:checked')].map(e=>e.value)}:{})});
+      feedback.textContent=action==='stop'?'停止请求已保存，正在通知主会话核实。':'恢复授权已保存，正在通知主会话。';
+      try{if(!app.getHostCapabilities?.()?.message||!app.sendMessage)throw new Error('Message unavailable');const sent=await app.sendMessage({role:'user',content:[{type:'text',text:action==='stop'?'我在面板请求停止团队 '+teamId+'。请 read_team 核对最新状态，中断全部已绑定成员（包括初始化），核实未知预留后 reconcile_team_stop；不要重新派发。原因：'+reason:'我在面板明确恢复团队 '+teamId+'，原因：'+reason+'。请 read_team 核对 resume 记录，只继续已授权的就绪任务；保留历史和预算。'}]});if(sent?.isError)throw new Error('Message rejected');feedback.textContent=action==='stop'?'已通知主会话停止；实际停止以宿主终态核实为准。':'已通知主会话按恢复记录继续。';}catch{feedback.textContent=action==='stop'?'停止请求已保存；通知失败，请回主会话说“执行已保存的团队停止请求”。':'恢复记录已保存；通知失败，请回主会话说“继续已恢复的团队”。';}
+      if(teamId===current?.team.id)await accept(await call('read_team',{teamId,view:'state'}));
+    }catch(e){feedback.textContent='操作失败：'+e.message;}finally{controlBusy=false;renderControl();}
   }
   function restoreState(team){
     storageKey=storagePrefix+JSON.stringify([team.projectPath,team.leaderThreadId??'',team.id]);
@@ -141,7 +194,7 @@ export function setupTeamView(app){
     $('dispatchSummary').textContent=(team.dispatchPaused?'新任务派发已暂停 · ':'')+pending.filter(r=>r.ready).length+' 项就绪 · '+pending.filter(r=>!r.ready).length+' 项等待前置条件';
     const quality=current.quality;$('qualitySummary').hidden=!quality||!quality.coverage?.length&&!quality.repairCount&&!quality.openFindingCount;
     $('qualitySummary').textContent=quality?(quality.coverage.length?'目标覆盖 '+quality.coverage.filter(c=>c.status==='accepted').length+'/'+quality.coverage.length+' 已验收':'未声明目标覆盖')+' · '+quality.repairCount+' 次修复 · '+quality.openFindingCount+' 项未关闭问题':'';
-    renderPlanReview();renderMembers();renderGraph();renderDetails();renderMember();syncInspection();renderNavigation();
+    renderPlanReview();renderControl();renderMembers();renderGraph();renderDetails();renderMember();syncInspection();renderNavigation();
     for(const d of document.querySelectorAll('details[data-key]'))d.open=ui.expanded.includes(d.dataset.key);
     for(const d of document.querySelectorAll('details[data-key]')){const summary=d.querySelector('summary');if(summary&&!summary.dataset.focusKey)summary.dataset.focusKey='disclosure:'+d.dataset.key;}
     for(const e of document.querySelectorAll('[data-scroll-key]')){const saved=ui.innerScroll?.[e.dataset.scrollKey];if(saved){e.scrollLeft=saved.x;e.scrollTop=saved.y;}}
@@ -273,7 +326,7 @@ export function setupTeamView(app){
     if(attempt)box.append(node('p','所选执行：第 '+attempt.number+' 轮 · '+memberName(current.team,executor)+(attempt.id===task.attempts.at(-1)?.id&&task.memberId===executor.id?' · 当前轮次':' · 历史轮次'),'muted'));
     for(const e of task.evidence){const el=node('div',undefined,'evidence');el.append(node('small','第 '+e.attempt+' 轮交付'),node('p',cleanDelivery(e.summary)));box.append(el);}
     for(const cp of (current.checkpoints??[]).filter(c=>c.taskId===task.id).slice(-3).reverse()){
-      const el=node('section',undefined,'evidence');el.append(node('small','进度检查点 · Leader 记录'+(cp.stale?' · 历史轮次，需重新核对':'')),node('p',cp.summary));
+      const el=node('section',undefined,'evidence');el.append(node('small','进度检查点 · '+(cp.source==='authenticated-member'?'成员报告':'Leader 记录')+(cp.stale?' · 历史轮次，需重新核对':'')),node('p',cp.summary));
       for(const [title,values] of [['已定事项',cp.decisions],['剩余工作',cp.remainingWork],['证据',cp.evidence]])if(values?.length){el.append(node('strong',title));const list=node('ul');for(const value of values)list.append(node('li',value));el.append(list);}
       for(const check of cp.validation??[])el.append(node('p',check.status+' · '+check.name+'：'+check.evidence));box.append(el);
     }
@@ -388,7 +441,7 @@ export function setupTeamView(app){
     const runs=current.runs.map(r=>{const key=JSON.stringify([r.taskId,r.attemptId]),update=updates.get(key);updates.delete(key);return {...r,...update};});runs.push(...updates.values());
     const stale=row=>team.tasks.find(t=>t.id===row.taskId)?.attempts.at(-1)?.id!==row.attemptId;
     current={...current,team,runs,usage:data.usage??current.usage,workflow:data.workflow??current.workflow,readiness:data.readiness??current.readiness,observedAt:data.observedAt,observationMode:data.observationMode,latestStateAt:Math.max(current.latestStateAt??0,Date.parse(data.observedAt)||0),
-      messages:current.messages?.map(m=>({...m,stale:stale(m)})),checkpoints:current.checkpoints?.map(c=>({...c,stale:stale(c)}))};
+      messages:current.messages?.map(m=>({...m,stale:stale(m)})),checkpoints:current.checkpoints?.map(c=>({...c,stale:stale(c)||(c.contractRevision??1)!==(team.tasks.find(t=>t.id===c.taskId)?.contractRevision??1)}))};
     validateSelection(team);
     if(before.team.revision!==team.revision||runSignature(before.runs)!==runSignature(runs)||JSON.stringify(before.usage)!==JSON.stringify(current.usage))render();
   }

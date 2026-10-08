@@ -1,0 +1,1 @@
+export function requireTeamVersion(team,version){if(!team.requiresTeamWorkspaceVersion||Number(team.requiresTeamWorkspaceVersion.split('.')[1])<Number(version.split('.')[1]))team.requiresTeamWorkspaceVersion=version;}

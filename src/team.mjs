@@ -1,3 +1,4 @@
+import {validateControl} from './team-control.mjs';
 import {validatePlanReview} from './team-plan-review.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
@@ -13,10 +14,8 @@ import {validateQualityPlan,qualityBlockers} from './team-quality.mjs';
 const now=()=>new Date().toISOString();
 const allowedStatuses=new Set(['waiting','ready','running','submitted','accepted','blocked','cancelled']);
 
-export function validatePlan(plan) {
-  const {members,tasks}=plan;
-  if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
-  if(!Array.isArray(tasks)||tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
+export function validateMembers(members){
+  if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8)throw new Error('A team needs 1–8 members');
   const memberIds=new Set();
   for(const m of members){
     if(!m||typeof m.id!=='string'||!m.id||memberIds.has(m.id)) throw new Error('Member IDs must be unique');
@@ -24,6 +23,14 @@ export function validatePlan(plan) {
     for(const field of ['role','responsibility','reason']) if(typeof m[field]!=='string'||!m[field].trim()) throw new Error(`Member ${field} is required`);
     if(!Array.isArray(m.writeScopes)||m.writeScopes.some(p=>typeof p!=='string'||!p||isAbsolute(p)||win32.isAbsolute(p)||/[:*?\0]/.test(p)||p.split(/[\\/]/).some(s=>s==='..'||s==='.git'||s==='.codex'))) throw new Error('Member write scopes must be safe project-relative paths');
   }
+  return memberIds;
+}
+
+export function validatePlan(plan) {
+  const {members,tasks}=plan;
+  if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
+  if(!Array.isArray(tasks)||tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
+  const memberIds=validateMembers(members);
   const taskIds=new Set();
   for(const t of tasks){
     if(!t||typeof t.id!=='string'||!t.id||taskIds.has(t.id)) throw new Error('Task IDs must be unique'); taskIds.add(t.id);
@@ -72,8 +79,9 @@ export function consumedAttempts(task){return task.attempts?.length?task.attempt
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
-  if(requiredRosterMembers(team,[task.id]).some(m=>!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
+  if(requiredRosterMembers(team,[task.id]).some(m=>team.memberStartup==='on-demand'?m.agentThreadId&&!m.rosterVerified:!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
   if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')add('plan-approval','请先确认当前版本的团队计划');
+  if(team.executionControl&&team.executionControl.status!=='active')add('halted','团队已停止或正在停止，请先核对并明确恢复');
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
   reasons.push(...qualityBlockers(team,task));
   if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
@@ -102,7 +110,7 @@ export function schedule(team){
     const member=team.members.find(m=>m.id===task.memberId);
     if(dispatchBlockers(team,task).length)continue;
     const attempt={id:randomUUID(),memberId:task.memberId,number:task.attempt+1,state:'running',agentThreadId:null,startedAt:now(),endedAt:null,summary:null,
-      dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null}))};
+      ...(task.contractRevision?{contractRevision:task.contractRevision}:{}),dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null,contractRevision:team.tasks.find(t=>t.id===d.taskId).contractRevision??1}))};
     task.attempt++;task.status='running';task.blockReason=null;task.attempts.push(attempt);task.updatedAt=now();
     member.status='starting';member.lastActivityAt=now();selected.push(task);addEvent(team,'task-dispatched',{taskId:task.id,attemptId:attempt.id,memberId:member.id});
   }
@@ -120,6 +128,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   const target=team.tasks.find(x=>x.id===review.reviewOfTaskId);
   if(!target||target.status!=='submitted')throw new Error('The reviewed implementation is not awaiting review');
   if(reviewAttempt.dependencyAttempts.find(d=>d.taskId===target.id)?.attemptId!==target.attempts.at(-1)?.id)throw new Error('Review targets an outdated implementation attempt');
+  if(reviewAttempt.dependencyAttempts.find(d=>d.taskId===target.id)?.contractRevision!==undefined&&reviewAttempt.dependencyAttempts.find(d=>d.taskId===target.id).contractRevision!==(target.contractRevision??1))throw new Error('Review targets an outdated contract revision');
   if(!['accept','rework'].includes(decision)||typeof note!=='string'||!note.trim())throw new Error('Review needs a decision and reason');
   const affected=new Set(),queue=[target.id];
   if(decision==='rework')while(queue.length){const parent=queue.shift();for(const down of team.tasks){if(down.dependencies.some(d=>d.taskId===parent)&&!affected.has(down.id)){if(down.status==='running')throw new Error(`Cannot invalidate running downstream task ${down.id}`);affected.add(down.id);queue.push(down.id);}}}
@@ -130,7 +139,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}

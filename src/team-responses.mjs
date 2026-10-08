@@ -1,3 +1,4 @@
+import {controlSummary} from './team-control.mjs';
 import {planReviewSummary} from './team-plan-review.mjs';
 import {createHash} from 'node:crypto';
 import {panelResponse,panelTasks,stateRuns} from './panel-response.mjs';
@@ -12,13 +13,14 @@ export function teamResponse(data,view='summary',kind='team-summary'){
   const token=detailToken(data);
   if(view==='full')return {...data,kind:'team-detail',detailToken:token};
   if(view==='panel')return panelResponse(data,token);
-  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','fixedRoster','policy','profile']);
+  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster','policy','profile']);
   const taskRows=view==='summary'?data.team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(data.team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-20)):panelTasks(data.team.tasks);
   const numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const runs=stateRuns(currentRuns(data).filter(r=>taskRows.some(t=>t.id===r.taskId)));
+  if(data.team.executionControl)team.executionControl=controlSummary(data.team);
   if(data.team.planReview)team.planReview=planReviewSummary(data.team);
   team.members=data.team.members.map(m=>pick(m,['id','role','displayName','threadTitle','taskName','status','agentThreadId','agentPath','rosterVerified','route','workspace','recoveryControl','removedAt']));
-  team.tasks=taskRows.map(t=>({...pick(t,['id','title','kind','memberId','status','blockReason','dependencies','reviewOfTaskId','supersededBy','repairRootTaskId','repairRound']),stage:t.contract?.stage,number:numbers.get(t.id),attempt:t.attempts.at(-1)?pick(t.attempts.at(-1),['id','memberId','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt']):null}));
+  team.tasks=taskRows.map(t=>({...pick(t,['id','title','kind','memberId','status','blockReason','dependencies','reviewOfTaskId','supersededBy','repairRootTaskId','repairRound','contractRevision']),stage:t.contract?.stage,number:numbers.get(t.id),attempt:t.attempts.at(-1)?pick(t.attempts.at(-1),['id','memberId','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt']):null}));
   if(view==='state')return {kind:'team-state',team,runs,readiness:data.readiness?.filter(r=>taskRows.some(t=>t.id===r.taskId)),usage:data.usage?pick(data.usage,['totalTokens','knownAttempts','unknownAttempts','complete','members','limit','remaining','exhausted','unverifiable']):undefined,workflow:data.workflow,detailToken:token,observedAt:data.observedAt,observationMode:data.observationMode};
   const {team:unusedTeam,runs:unusedRuns,messages,checkpoints,...rest}=data;
   return {...rest,kind,team,runs,detailToken:token,
