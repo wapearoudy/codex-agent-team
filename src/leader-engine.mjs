@@ -17,6 +17,8 @@ import {TeamWorktrees} from './team-worktrees.mjs';
 import {assertContractDelivery,assertContractPass,recordFindings,planRepair,qualityReport,assertQualityFinish,openFindings} from './team-quality.mjs';
 import {lifecycleRequest,reassignTask,removeMember,verifyQuiescence} from './team-lifecycle.mjs';
 
+import {setPlanReview,assertPlanExecutable,assertPlanMutable,editablePlan,updateDraft,updateExpansionDraft,stageExpansion,expansionCandidate,policyExpands,reviewRequest,finishPlanDecision,planHash} from './team-plan-review.mjs';
+
 const now=()=>new Date().toISOString();
 const terminal=s=>['completed','failed','interrupted'].includes(s);
 export class LeaderEngine {
@@ -27,11 +29,11 @@ export class LeaderEngine {
   async planOnce(owner,context,args){
     validatePlan(args.plan);
     for(const task of args.plan.tasks.filter(t=>t.kind!=='review'))if(args.plan.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('Each work task requires one independent review');
-    const key=createHash('sha256').update(JSON.stringify({owner,cwd:context.cwd,goal:args.goal,plan:args.plan,requestId:args.requestId??null,fixedRoster:!!args.initializeMembers})).digest('hex');
+    const key=createHash('sha256').update(JSON.stringify({owner,cwd:context.cwd,goal:args.goal,plan:args.plan,requestId:args.requestId??null,fixedRoster:!!args.initializeMembers,approvalMode:args.approvalMode,execute:args.execute,maxParallel:args.maxParallel,policy:args.policy,executionAuthorization:args.executionAuthorization})).digest('hex');
     return new DurableStore(join(this.root,'leader-plan-requests.json'),{requests:{}}).transaction(async d=>{
       if(d.requests[key])return this.store.get(d.requests[key],owner);
       const team=await this.store.create({projectId:createHash('sha256').update(context.cwd).digest('hex').slice(0,24),projectPath:context.cwd,goal:args.goal,plan:args.plan,maxParallel:args.maxParallel??3},owner);
-      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
+      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.policy)t.policy=normalizePolicy(args.policy);if(args.approvalMode)setPlanReview(t,{mode:args.approvalMode,execute:args.execute,executionAuthorization:args.executionAuthorization,brief:args.brief});if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
       d.requests[key]=saved.id;return saved;
     });
   }
@@ -60,7 +62,7 @@ export class LeaderEngine {
   }
   async claimMany(owner,id,revision,taskIds){
     if(!taskIds?.length||taskIds.length>8||new Set(taskIds).size!==taskIds.length)throw new Error('Provide 1–8 unique tasks');
-    const rosterTeam=await this.native(owner,id),verified=[];
+    const rosterTeam=await this.native(owner,id),verified=[];assertPlanExecutable(rosterTeam);
     if(rosterTeam.revision!==revision)throw new Error('Team changed; refresh before controlling members');
     if(rosterTeam.state==='superseded')throw new Error('Historical team cannot dispatch; use the project’s current team');
     if(rosterTeam.policy?.tokenLimit)assertBudget(rosterTeam,await this.observations(rosterTeam));
@@ -120,7 +122,7 @@ export class LeaderEngine {
   }
   async bindRosterMany(owner,id,revision,assignments){
     if(!assignments?.length||assignments.length>8||new Set(assignments.map(x=>x.memberId)).size!==assignments.length)throw new Error('Provide 1–8 unique roster bindings');
-    const team=await this.native(owner,id);if(team.revision!==revision)throw new Error('Team changed; refresh before controlling members');
+    const team=await this.native(owner,id);assertPlanExecutable(team);if(team.revision!==revision)throw new Error('Team changed; refresh before controlling members');
     const verified=await Promise.all(assignments.map(async input=>{
       const member=team.members.find(m=>m.id===input.memberId&&!m.removedAt);if(!team.fixedRoster||!member)throw new Error('An active fixed roster member is required');
       return {...input,snapshot:await this.observer.inspect(team.leaderThreadId,team.projectPath,input.threadId,member.rosterMarker,{allowPending:true})};
@@ -144,7 +146,7 @@ export class LeaderEngine {
     const stored=await this.native(owner,id),team={...stored,members:stored.members.map(member=>({...member,...memberNaming(stored,member)}))},runs=await this.observations(team,{observe});
     const readiness=team.tasks.map(task=>({taskId:task.id,ready:task.status==='waiting'&&!dispatchBlockers(team,task).length,blockers:dispatchBlockers(team,task)}));
     const recovery=team.tasks.flatMap(task=>{const a=task.attempts.at(-1),run=runs.find(r=>r.attemptId===a?.id);if(task.status==='running')return [{taskId:task.id,attemptId:a.id,threadId:a.agentThreadId,agentPath:team.members.find(m=>m.id===task.memberId)?.agentPath??null,action:a.state==='reserved'?'verify-host-before-bind-or-release':terminal(run?.status)?'settle-confirmed-turn':'observe-existing-member',message:a.state==='reserved'?'核对宿主是否已启动；绑定失败不能重建成员':terminal(run?.status)?'成员已有终态，等待 Leader 接收':'继续核对现有成员；未知状态不自动重派'}];if(task.status==='blocked')return[{taskId:task.id,action:'leader-rework-decision',message:task.blockReason}];return[];});
-    return {team,runs,readiness,recovery,quality:qualityReport(team),usage:usageReport(team,runs),workflow:workflowActions(team,runs),diagnostics:diagnostics(team,runs),peerDelivery:peerActions(team),initializations:team.fixedRoster?team.members.filter(m=>!m.removedAt&&!m.rosterVerified).map(m=>({...rosterPacket(team,m),spawnOptions:nativeRoute(m),workspace:m.workspace??{mode:'shared',path:team.projectPath}})):[],messages:mailboxProjection(team),checkpoints:checkpointProjection(team),observedAt:now(),observationMode:observe?'fresh':'saved',runtimeSource:'native-thread-persisted-snapshot',limitations:[
+    return {team,runs,readiness,recovery,quality:qualityReport(team),usage:usageReport(team,runs),workflow:workflowActions(team,runs),diagnostics:diagnostics(team,runs),peerDelivery:peerActions(team),initializations:team.fixedRoster&&!(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')?team.members.filter(m=>!m.removedAt&&!m.rosterVerified).map(m=>({...rosterPacket(team,m),spawnOptions:nativeRoute(m),workspace:m.workspace??{mode:'shared',path:team.projectPath}})):[],messages:mailboxProjection(team),checkpoints:checkpointProjection(team),observedAt:now(),observationMode:observe?'fresh':'saved',runtimeSource:'native-thread-persisted-snapshot',limitations:[
       '当前主会话负责原生成员派发、消息和停止；插件不启动模型轮次。',
       '面板读取宿主已持久化的轮次记录，可能滞后；执行结束不代表已验收。',
       '成员共用当前项目，写入范围由 Leader 和成员遵守，并发冲突在派发时检查；不是文件系统沙箱。'
@@ -202,8 +204,8 @@ export class LeaderEngine {
     assertQualityFinish(t);for(const task of t.tasks.filter(t=>t.status==='accepted'))assertContractPass(task);
     t.state='delivered';t.finalAcceptance={source:'main-conversation-leader',note,checks,at:now()};t.dispatchPaused=true;
   });return this.receipt(owner,id);}
-  async start(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{if(t.state==='superseded')throw new Error('Historical team cannot restart');if(t.state==='delivered')return;t.dispatchPaused=false;t.state='active';});return this.receipt(owner,id);}
-  async addMembers(owner,id,revision,members,requestId){
+  async start(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{assertPlanExecutable(t);if(t.state==='superseded')throw new Error('Historical team cannot restart');if(t.state==='delivered')return;t.dispatchPaused=false;t.state='active';});return this.receipt(owner,id);}
+  async addMembers(owner,id,revision,members,requestId,{reviewExpansion=false}={}){
     if(typeof requestId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId))throw new Error('A stable UUID request ID is required');
     if(!Array.isArray(members)||!members.length||members.length>8)throw new Error('Provide 1–8 new members');
     // Accept configuration only. Native identity and initialization markers are
@@ -213,7 +215,7 @@ export class LeaderEngine {
     const replay=team=>{
       if(team.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
       if(!team.fixedRoster)throw new Error('Adding members requires a fixed native roster');
-      const saved=team.memberAdditions?.find(r=>r.requestId===requestId);
+      const saved=[...(team.memberAdditions??[]),...(team.planMemberRequests??[])].find(r=>r.requestId===requestId);
       if(saved&&saved.hash!==hash)throw new Error('Member addition request ID already has different contents');
       return saved;
     };
@@ -223,7 +225,9 @@ export class LeaderEngine {
     try{
       const updated=await this.store.update(id,owner,revision,t=>{
         replay(t);
+        assertPlanMutable(t);
         const timestamp=now();
+        if(t.planReview||reviewExpansion){stageExpansion(t,{members:inputs},inputs.map(m=>m.role+'：'+m.reason).join('；'));this.validateExpansion(t);const addition={requestId,hash,memberIds:inputs.map(m=>m.id),at:timestamp,pending:true};t.planMemberRequests??=[];t.planMemberRequests.push(addition);t.planMemberRequests=t.planMemberRequests.slice(-200);return addition;}
         t.members.push(...inputs.map(m=>({...m,status:'planned',agentThreadId:null,rosterMarker:`TEAM_WORKSPACE_MEMBER:${randomUUID()}`,rosterVerified:false,addedAt:timestamp,lastActivityAt:timestamp})));
         validatePlan(t);
         const addition={requestId,hash,memberIds:inputs.map(m=>m.id),at:timestamp};
@@ -241,13 +245,32 @@ export class LeaderEngine {
     }
     return {...await this.receipt(owner,id),memberAddition:{requestId,memberIds:record.memberIds,replayed:false}};
   }
-  async addTasks(owner,id,revision,tasks){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
+  async addTasks(owner,id,revision,tasks,{scopeChange=false,note=''}={}){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(t.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
+    assertPlanMutable(t);
+    if(scopeChange||t.planReview&&tasks.some(task=>!t.members.some(m=>m.id===task.memberId&&!m.removedAt))){stageExpansion(t,{tasks},note||'新增任务需要确认新的职责范围');this.validateExpansion(t);return;}
     const timestamp=now();t.tasks.push(...tasks.map(task=>({...task,status:'waiting',attempt:0,attempts:[],evidence:[],history:[{at:timestamp,type:'added'}],blockReason:null,createdAt:timestamp,updatedAt:timestamp})));
-    if(tasks.some(task=>task.contract))t.requiresTeamWorkspaceVersion='0.10.0';
+    if(tasks.some(task=>task.contract))t.requiresTeamWorkspaceVersion??='0.10.0';
     validatePlan(t);for(const task of t.tasks.filter(x=>x.kind!=='review'))if(t.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('New deliveries require one independent review');
-    if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}t.state='active';t.dispatchPaused=false;t.events.push({at:timestamp,type:'tasks-added-to-fixed-team',taskIds:tasks.map(t=>t.id)});
+    if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}if(t.state==='delivered')t.dispatchPaused=false;t.state='active';t.events.push({at:timestamp,type:'tasks-added-to-fixed-team',taskIds:tasks.map(t=>t.id)});
   });return this.receipt(owner,id);}
+  validateExpansion(team){const candidate=expansionCandidate(team);validatePlan(candidate);for(const task of candidate.tasks.filter(t=>t.kind!=='review'))if(candidate.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('Each work task requires one independent review');if(!Number.isInteger(candidate.maxParallel)||candidate.maxParallel<1||candidate.maxParallel>8)throw new Error('Parallel member limit must be 1–8');}
+  async readPlan(owner,id){return editablePlan(await this.native(owner,id));}
+  async revisePlan(owner,id,revision,configuration,brief){await this.store.update(id,owner,revision,t=>{if(t.planReview?.scope==='expansion'){updateExpansionDraft(t,configuration,brief);this.validateExpansion(t);return;}updateDraft(t,configuration,brief);validatePlan(t);for(const task of t.tasks.filter(t=>t.kind!=='review'))if(t.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('Each work task requires one independent review');});return this.readPlan(owner,id);}
+  async proposeChange(owner,id,revision,change,brief){await this.store.update(id,owner,revision,t=>{stageExpansion(t,change,brief);this.validateExpansion(t);});return this.receipt(owner,id);}
+  async configurePolicy(owner,id,revision,policy,{reviewExpansion=false}={}){await this.store.update(id,owner,revision,t=>{assertPlanMutable(t);const next=normalizePolicy({...t.policy,...policy});if((t.planReview||reviewExpansion)&&policyExpands(t.policy,next)){stageExpansion(t,{policy:next},'提高执行预算或自动修复额度');this.validateExpansion(t);return;}t.policy=next;if(next.autoRepair)t.requiresTeamWorkspaceVersion??='0.10.0';});return this.receipt(owner,id);}
+  async decidePlan(owner,id,revision,input,action){
+    const existing=reviewRequest(await this.native(owner,id),input,action);if(existing.saved)return {...await this.receipt(owner,id),planDecision:{replayed:true,action}};
+    let replayed=false;try{await this.store.update(id,owner,revision,t=>{
+      const request=reviewRequest(t,input,action),p=t.planReview;if(request.saved)return;
+      if(action==='approve'){
+        if(p.scope==='initial'){t.dispatchPaused=false;t.state='active';}
+        else {this.validateExpansion(t);const pending=p.pending,at=now();t.members.push(...pending.members.map(m=>({...m,status:'planned',agentThreadId:null,rosterMarker:`TEAM_WORKSPACE_MEMBER:${randomUUID()}`,rosterVerified:false,addedAt:at,lastActivityAt:at})));if(pending.members.length){t.memberAdditions??=[];t.memberAdditions.push({requestId:input.requestId,hash:planHash(pending.members),memberIds:pending.members.map(m=>m.id),at});}t.tasks.push(...pending.tasks.map(task=>({...task,status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:at,updatedAt:at})));if(pending.policy)t.policy=pending.policy;if(pending.maxParallel)t.maxParallel=pending.maxParallel;if(pending.tasks.length){if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}t.state='active';}}
+      }else if(p.scope==='initial'){t.dispatchPaused=true;t.state='cancelled';for(const task of t.tasks)task.status='cancelled';}
+      finishPlanDecision(t,input,action,request.hash);
+    });}catch(error){if(!reviewRequest(await this.native(owner,id),input,action).saved)throw error;replayed=true;}
+    return {...await this.receipt(owner,id),planDecision:{replayed,action}};
+  }
   async changeMember(owner,id,revision,requestId,payload){
     if(typeof payload.note!=='string'||!payload.note.trim()||payload.note.length>3000)throw new Error('Member changes require an explicit reason');
     const team=await this.native(owner,id),check=lifecycleRequest(team,requestId,payload);

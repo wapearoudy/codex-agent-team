@@ -1,3 +1,4 @@
+import {planReviewSummary} from './team-plan-review.mjs';
 // Display previews have a separate budget. Saved observations and full evidence
 // are never rewritten, and remain available through read_team(view=full).
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
@@ -44,6 +45,7 @@ export function panelResponse(data,detailToken){
   const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','fixedRoster']);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
+  if(data.team.planReview)team.planReview=planReviewSummary(data.team);
   team.members=data.team.members.map(m=>({...pick(m,['id','role','displayName','threadTitle','taskName','status','agentThreadId','agentPath','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','workspace','recoveryControl']))}));
   team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound']),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
   const relevant=data.runs.filter(r=>ids.has(r.taskId));

@@ -16,7 +16,7 @@ export function reassignTask(team,{taskId,memberId,note}){
   if(!['waiting','blocked'].includes(task.status)||task.supersededBy)throw new Error('Stop and settle running attempts, then request explicit rework before reassignment; submitted/accepted evidence cannot change owner');
   if(task.memberId===memberId)throw new Error('Task already belongs to this member');
   const fromMemberId=task.memberId;
-  team.requiresTeamWorkspaceVersion='0.10.0';
+  team.requiresTeamWorkspaceVersion??='0.10.0';
   // Materialize old ownership before moving the task, including pre-0.10 rows.
   for(const a of task.attempts??[])a.memberId??=fromMemberId;
   task.memberId=memberId;task.status='waiting';task.blockReason=null;task.updatedAt=now();
@@ -31,7 +31,7 @@ export function removeMember(team,{memberId,note}){
   if(team.tasks.some(t=>t.memberId===memberId&&!['accepted','cancelled'].includes(t.status)))throw new Error('Reassign or finish every unfinished task before removing the member');
   if(member.agentThreadId&&!member.rosterVerified)throw new Error('Member initialization is not confirmed terminal; stop and verify it before removal');
   member.removedAt=now();member.status='removed';member.removalNote=note;
-  team.requiresTeamWorkspaceVersion='0.10.0';
+  team.requiresTeamWorkspaceVersion??='0.10.0';
   team.events.push({at:member.removedAt,type:'member-removed',memberId,note});
   return {type:'remove',memberId,threadId:member.agentThreadId??null};
 }

@@ -8,6 +8,7 @@ export function setupTeamView(app){
   let current=null,linked=false,timer=null,expiryTimer=null,loading=false,lastDiscovery=0,connectionGeneration=0,selectionGeneration=0;
   let detailsRequest=null,detailsWanted=null,polling=null,wakeRequested=false,navigationRead=null,targetTeamId=null;
   let ui={},storageKey='',preview=null,hoverTimer=null,navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
+  let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='';
   const label=s=>labels[s]??s;
   const node=(tag,text,cls)=>{const n=document.createElement(tag);if(text!==undefined)n.textContent=text;if(cls)n.className=cls;return n;};
   const button=(text,action,cls,key)=>{const b=node('button',text,cls);b.type='button';b.onclick=action;if(key)b.dataset.focusKey=key;return b;};
@@ -26,6 +27,70 @@ export function setupTeamView(app){
     const r=await app.callServerTool({name,arguments:args},{timeout:60000});
     if(r.isError)throw new Error(r.content?.find(c=>c.type==='text')?.text??'状态读取失败');
     if(!r.structuredContent)throw new Error('宿主没有返回有效数据');return r.structuredContent;
+  }
+  const reviewKey=()=>current?.team.planReview?JSON.stringify([current.team.id,current.team.planReview.version,current.team.planReview.hash,current.team.planReview.status]):'';
+  function planStatus(text){planFeedback=text;$('planReviewFeedback').textContent=text;}
+  function renderPlanReview(){
+    const review=current?.team.planReview,box=$('planReview');if(!box)return;box.hidden=!review;if(!review)return;
+    const pending=review.status==='pending',key=reviewKey();
+    if(key!==planKey){planKey=key;planDocument=null;planDirty=false;planLoading=null;$('planReviewContent').replaceChildren();}
+    $('planReviewTitle').textContent=review.scope==='expansion'?'确认团队变更':'确认团队计划';
+    $('planReviewStatus').textContent='第 '+review.version+' 版 · '+(pending?'等待确认':review.status==='approved'?'已确认':'已取消');
+    $('planReviewBrief').textContent=review.brief||review.reason;
+    $('planReviewNotice').textContent=review.scope==='expansion'?'确认前保留原团队执行；变更确认只授权新范围，不代表任务验收。':pending?'确认前不会初始化成员或派发任务。确认后仍须独立审查与验收。':'计划授权与任务验收分别记录。';
+    const actions=$('planReviewActions');actions.replaceChildren();
+    if(pending){
+      const approve=button('确认并继续',()=>void decidePlan('approve'),'primary','plan-approve');approve.id='planApprove';approve.disabled=planBusy||planDirty||!planDocument;
+      const save=button('保存修改',()=>void savePlan(),'subtle-button','plan-save');save.id='planSave';save.disabled=planBusy||!planDirty||!planDocument;
+      const cancel=button(review.scope==='expansion'?'取消本次变更':'取消计划',()=>void decidePlan('cancel'),'subtle-button','plan-cancel');cancel.id='planCancel';cancel.disabled=planBusy;
+      actions.append(approve,save,cancel);
+    }
+    const reload=button(planDocument?'重新读取计划':'查看计划详情',()=>void loadPlan(),'subtle-button','plan-reload');reload.id='planReload';reload.disabled=planBusy;actions.append(reload);
+    $('planReviewFeedback').textContent=planFeedback;
+    if(pending&&!planBusy&&!planDocument&&!planLoading)void loadPlan();
+  }
+  async function loadPlan(){
+    const key=planKey,teamId=current?.team.id,generation=connectionGeneration;if(!teamId||planLoading&&!planLoading.failed)return;
+    if(planLoading?.failed)planLoading=null;const request={key};planLoading=request;
+    try{const data=await call('read_team_plan',{teamId});if(key!==planKey||generation!==connectionGeneration||teamId!==current?.team.id)return;
+      if(data.review.hash!==current.team.planReview.hash||data.review.version!==current.team.planReview.version)throw new Error('计划已变化，请等待面板同步后重新读取。');
+      planDocument=data;planDirty=false;renderPlanDocument();planStatus('已读取完整计划。修改后请先保存，再确认新版本。');
+    }catch(e){if(key===planKey)planStatus(e.message);}finally{if(planLoading===request)planLoading=planDocument?null:{failed:true};if(key===planKey)renderPlanReview();}
+  }
+  function renderPlanDocument(){
+    const box=$('planReviewContent');box.replaceChildren();const doc=planDocument,c=doc.configuration,pending=doc.review.status==='pending',initial=doc.review.scope==='initial';
+    const members=initial?c.plan.members:c.members??[],tasks=initial?c.plan.tasks:c.tasks??[];
+    const markDirty=()=>{planDirty=true;$('planApprove').disabled=true;$('planSave').disabled=false;planStatus('修改尚未保存；保存后将生成新的待确认版本。');};
+    const field=(parent,title,value,set,multiline=false)=>{const label=node('label',title),input=node(multiline?'textarea':'input');input.value=value??'';input.disabled=!pending;input.setAttribute('aria-label',title);input.oninput=()=>{set(input.value);const json=$('planJson');if(json)json.value=JSON.stringify(c,null,2);markDirty();};label.append(input);parent.append(label);return input;};
+    if(initial)field(box,'任务目标',c.goal,value=>c.goal=value,true);
+    box.append(node('p',members.length+' 个'+(initial?'岗位':'新增岗位')+' · '+tasks.length+' 项'+(initial?'任务':'新增任务')+' · '+(c.maxParallel?'最多 '+c.maxParallel+' 人并发':'沿用现有并发')));
+    box.append(node('p','Token 预算：'+(c.policy?.tokenLimit??'未设置上限')+'；费用随实际模型和执行量变化。','muted'));
+    if(!initial&&doc.review.brief)box.append(node('p','变更说明：'+doc.review.brief));
+    const roles=node('details');roles.append(node('summary','岗位、职责与模型 · '+members.length));const rolesBox=node('div',undefined,'plan-items');roles.append(rolesBox);box.append(roles);
+    for(const m of members){const row=node('div',undefined,'plan-item');row.append(node('strong',m.id));field(row,'岗位 '+m.id,m.role,value=>m.role=value);field(row,'职责 '+m.id,m.responsibility,value=>m.responsibility=value,true);field(row,'设置理由 '+m.id,m.reason,value=>m.reason=value,true);field(row,'写入范围 '+m.id,(m.writeScopes??[]).join('\n'),value=>m.writeScopes=value.split('\n').map(s=>s.trim()).filter(Boolean),true);row.append(node('p','模型：'+(m.route?.model??'宿主默认')+' · 思考强度：'+(m.route?.reasoningEffort??'宿主默认'),'muted'));rolesBox.append(row);}
+    const jobs=node('details');jobs.append(node('summary','交付、验收与依赖 · '+tasks.length));const jobsBox=node('div',undefined,'plan-items');jobs.append(jobsBox);box.append(jobs);
+    for(const t of tasks){const row=node('div',undefined,'plan-item');row.append(node('strong',t.id+' · '+t.memberId));field(row,'任务名称 '+t.id,t.title,value=>t.title=value);field(row,'任务目标 '+t.id,t.goal,value=>t.goal=value,true);field(row,'验收条件 '+t.id,t.acceptance,value=>t.acceptance=value,true);row.append(node('p','依赖：'+(t.dependencies?.map(d=>d.taskId+' '+d.when).join('；')||'无')));if(t.contract)row.append(node('p','包含：'+t.contract.inScope.join('、')+'；排除：'+t.contract.outOfScope.join('、')+'；验证：'+t.contract.verify.join('；')));jobsBox.append(row);}
+    const advanced=node('details');advanced.append(node('summary','完整配置 · 增删岗位、依赖、模型和预算'));field(advanced,'完整计划 JSON',JSON.stringify(c,null,2),()=>{},true).id='planJson';const json=advanced.querySelector('textarea');json.className='plan-json';json.oninput=markDirty;box.append(advanced);
+    if(doc.history?.length)box.append(node('p','保留计划版本：'+doc.history.map(h=>'v'+h.version).join('、'),'muted'));
+  }
+  async function savePlan(){
+    if(planBusy||!planDocument||!planDirty)return;const key=planKey,generation=connectionGeneration,teamId=current.team.id;
+    planBusy=true;renderPlanReview();
+    try{const configuration=JSON.parse($('planJson').value),data=await call('revise_team_plan',{teamId,revision:current.team.revision,configuration});if(key!==planKey||generation!==connectionGeneration)return;
+      const state=await call('read_team',{teamId,view:'state'});if(key!==planKey||generation!==connectionGeneration)return;await accept(state);planKey=reviewKey();planDocument=data;planDirty=false;renderPlanDocument();planStatus('修改已保存，请审阅并确认第 '+data.review.version+' 版。');
+    }catch(e){if(key===planKey)planStatus('保存失败：'+e.message);}finally{planBusy=false;renderPlanReview();}
+  }
+  async function decidePlan(action){
+    if(planBusy||action==='approve'&&(!planDocument||planDirty))return;
+    const key=planKey,generation=connectionGeneration,teamId=current.team.id,p=current.team.planReview,requestId=crypto.randomUUID();planBusy=true;renderPlanReview();
+    try{await call(action==='approve'?'approve_team_plan':'cancel_team_plan',{teamId,revision:current.team.revision,planVersion:p.version,planHash:p.hash,requestId,note:action==='approve'?'用户在面板确认此版本计划':'用户在面板取消此版本计划',source:'panel-user-action'});
+      if(key!==planKey||generation!==connectionGeneration||teamId!==current?.team.id)return;
+      if(action==='approve'){
+        planStatus('计划已确认，正在通知主会话继续。');
+        try{if(!app.getHostCapabilities?.()?.message||!app.sendMessage)throw new Error('宿主未提供消息能力');const sent=await app.sendMessage({role:'user',content:[{type:'text',text:'我已在团队面板确认计划。teamId='+teamId+'，planVersion='+p.version+'，planHash='+p.hash+'，requestId='+requestId+'。请先 read_team_plan 核对当前确认仍有效，再继续初始化已批准岗位、执行已批准任务；无需再次要求确认。'}]});if(sent?.isError)throw new Error('宿主没有接受通知');planStatus('计划已确认，已通知主会话继续；实际执行进度以成员记录为准。');}catch{planStatus('计划已确认。请回到主会话说“继续执行已确认计划”；确认记录已保存。');}
+      }else planStatus('已取消本次'+(p.scope==='expansion'?'变更；原团队继续沿用已有授权。':'计划，未启动成员。'));
+      if(teamId===current?.team.id&&generation===connectionGeneration)await accept(await call('read_team',{teamId,view:'state'}));
+    }catch(e){if(key===planKey)planStatus('操作未确认成功：'+e.message+'。请重新读取当前计划；不要重复启动成员。');}finally{planBusy=false;renderPlanReview();}
   }
   function restoreState(team){
     storageKey=storagePrefix+JSON.stringify([team.projectPath,team.leaderThreadId??'',team.id]);
@@ -76,7 +141,7 @@ export function setupTeamView(app){
     $('dispatchSummary').textContent=(team.dispatchPaused?'新任务派发已暂停 · ':'')+pending.filter(r=>r.ready).length+' 项就绪 · '+pending.filter(r=>!r.ready).length+' 项等待前置条件';
     const quality=current.quality;$('qualitySummary').hidden=!quality||!quality.coverage?.length&&!quality.repairCount&&!quality.openFindingCount;
     $('qualitySummary').textContent=quality?(quality.coverage.length?'目标覆盖 '+quality.coverage.filter(c=>c.status==='accepted').length+'/'+quality.coverage.length+' 已验收':'未声明目标覆盖')+' · '+quality.repairCount+' 次修复 · '+quality.openFindingCount+' 项未关闭问题':'';
-    renderMembers();renderGraph();renderDetails();renderMember();syncInspection();renderNavigation();
+    renderPlanReview();renderMembers();renderGraph();renderDetails();renderMember();syncInspection();renderNavigation();
     for(const d of document.querySelectorAll('details[data-key]'))d.open=ui.expanded.includes(d.dataset.key);
     for(const d of document.querySelectorAll('details[data-key]')){const summary=d.querySelector('summary');if(summary&&!summary.dataset.focusKey)summary.dataset.focusKey='disclosure:'+d.dataset.key;}
     for(const e of document.querySelectorAll('[data-scroll-key]')){const saved=ui.innerScroll?.[e.dataset.scrollKey];if(saved){e.scrollLeft=saved.x;e.scrollTop=saved.y;}}

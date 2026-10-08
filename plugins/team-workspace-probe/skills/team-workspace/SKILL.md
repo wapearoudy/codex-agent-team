@@ -7,12 +7,12 @@ description: 在当前 Codex 对话中由主会话担任 Leader，使用宿主�
 
 当前主会话就是唯一 Leader。复用其项目、用户目标、约束和已有分析。成员是主会话派发的原生 subagent，插件只管理任务协议和执行视图。不能建立独立协调者、另选项目、重填目标或让用户去网址操作。
 
-仅查看时用 open_team_workspace / read_team，不启动成员。用户要求团队执行即授权在本任务范围内派发；无需重复确认同一指令。默认使用宿主已有模型设置。
+仅查看时用 open_team_workspace / read_team，不启动成员。用户的执行指令授权本任务范围；复杂新团队默认先审阅一次具体计划。用户明确说“直接做”可记录其原话并立即执行；已确认计划及已有团队中的普通任务无需重复确认。默认使用宿主已有模型设置。
 
 ## 执行闭环
 
 1. plan_team 和所有团队工具都会核对宿主当前项目；已有上下文时无需先重复调用 get_current_project。只有需要了解项目目录时调用它，不扫描或复制全项目。Leader 按需读文件并复用当前对话的信息。若没有宿主原生 subagent 创建、接续、等待和中断能力，如实报告缺失，不退回独立 app-server 模型会话。
-2. 使用 plan_team 保存最小必要角色和任务 DAG。执行时先按返回的 initializations 为初始团队所有成员初始化原生 subagent（只回复 ready 并结束初始化轮次），立即使用 bind_team_roster_member 保存宿主返回的路径；成员与 subagent 一对一固定对应，包括暂时等待依赖的成员。确认初始团队全部初始化完成后才派发任务。追加岗位仅要求完成该新岗位的初始化，不暂停原成员任务。后续每项任务使用 followup_task 接续该成员，不另建执行者。绑定回执未落盘时保留关联并重读，不重复创建。每项 work 有不同成员的 review，review 的 writeScopes=[]，依赖目标的 submitted。只有下游需要通过验收的结果时才依赖 accepted。task.context 填必要需求、接口契约、用户约束；完整的验收条件不可省略。execute=true 仅允许 Leader 派发，插件不会启动模型。
+2. 使用 plan_team 保存最小必要角色和任务 DAG。先检查 planReview：pending 时展示 read_team_plan 的目标、包含/排除范围、交付与验收、岗位理由、模型/并发/预算，等待用户确认，不创建或初始化成员。用户之后在聊天说“按这个做”等，即以实际用户原话调用 approve_team_plan，传当前 planVersion、planHash 和稳定 requestId；不再要求点面板。不要把首次“执行”请求当成尚未展示计划的批准。approved 后先按返回的 initializations 为初始团队所有成员初始化原生 subagent（只回复 ready 并结束初始化轮次），立即使用 bind_team_roster_member 保存宿主返回的路径；成员与 subagent 一对一固定对应，包括暂时等待依赖的成员。确认初始团队全部初始化完成后才派发任务。追加岗位仅要求完成该新岗位的初始化，不暂停原成员任务。后续每项任务使用 followup_task 接续该成员，不另建执行者。绑定回执未落盘时保留关联并重读，不重复创建。每项 work 有不同成员的 review，review 的 writeScopes=[]，依赖目标的 submitted。只有下游需要通过验收的结果时才依赖 accepted。task.context 填必要需求、接口契约、用户约束；完整的验收条件不可省略。execute=true 仅允许 Leader 派发，插件不会启动模型。
 3. 对本次可同时执行的就绪任务一次调用 claim_team_tasks（taskIds），使用最新 revision。返回 dispatches 是预留，不能报告成员已启动。它逐项检查依赖、并发、共享资源和写范围冲突，全部通过才一次提交。单项也可用 claim_team_task。不要为每项任务重复读全历史；控制回执已经返回最新 revision、readiness 和 recovery。
 4. 由主会话调用宿主原生 spawn_agent（首次）或 followup_task（已绑定成员接续），使用返回的 prompt 和 spawnOptions，保留 TEAM_WORKSPACE_ATTEMPT 标记，要求成员先发仅含该标记的公开 commentary，最终交付首行也包含该标记；JSON 交付/审查用 attemptMarker 字段。某些宿主会加密派发输入，公开回执用于关联本轮，不解密输入。不同 attempt 不可复用标记；已启动而未落盘时等待观察，不能重复 spawn。不要用 create_thread 创建侧栏聊天。向成员说明共同工作区、文件责任，禁止覆盖他人修改。首次默认 fork_turns=none，以派发包传递必要背景；模型/推理档位仅使用明确配置的 route。接续不能清空已有原生线程上下文，不为省 token 静默换成员。
 5. 使用原生工具返回的真实 thread ID 或成员路径（例如 /root/reader）调用 bind_team_member。插件会从本 Leader 的宿主活动记录解析路径，不要求用户查 ID。插件核对该成员的 Leader、cwd 和本轮 marker。若宿主记录尚未落盘，保留返回的 ID 并稍后重试绑定，不再 spawn。启动结果不明时先查宿主成员状态，不重派、不释放预留。只有明确未启动时使用 release_team_reservation。
@@ -112,3 +112,14 @@ destination=leader 表示回到原 Leader；面板通过当前项目、Leader �
 configure_team_policy 可设置 autoRepair=true、maxReviewRounds=3（含首次审查，1–10）。仅在 Leader 接收并确认结构化 rework 后创建修复与不同成员的复审，不自动启动模型。原任务/审查置为被替代的历史，supersededBy 指向新任务，下游依赖指向新修复/复审；旧证据不作废删除。findings 用稳定 id/severity/status/description；resolved 还须 resolutionEvidence。严重问题不能遗漏或降低严重度绕过，独立复审必须按同一 ID 明确关闭。轮次超限暂停并升级给 Leader；不要用改派重置 attempts 或自动无限返工。
 
 reassign_team_task 用 taskId/memberId/note/稳定 requestId 改派 waiting/blocked 任务。running 先停止并 settle；submitted/accepted 先显式 rework。原执行身份固化到 attempt.memberId，原消息、检查点和用量保持归属；旧结果不能接收到新轮次。改派不复制或合并旧 worktree 修改，必要时先由 Leader 核对交接与候选。remove_team_member 只移除无未完成任务且宿主最新轮次确认空闲的成员，不删除原生线程或历史。移除释放活跃岗位名额（最多 8），旧 ID 不复用；不能给移除岗位分配任务或继续发送协调消息。升级后重启宿主再控制团队，勿让旧驻留连接操作新版状态。
+
+## 0.11.0 计划确认与范围变更
+
+- plan_team / rebuild_project_team / plan_team_from_profile 使用 approvalMode=auto（默认）/required/immediate。auto 对有质量合同或目标覆盖、多个写入岗位、至少三个交付任务或至少四个成员的新团队先确认；简单明确任务沿用已有执行授权。execute=false 始终只保存草案；required 始终等待。immediate 必须来自用户明确要求直接执行，并将实际指令记录为 executionAuthorization。
+- read_team_plan 按需读完整配置和版本摘要。revise_team_plan 原子修改未启动初始草案，或替换待确认扩展配置，保留最近 20 版原文，递增版本与内容 hash。每项 work 仍须一个独立 review；不能绕过依赖、岗位或范围校验。面板可编辑目标、职责、验收，完整 JSON 可增删岗位、调整依赖、模型和预算。
+- approve_team_plan / cancel_team_plan 绑定当前 planVersion、planHash、revision 和稳定 requestId，拒绝过期确认，重试不重复派发。聊天确认由 Leader 如实记录为 leader-recorded-user-confirmation；面板点击记录为 panel-user-action。此来源是协议审计记录，工具本身不独立验证用户聊天原文。确认仅授权执行，不是验收。
+- 待确认初始计划没有 initializations，不允许 start/claim/bind/worktree 准备。取消保留草案和版本历史；普通 plan_team 不会静默重建。用户明确要求重新组建时才用 rebuild_project_team。
+- 原团队内明确、在原授权范围内的新增任务、普通调度和独立复审沿用授权。新增岗位、目标/范围实质扩大、提高并发或执行预算用 propose_team_change；add_team_members 和提高额度的 configure_team_policy 自动暂存提案。add_team_tasks 的 scopeChange=true 或分配给待批准岗位时也暂存。语义上的目标扩展由 Leader 识别并明确标注，不能用普通追加绕过确认。
+- 待确认扩展不应用成员、任务或额度变化，原成员仍可继续。可继续把新岗位任务加入该提案；每次编辑递增版本，旧确认失效。批准后原子应用；取消只丢弃该提案。不会因普通修复重复打断用户。
+- 面板确认先持久保存，再向主会话发送继续请求。通知失败不会撤销确认或自动重发；返回主会话继续即可。插件不直接启动模型，Leader 须核对版本确认仍有效后用原生成员工具继续。
+- 带确认流程的记录最低版本为 0.11.0，0.10.0 连接会在写入前拒绝。既有团队普通任务保持原授权；首次提出岗位、范围或预算扩展时建立既有授权基线并暂存提案，仍不改变原成员身份或正在执行的任务。

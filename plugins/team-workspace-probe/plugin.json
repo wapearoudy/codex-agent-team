@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "team-workspace-probe",
-  "version": "0.10.0",
-  "description": "Conversation-scoped team execution with real attempt history, independent review and an embedded read-only activity view.",
+  "version": "0.11.1",
+  "description": "Conversation-scoped team execution with real attempt history, version-bound plan approval, independent review and an embedded team view.",
   "author": {
     "name": "Team Workspace"
   },
@@ -11,7 +11,7 @@
       "interface": {
         "displayName": "Team Workspace",
         "shortDescription": "当前项目的团队执行与任务依赖",
-        "longDescription": "当前 Codex 主会话担任 Leader，每个项目保留一个固定团队，成员与原生 subagent 一对一。面板展示真实任务、进度、成员执行、依赖和公开证据，支持任务与成员联动、原生会话导航、任务轮次回看和阅读位置恢复。指令留在当前对话。实验性开发版。",
+        "longDescription": "当前 Codex 主会话担任 Leader，每个项目保留一个固定团队，成员与原生 subagent 一对一。复杂新团队先确认计划，面板支持草案编辑、版本绑定确认及取消；范围扩展独立确认。面板展示真实任务、进度、成员执行、依赖和公开证据，支持任务与成员联动、原生会话导航、任务轮次回看和阅读位置恢复。指令留在当前对话。实验性开发版。",
         "developerName": "Team Workspace",
         "category": "Developer Tools",
         "defaultPrompt": "打开当前项目的团队执行面板，不启动新任务。"

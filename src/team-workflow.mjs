@@ -4,7 +4,8 @@ import {parseReview} from './quality-gates.mjs';
 // A bounded action batch for the current Leader. This module never owns a model
 // loop, sends messages, runs tools, accepts work or silently restarts a worker.
 export function workflowActions(team,runs=[]) {
-  const actions=[],known=new Map(runs.map(r=>[r.attemptId,r]));
+  if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')return {actions:team.planReview.status==='pending'?[{type:'plan-review',version:team.planReview.version,hash:team.planReview.hash,requiresUserConfirmation:true}]:[],authority:'current-main-conversation',stage:'plan-review',automaticAcceptance:false};
+  const actions=team.planReview?.scope==='expansion'&&team.planReview.status==='pending'?[{type:'plan-review',version:team.planReview.version,hash:team.planReview.hash,requiresUserConfirmation:true}]:[],known=new Map(runs.map(r=>[r.attemptId,r]));
   for(const t of team.tasks) {
     const a=t.attempts.at(-1),run=known.get(a?.id);
     if(t.status==='running') {

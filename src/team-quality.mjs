@@ -72,7 +72,7 @@ export function recordFindings(team,review,target,verdict,{accept=false}={}){
     if(prior&&prior.severity!==f.severity)throw new Error('Finding severity cannot be downgraded or changed using the same ID');
   }
   if(accept)for(const f of openFindings(team,target).filter(f=>['blocker','high'].includes(f.severity)))if(!incoming.some(x=>x.id===f.id&&x.status==='resolved'&&nonempty(x.resolutionEvidence)))throw new Error(`Open finding ${f.id} needs explicit independent resolution evidence`);
-  if(incoming.length||team.findings?.length)team.requiresTeamWorkspaceVersion='0.10.0';
+  if(incoming.length||team.findings?.length)team.requiresTeamWorkspaceVersion??='0.10.0';
   team.findings??=[];
   for(const f of incoming){
     let row=team.findings.find(x=>x.id===f.id);
@@ -82,7 +82,7 @@ export function recordFindings(team,review,target,verdict,{accept=false}={}){
   }
 }
 export function planRepair(team,review,target,note){
-  team.requiresTeamWorkspaceVersion='0.10.0';
+  team.requiresTeamWorkspaceVersion??='0.10.0';
   const round=(target.repairRound??1)+1,limit=team.policy?.maxReviewRounds??3;
   if(round>limit){
     target.status='blocked';review.status='blocked';target.blockReason=review.blockReason=`Review round limit (${limit}) reached; Leader escalation required: ${note}`;

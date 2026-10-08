@@ -1,3 +1,4 @@
+import {validatePlanReview} from './team-plan-review.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -72,6 +73,7 @@ export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
   if(requiredRosterMembers(team,[task.id]).some(m=>!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
+  if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')add('plan-approval','请先确认当前版本的团队计划');
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
   reasons.push(...qualityBlockers(team,task));
   if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
@@ -128,7 +130,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&team.requiresTeamWorkspaceVersion!=='0.10.0')throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}
