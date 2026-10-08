@@ -7,7 +7,7 @@ import {NativeMembers} from './native-members.mjs';
 import {parseReview,assertReviewPass} from './quality-gates.mjs';
 import {queueMessage,messageAction,recordMessageDelivery,acknowledgeMessage,mailboxProjection} from './team-mailbox.mjs';
 import {recordCheckpoint,checkpointProjection,buildHandoff} from './team-checkpoints.mjs';
-import {rosterPacket} from './team-roster.mjs';
+import {rosterPacket,requiredRosterMembers} from './team-roster.mjs';
 import {memberNaming,memberTitleAction} from './team-naming.mjs';
 import {assertBudget,usageReport,normalizePolicy,compactHandoff,nativeRoute} from './team-policy.mjs';
 import {diagnostics} from './team-diagnostics.mjs';
@@ -62,8 +62,9 @@ export class LeaderEngine {
     if(rosterTeam.policy?.tokenLimit)assertBudget(rosterTeam,await this.observations(rosterTeam));
     if(rosterTeam.members.some(m=>m.recoveryControl?.status==='unavailable'))throw new Error('A native member handle is unavailable; preserve the roster and verify recovery before dispatch');
     if(rosterTeam.fixedRoster){
-      if(rosterTeam.members.some(m=>!m.agentThreadId))throw new Error('Initialize and bind every fixed native member before dispatching tasks');
-      verified.push(...await Promise.all(rosterTeam.members.filter(m=>!m.rosterVerified).map(async m=>{const run=await this.observer.inspect(rosterTeam.leaderThreadId,rosterTeam.projectPath,m.agentThreadId,m.rosterMarker);if(!run.turnId||run.status!=='completed')throw new Error('Member initialization is not complete; observe the same member without respawning');return {id:m.id,threadId:m.agentThreadId,turnId:run.turnId};})));
+      const required=requiredRosterMembers(rosterTeam,taskIds);
+      if(required.some(m=>!m.agentThreadId))throw new Error('Initialize and bind every fixed native member required by these tasks before dispatching');
+      verified.push(...await Promise.all(required.filter(m=>!m.rosterVerified).map(async m=>{const run=await this.observer.inspect(rosterTeam.leaderThreadId,rosterTeam.projectPath,m.agentThreadId,m.rosterMarker);if(!run.turnId||run.status!=='completed')throw new Error('Member initialization is not complete; observe the same member without respawning');return {id:m.id,threadId:m.agentThreadId,turnId:run.turnId};})));
     }
     const {team}=await this.store.update(id,owner,revision,t=>{
       for(const item of verified){const m=t.members.find(m=>m.id===item.id);if(m.agentThreadId!==item.threadId)throw new Error('Roster changed');m.rosterVerified=true;m.initializationTurnId=item.turnId;m.status='idle';}
@@ -191,6 +192,44 @@ export class LeaderEngine {
     t.state='delivered';t.finalAcceptance={source:'main-conversation-leader',note,checks,at:now()};t.dispatchPaused=true;
   });return this.receipt(owner,id);}
   async start(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{if(t.state==='superseded')throw new Error('Historical team cannot restart');if(t.state==='delivered')return;t.dispatchPaused=false;t.state='active';});return this.receipt(owner,id);}
+  async addMembers(owner,id,revision,members,requestId){
+    if(typeof requestId!=='string'||!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId))throw new Error('A stable UUID request ID is required');
+    if(!Array.isArray(members)||!members.length||members.length>8)throw new Error('Provide 1–8 new members');
+    // Accept configuration only. Native identity and initialization markers are
+    // always assigned here, never copied from caller-provided runtime fields.
+    const inputs=members.map(m=>({id:m.id,role:m.role,responsibility:m.responsibility,reason:m.reason,writeScopes:structuredClone(m.writeScopes),...(m.route?{route:{...(m.route.model?{model:m.route.model}:{}),...(m.route.reasoningEffort?{reasoningEffort:m.route.reasoningEffort}:{})}}:{})}));
+    const hash=createHash('sha256').update(JSON.stringify(inputs)).digest('hex');
+    const replay=team=>{
+      if(team.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
+      if(!team.fixedRoster)throw new Error('Adding members requires a fixed native roster');
+      const saved=team.memberAdditions?.find(r=>r.requestId===requestId);
+      if(saved&&saved.hash!==hash)throw new Error('Member addition request ID already has different contents');
+      return saved;
+    };
+    const existing=replay(await this.native(owner,id));
+    if(existing)return {...await this.receipt(owner,id),memberAddition:{requestId,memberIds:existing.memberIds,replayed:true}};
+    let record;
+    try{
+      const updated=await this.store.update(id,owner,revision,t=>{
+        replay(t);
+        const timestamp=now();
+        t.members.push(...inputs.map(m=>({...m,status:'planned',agentThreadId:null,rosterMarker:`TEAM_WORKSPACE_MEMBER:${randomUUID()}`,rosterVerified:false,addedAt:timestamp,lastActivityAt:timestamp})));
+        validatePlan(t);
+        const addition={requestId,hash,memberIds:inputs.map(m=>m.id),at:timestamp};
+        t.memberAdditions??=[];t.memberAdditions.push(addition);
+        t.events.push({at:timestamp,type:'members-added-to-fixed-team',requestId,memberIds:addition.memberIds});
+        return addition;
+      });
+      record=updated.result;
+    }catch(error){
+      // Concurrent retries may have committed while this request waited for the
+      // revision lock. Recover that exact request, never create another role.
+      const committed=replay(await this.native(owner,id));
+      if(!committed)throw error;
+      return {...await this.receipt(owner,id),memberAddition:{requestId,memberIds:committed.memberIds,replayed:true}};
+    }
+    return {...await this.receipt(owner,id),memberAddition:{requestId,memberIds:record.memberIds,replayed:false}};
+  }
   async addTasks(owner,id,revision,tasks){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(t.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
     const timestamp=now();t.tasks.push(...tasks.map(task=>({...task,status:'waiting',attempt:0,attempts:[],evidence:[],history:[{at:timestamp,type:'added'}],blockReason:null,createdAt:timestamp,updatedAt:timestamp})));

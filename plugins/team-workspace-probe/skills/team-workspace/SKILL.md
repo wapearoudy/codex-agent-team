@@ -12,7 +12,7 @@ description: 在当前 Codex 对话中由主会话担任 Leader，使用宿主�
 ## 执行闭环
 
 1. plan_team 和所有团队工具都会核对宿主当前项目；已有上下文时无需先重复调用 get_current_project。只有需要了解项目目录时调用它，不扫描或复制全项目。Leader 按需读文件并复用当前对话的信息。若没有宿主原生 subagent 创建、接续、等待和中断能力，如实报告缺失，不退回独立 app-server 模型会话。
-2. 使用 plan_team 保存最小必要角色和任务 DAG。执行时先按返回的 initializations 为所有成员初始化原生 subagent（只回复 ready 并结束初始化轮次），立即使用 bind_team_roster_member 保存宿主返回的路径；成员与 subagent 一对一固定对应，包括暂时等待依赖的成员。确认全部初始化完成后才派发任务。后续每项任务使用 followup_task 接续该成员，不另建执行者。绑定回执未落盘时保留关联并重读，不重复创建。每项 work 有不同成员的 review，review 的 writeScopes=[]，依赖目标的 submitted。只有下游需要通过验收的结果时才依赖 accepted。task.context 填必要需求、接口契约、用户约束；完整的验收条件不可省略。execute=true 仅允许 Leader 派发，插件不会启动模型。
+2. 使用 plan_team 保存最小必要角色和任务 DAG。执行时先按返回的 initializations 为初始团队所有成员初始化原生 subagent（只回复 ready 并结束初始化轮次），立即使用 bind_team_roster_member 保存宿主返回的路径；成员与 subagent 一对一固定对应，包括暂时等待依赖的成员。确认初始团队全部初始化完成后才派发任务。追加岗位仅要求完成该新岗位的初始化，不暂停原成员任务。后续每项任务使用 followup_task 接续该成员，不另建执行者。绑定回执未落盘时保留关联并重读，不重复创建。每项 work 有不同成员的 review，review 的 writeScopes=[]，依赖目标的 submitted。只有下游需要通过验收的结果时才依赖 accepted。task.context 填必要需求、接口契约、用户约束；完整的验收条件不可省略。execute=true 仅允许 Leader 派发，插件不会启动模型。
 3. 对本次可同时执行的就绪任务一次调用 claim_team_tasks（taskIds），使用最新 revision。返回 dispatches 是预留，不能报告成员已启动。它逐项检查依赖、并发、共享资源和写范围冲突，全部通过才一次提交。单项也可用 claim_team_task。不要为每项任务重复读全历史；控制回执已经返回最新 revision、readiness 和 recovery。
 4. 由主会话调用宿主原生 spawn_agent（首次）或 followup_task（已绑定成员接续），使用返回的 prompt 和 spawnOptions，保留 TEAM_WORKSPACE_ATTEMPT 标记，要求成员先发仅含该标记的公开 commentary，最终交付首行也包含该标记；JSON 审查用 attemptMarker 字段。某些宿主会加密派发输入，公开回执用于关联本轮，不解密输入。不同 attempt 不可复用标记；已启动而未落盘时等待观察，不能重复 spawn。不要用 create_thread 创建侧栏聊天。向成员说明共同工作区、文件责任，禁止覆盖他人修改。首次默认 fork_turns=none，以派发包传递必要背景；模型/推理档位仅使用明确配置的 route。接续不能清空已有原生线程上下文，不为省 token 静默换成员。
 5. 使用原生工具返回的真实 thread ID 或成员路径（例如 /root/reader）调用 bind_team_member。插件会从本 Leader 的宿主活动记录解析路径，不要求用户查 ID。插件核对该成员的 Leader、cwd 和本轮 marker。若宿主记录尚未落盘，保留返回的 ID 并稍后重试绑定，不再 spawn。启动结果不明时先查宿主成员状态，不重派、不释放预留。只有明确未启动时使用 release_team_reservation。
@@ -70,11 +70,19 @@ read_team_handoff 只读返回该任务目标、约束、职责、验收条件�
 
 ## 每个项目一个固定团队（0.6.0）
 
-先 open_team_workspace / read_team。已有团队时直接复用成员：为新工作生成唯一 task ID 和独立 review，使用 add_team_tasks 追加；即使上一批已 finish，仍可追加，旧验收进入 acceptanceHistory。不要每次重新 plan 或 spawn 成员。plan_team 在已有项目团队时返回 reused=true 与现有团队，不创建替代者；按返回提示追加任务。成员暂不适合任务时先向 Leader 说明分配限制，不能自动重建。
+先 open_team_workspace / read_team。已有团队时直接复用成员：为新工作生成唯一 task ID 和独立 review，使用 add_team_tasks 追加；即使上一批已 finish，仍可追加，旧验收进入 acceptanceHistory。不要每次重新 plan 或 spawn 成员。plan_team 在已有项目团队时返回 reused=true 与现有团队，不创建替代者；按返回提示追加任务。已有岗位不足以处理用户目标时使用 add_team_members 追加所需岗位，不能自动重建。
 
 只有用户明确要求“重新组建团队”时调用 rebuild_project_team，并使用稳定 requestId。先停止并接收旧执行和初始化轮次；重建将旧团队归入历史。历史团队不能 start/claim 再派发，允许只读和必要停止/接收终态清理。open_team_workspace 主视图只返回一个当前项目团队，旧记录保留，不提供多个并行团队选择。
 
 同一项目在其他 Leader 对话已有固定团队时保持归属并说明需在原 Leader 接续；插件不能把无宿主句柄的旧成员伪装成新主会话可控。禁止为了绕过这一边界自动创建第二个团队。
+
+## 追加岗位（0.9.3）
+
+用户要求新增岗位，或已授权任务需要当前团队尚不具备的职责时，调用 `add_team_members`，传当前 `teamId`、最新 `revision`、稳定 UUID `requestId` 和 `members`。每个岗位有唯一 `id`、`role`、`responsibility`、`reason`、`writeScopes`，仅在用户明确配置时传 `route`。团队总人数最多 8；审查岗位 `writeScopes=[]`。使用唯一岗位 ID，不通过改旧成员 ID、覆盖原线程或重建团队腾位置。
+
+工具仅登记新岗位，不启动模型、不追加业务任务，也不解除已有暂停或撤销之前的验收。`memberAddition.memberIds` 标识本次新增岗位。按 `initializations` 只为尚未绑定的新岗位创建原生 subagent（只回复 ready），立即 `bind_team_roster_members` 保存真实路径，并按 titleActions 设置名称。已存在 `threadId` 或 action=observe-existing-member 时继续核对原成员，禁止再次 spawn。完成初始化后使用 `add_team_tasks` 追加任务与独立 review，再 claim/followup 原成员线程。
+
+同一请求重试保留原 `requestId` 与配置；已提交的请求即使携带旧 revision 也会返回原岗位和标记。相同 `requestId` 改配置会被拒绝。并发扩岗造成 revision 冲突时先读取最新状态再重试原请求，不能改 ID 重复追加。批量失败不登记部分岗位。原成员执行、任务历史、固定团队身份和项目归属保持；新增岗位未初始化只阻止分配给它的任务，初始团队仍须先全员初始化。
 
 ## 原生会话导航与任务回看（0.7.0）
 

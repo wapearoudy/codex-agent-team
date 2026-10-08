@@ -5,7 +5,7 @@ import { join,resolve,isAbsolute,win32 } from 'node:path';
 import {DurableStore} from './durable-store.mjs';
 import {validateMailbox} from './team-mailbox.mjs';
 import {validateCheckpoints} from './team-checkpoints.mjs';
-import {validateRoster} from './team-roster.mjs';
+import {validateRoster,requiredRosterMembers} from './team-roster.mjs';
 import {TeamArchive} from './team-archive.mjs';
 import {TeamDocument} from './team-document.mjs';
 const now=()=>new Date().toISOString();
@@ -66,6 +66,7 @@ export function consumedAttempts(task){return task.attempts?.length?task.attempt
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
+  if(requiredRosterMembers(team,[task.id]).some(m=>!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
   if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
   for(const d of task.dependencies){const pre=team.tasks.find(t=>t.id===d.taskId);if(!(d.when==='submitted'?['submitted','accepted'].includes(pre?.status):pre?.status==='accepted'))add('dependency',`等待 ${d.taskId} ${d.when==='accepted'?'验收':'提交'}`,d.taskId);}

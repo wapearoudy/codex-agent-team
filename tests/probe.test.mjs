@@ -22,9 +22,13 @@ test('real stdio process: discovery, nonce roundtrip, resource and safe output',
   try {
     await client.connect(transport);
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map(t=>t.name).sort(), ['accept_team_review','add_team_tasks','begin_stop_trial','bind_team_member','bind_team_members','bind_team_roster_member','bind_team_roster_members','cancel_team_navigation','cancel_team_task','claim_team_task','claim_team_tasks','edit_team_task','finish_team','get_current_project','integrate_team','message_execution_probe','message_team_member','open_host_probe','open_team_workspace','pause_team_dispatch','plan_team','probe_roundtrip','read_execution_probe','read_team','read_team_handoff','read_team_navigation','rebuild_project_team','reconcile_team','reconcile_team_message','record_team_checkpoint','record_team_message_delivery','record_team_navigation','recover_team_integration','release_team_reservation','request_team_navigation','rework_team_task','settle_team_task','start_execution_probe','start_team','stop_execution_probe','stop_team','acknowledge_team_peer_message','advance_team_workflow','configure_team_policy','export_team_report','integrate_team_worktree','plan_team_from_profile','prepare_team_worktree','query_team_tasks','read_project_team_takeover','read_team_context','read_team_inbox','read_team_profiles','read_team_recovery','record_team_peer_delivery','record_team_recovery_control','save_team_profile','send_team_peer_message','read_team_usage','record_team_peer_sender_delivery'].sort());
+    assert.deepEqual(tools.map(t=>t.name).sort(), ['accept_team_review','add_team_members','add_team_tasks','begin_stop_trial','bind_team_member','bind_team_members','bind_team_roster_member','bind_team_roster_members','cancel_team_navigation','cancel_team_task','claim_team_task','claim_team_tasks','edit_team_task','finish_team','get_current_project','integrate_team','message_execution_probe','message_team_member','open_host_probe','open_team_workspace','pause_team_dispatch','plan_team','probe_roundtrip','read_execution_probe','read_team','read_team_handoff','read_team_navigation','rebuild_project_team','reconcile_team','reconcile_team_message','record_team_checkpoint','record_team_message_delivery','record_team_navigation','recover_team_integration','release_team_reservation','request_team_navigation','rework_team_task','settle_team_task','start_execution_probe','start_team','stop_execution_probe','stop_team','acknowledge_team_peer_message','advance_team_workflow','configure_team_policy','export_team_report','integrate_team_worktree','plan_team_from_profile','prepare_team_worktree','query_team_tasks','read_project_team_takeover','read_team_context','read_team_inbox','read_team_profiles','read_team_recovery','record_team_peer_delivery','record_team_recovery_control','save_team_profile','send_team_peer_message','read_team_usage','record_team_peer_sender_delivery'].sort());
     assert.deepEqual(tools.find(t=>t.name==='record_team_navigation')._meta.ui.visibility,['model']);
     assert.deepEqual(tools.find(t=>t.name==='open_team_workspace')._meta['openai/ui'].entrypoints,[{type:'thread'}]);
+    const addMembers=tools.find(t=>t.name==='add_team_members');
+    assert.ok(addMembers.inputSchema.required.includes('requestId'));
+    assert.equal(addMembers.inputSchema.properties.members.maxItems,8);
+    assert.deepEqual(addMembers._meta.ui.visibility,['model']);
     const opened = await client.callTool({name:'open_host_probe',arguments:{},_meta:{'private-test-secret':'DO_NOT_LEAK'}});
     assert.equal(opened.structuredContent.client.name, 'protocol-test-not-desktop');
     assert.equal(opened.structuredContent.productReady,false);
@@ -38,7 +42,7 @@ test('real stdio process: discovery, nonce roundtrip, resource and safe output',
     assert.equal(reply.structuredContent.bootId,opened.structuredContent.bootId);
     const invalid = await client.callTool({name:'probe_roundtrip',arguments:{nonce:'invalid'}});
     assert.equal(invalid.isError,true);
-    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.9.2/host.html'});
+    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.9.3/host.html'});
     assert.equal(contents[0].mimeType,'text/html;profile=mcp-app');
     assert.deepEqual(contents[0]._meta['openai/ui'].availableDisplayModes,['fullscreen']);
     assert.ok(contents[0].text.includes('团队跟随当前对话'));
@@ -64,7 +68,9 @@ test('conversation-first tools remove project picker and duplicate goal form',as
     const plan=tools.find(t=>t.name==='plan_team');assert.equal('grantId' in plan.inputSchema.properties,false);assert.equal(plan.inputSchema.properties.execute.type,'boolean');
     assert.ok(tools.find(t=>t.name==='start_team')._meta.ui.visibility.includes('model'));
     const blocked=await client.callTool({name:'get_current_project',arguments:{}});assert.equal(blocked.isError,true);
-    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.9.2/host.html'});
+    const unauthorizedAddition=await client.callTool({name:'add_team_members',arguments:{teamId:randomUUID(),revision:1,requestId:randomUUID(),members:[{id:'docs',role:'Docs',responsibility:'Documentation',reason:'New role',writeScopes:['docs']}]}});
+    assert.equal(unauthorizedAddition.isError,true);assert.match(unauthorizedAddition.content[0].text,/host conversation identity/);
+    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.9.3/host.html'});
     for(const control of ['id="chooseProject"','id="projectSelect"','id="teamGoal"','id="planTeam"'])assert.equal(resource.contents[0].text.includes(control),false);
   }finally{await client.close();}
 });

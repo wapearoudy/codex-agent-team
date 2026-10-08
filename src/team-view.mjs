@@ -230,7 +230,7 @@ export function setupTeamView(app){
       if(!run?.outputs?.length)box.append(node('p',attempt.active?'正在执行，尚未提交最终结果。':'当前轮次没有可读取的公开最终输出。','muted'));
       const commands=node('details');commands.dataset.key='commands:'+attempt.attemptId;commands.append(node('summary','公开命令记录 · '+(run?.commands?.length??0)));
       for(const command of run?.commands??[]){const line=node('div',undefined,'command-record');line.append(node('small',label(command.status)+' · 退出码 '+(command.exitCode??'未结束')),node('pre',command.command));if(command.output)line.append(node('pre',command.output));commands.append(line);}box.append(commands);
-    }else box.append(node('p','成员已初始化，尚未执行任务。','muted'));
+    }else box.append(node('p',!member.agentThreadId?'岗位已登记，等待 Leader 创建并绑定原生成员。':member.rosterVerified===false?'成员正在初始化，完成后可接收任务。':'成员已初始化，尚未执行任务。','muted'));
     const actions=node('div',undefined,'detail-actions');const open=button('打开原生 subagent 会话',()=>void requestNavigation(member.id,attempt?.taskId,attempt?.attemptId),'subtle-button','member-native');
     open.disabled=!member.agentThreadId||!member.rosterVerified;actions.append(open,button('返回主会话',()=>void requestNavigation(member.id,attempt?.taskId,attempt?.attemptId,'leader'),'subtle-button','leader-native'));box.append(actions);
     box.append(node('p','这里按任务轮次展示公开结果。原生会话由宿主打开，宿主暂不支持定位到指定轮次。','muted'));

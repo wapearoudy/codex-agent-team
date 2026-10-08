@@ -44,6 +44,26 @@ async function boot(page){
  await expect(page.locator('#projectName')).toHaveText('interaction-fixture');
 }
 async function update(page){await page.evaluate(async()=>{window.data.team.revision++;await window.view.accept(structuredClone(window.data));});}
+test('appended roles appear without losing existing task selection or native identity',async()=>{
+ const {page,errors}=await open();try{
+  await page.locator('[data-task-id="t1"]').click();
+  await page.evaluate(()=>window.data.team.members.push({id:'docs',role:'文档岗位',responsibility:'维护项目文档',agentThreadId:null,rosterVerified:false,status:'planned'}));
+  await update(page);
+  await expect(page.locator('#membersHeading')).toHaveText('4 名成员');
+  await expect(page.locator('[data-focus-key="member:docs"]')).toHaveText('interaction-fixture-文档岗位');
+  await expect(page.locator('#taskDetail')).toContainText('任务 t1');
+  await expect(page.locator('[data-member-id="dev"]')).toHaveAttribute('data-selected','true');
+  await page.locator('[data-focus-key="member:docs"]').click();
+  await expect(page.locator('#memberDetail')).toContainText('岗位已登记，等待 Leader 创建并绑定原生成员。');
+  await page.evaluate(()=>{const m=window.data.team.members.find(m=>m.id==='docs');m.agentThreadId='docs-thread';m.rosterVerified=true;window.data.team.tasks.push({id:'guide',memberId:'docs',title:'更新指南',goal:'同步指南',acceptance:'检查通过',status:'waiting',dependencies:[],attempts:[],evidence:[]});});
+  await update(page);
+  await expect(page.locator('[data-member-id="docs"] [data-focus-key="chip:guide"]')).toHaveAttribute('title',/更新指南/);
+  await expect(page.locator('#memberDetail')).toContainText('更新指南');
+  await expect(page.locator('#memberDetail [data-focus-key="member-native"]')).toBeEnabled();
+  assert.equal(await page.evaluate(()=>window.data.team.members.find(m=>m.id==='dev').agentThreadId),'dev-thread');
+  await page.screenshot({path:dir+'/appended-role.png',fullPage:true});assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
 test('DAG hover, pin, full chain, sibling exclusion and keyboard Escape',async()=>{
  const {page,errors}=await open();try{
   const t2=page.locator('[data-task-id="t2"]');await t2.hover();await expect(t2).toHaveAttribute('data-related','true');
