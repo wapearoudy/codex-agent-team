@@ -33,7 +33,7 @@ test('active panel polls lightweight state and reloads evidence only when its to
       window.view=setupTeamView({async callServerTool({name,arguments:args}){
         window.calls.push({name,args,at:performance.now()});
         if(name==='open_team_workspace')return {structuredContent:{kind:'team-workspace',context:{cwd:team.projectPath},teams:[{id:team.id}]}};
-        if(args.view==='full'){
+        if(args.view==='panel'){
           const response={structuredContent:snapshot()};
           if(window.holdFull)return new Promise(resolve=>{window.releaseFull=()=>resolve(response);});
           return response;
@@ -42,14 +42,14 @@ test('active panel polls lightweight state and reloads evidence only when its to
       }});await window.view.connect();
     });
     await expect.poll(()=>page.evaluate(()=>window.calls.filter(c=>c.args?.view==='state').length)).toBeGreaterThanOrEqual(2);
-    const timing=await page.evaluate(()=>{const states=window.calls.filter(c=>c.args?.view==='state');return {interval:states[1].at-states[0].at,full:window.calls.filter(c=>c.args?.view==='full').length};});
-    assert.ok(timing.interval<1100,'active polling must not add the old 1500ms wait');assert.equal(timing.full,1,'status-only changes must not retransmit history');
+    const timing=await page.evaluate(()=>{const states=window.calls.filter(c=>c.args?.view==='state');return {interval:states[1].at-states[0].at,full:window.calls.filter(c=>c.args?.view==='panel').length};});
+    assert.ok(timing.interval>=800&&timing.interval<1200,'completed execution waits about 1s instead of continuing at 250ms');assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.args?.view==='full').length),0);assert.equal(timing.full,1,'status-only changes must not retransmit history');
     await expect(page.locator('#memberTree')).toContainText('执行已结束');
     await page.locator('[data-focus-key="history:dev"]').click();await page.locator('[data-focus-key="attempt:attempt"]').click();
     await expect(page.locator('#memberDetail')).toContainText('Original public evidence');
     await page.evaluate(()=>{window.changedEvidence=true;});
     await expect(page.locator('#memberDetail')).toContainText('Updated public evidence');
-    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.args?.view==='full').length),2);
+    assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.args?.view==='panel').length),2);
     await page.evaluate(()=>{window.changedEvidence=false;window.holdFull=true;});
     await expect.poll(()=>page.evaluate(()=>typeof window.releaseFull)).toBe('function');
     await page.evaluate(()=>{window.view.disconnect();window.releaseFull();});
@@ -103,14 +103,14 @@ test('returning to a visible panel wakes sync; slow navigation does not block po
       const {setupTeamView}=await import('/team-view.mjs');window.hiddenFixture=true;Object.defineProperty(document,'hidden',{get:()=>window.hiddenFixture,configurable:true});window.calls=[];window.activeReads=0;window.peakReads=0;window.completedReads=0;window.navigationReads=0;
       const team={id:'team',mode:'host-leader',projectPath:'E:/example',leaderThreadId:'leader',revision:2,state:'active',members:[{id:'dev',role:'Dev',responsibility:'Read source',writeScopes:[]}],tasks:[{id:'work',title:'Read source',memberId:'dev',kind:'work',status:'running',dependencies:[],attempts:[{id:'attempt',state:'running'}],evidence:[]}]};
       localStorage.setItem('team-workspace:interaction:v1:'+JSON.stringify([team.projectPath,team.leaderThreadId,team.id]),JSON.stringify({navigationId:'pending-navigation'}));
-      const full={kind:'team-detail',team,detailToken:'same',runs:[],observedAt:new Date().toISOString()};
+      const activeRun={taskId:'work',memberId:'dev',attemptId:'attempt',status:'inProgress',connection:'connected'};const full={kind:'team-detail',team,detailToken:'same',runs:[activeRun],observedAt:new Date().toISOString()};
       window.view=setupTeamView({async callServerTool({name,arguments:args}){
         if(name==='read_team_navigation'){window.navigationReads++;return new Promise(()=>{});}
         if(name==='open_team_workspace')return {structuredContent:{kind:'team-workspace',context:{cwd:team.projectPath},teams:[{id:team.id}]}};
-        if(args.view==='full')return {structuredContent:full};
+        if(args.view==='panel')return {structuredContent:full};
         window.calls.push(performance.now());window.activeReads++;window.peakReads=Math.max(window.peakReads,window.activeReads);
         await new Promise(resolve=>setTimeout(resolve,180));window.activeReads--;window.completedReads++;
-        return {structuredContent:{kind:'team-state',team:{id:team.id,revision:2},detailToken:'same',runs:[],observedAt:new Date().toISOString()}};
+        return {structuredContent:{kind:'team-state',team:{id:team.id,revision:2},detailToken:'same',runs:[activeRun],observedAt:new Date().toISOString()}};
       }});await window.view.connect();
     });
     await expect.poll(()=>page.evaluate(()=>window.completedReads)).toBeGreaterThanOrEqual(1);

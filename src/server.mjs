@@ -20,10 +20,10 @@ import {recoveryPacket,recordRecoveryControl,takeoverBoundary} from './team-reco
 import {queuePeerMessage,peerInbox,acknowledgePeerMessage,recordPeerDelivery} from './team-peer-mailbox.mjs';
 import {TeamWorktrees} from './team-worktrees.mjs';
 
-const URI = 'ui://team-workspace-probe/0.9.3/host.html';
+const URI = 'ui://team-workspace-probe/0.9.4/host.html';
 const bootId = randomUUID();
 const startedAt = new Date().toISOString();
-const server = new McpServer({ name: 'team-workspace-probe', version: '0.9.3' });
+const server = new McpServer({ name: 'team-workspace-probe', version: '0.9.4' });
 const runtime = new PrototypeRuntime();
 const engine=new TeamEngine({root:process.env.TEAM_WORKSPACE_DATA_ROOT});
 const leader=new LeaderEngine({root:process.env.TEAM_WORKSPACE_DATA_ROOT,store:engine.store});
@@ -48,7 +48,7 @@ const owner=extra=>runtime.scope(extra?._meta);
 function snapshot(extra) {
   const peer = server.server.getClientVersion();
   return {
-    kind: 'host-connection-probe', pluginVersion:'0.9.3', productReady: false,
+    kind: 'host-connection-probe', pluginVersion:'0.9.4', productReady: false,
     observedAt: new Date().toISOString(), bootId, startedAt,
     source: 'live-mcp-connection',
     client: peer ? { name: peer.name, version: peer.version } : null,
@@ -62,7 +62,8 @@ function snapshot(extra) {
 }
 const result = (data) => {
   if(data.kind==='team-detail'&&data.team.mode==='host-leader'&&!data.detailToken)data=teamResponse(data,'summary','team-update');
-  return {content:[{type:'text',text:JSON.stringify(data)}],structuredContent:data};
+  const text=data.kind==='team-state'||data.displayLimits?.preview?JSON.stringify({kind:data.kind,teamId:data.team.id,revision:data.team.revision,detailToken:data.detailToken,displayLimits:data.displayLimits}):JSON.stringify(data);
+  return {content:[{type:'text',text}],structuredContent:data};
 };
 const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const guarded=fn=>async(args,extra)=>requestContext.run(async()=>{try{return result(await fn(args,extra));}catch(error){return {isError:true,content:[{type:'text',text:error.message}]};}});
@@ -79,7 +80,7 @@ const currentProject=extra=>requestContext.project(extra);
 async function assertCurrentTeam(extra,teamId){return authorizeTeam({owner:owner(extra),context:await currentProject(extra),store:engine.store,teamId});}
 registerAppTool(server,'open_team_workspace',{title:'团队',description:'打开当前 Codex 项目、当前会话关联的团队监管面板。项目来自宿主线程元数据，不要求重新选择项目或填写目标，不启动成员。',inputSchema:{},annotations:readOnly,_meta:{ui:{resourceUri:URI},'openai/ui':{entrypoints:[{type:'thread'}]}}},guarded(async(_,extra)=>{
   const context=await currentProject(extra),current=await projectTeams.current(owner(extra),context),teams=current?[current]:[];
-  return{kind:'team-workspace',version:'0.9.3',context,teams:teams.map(t=>({id:t.id,goal:t.goal,state:t.state,revision:t.revision,updatedAt:t.updatedAt})),observedAt:new Date().toISOString(),productReady:false};
+  return{kind:'team-workspace',version:'0.9.4',context,teams:teams.map(t=>({id:t.id,goal:t.goal,state:t.state,revision:t.revision,updatedAt:t.updatedAt})),observedAt:new Date().toISOString(),productReady:false};
 }));
 registerAppTool(server,'get_current_project',{title:'读取当前项目上下文',description:'自动读取触发此工具的 Codex 会话项目目录及必要说明。协调者直接沿用当前对话目标；不得要求用户去面板重选项目或重填需求。不会启动模型成员。',inputSchema:{},annotations:readOnly,_meta:{ui:{visibility:['model']}}},guarded(async(_,extra)=>({context:await currentProject(extra),executionMode:'host-leader',projectScan:false,instructions:'当前主会话就是 Leader。使用当前项目和已有对话上下文；按任务读取必要文件。'})));
 registerAppTool(server,'plan_team',{title:'组建当前项目团队',description:'直接用当前对话中用户已给出的目标和当前 Codex 项目组队。先调用 get_current_project 了解项目，再按实际需要生成成员和任务图。每项交付有独立审查。用户明确要求执行时设置 execute=true，保存后由当前主会话通过原生 subagent 工具派发，插件本身不启动模型；只要求计划时 execute=false。不要再要求选项目、重填目标或重复点开始。',inputSchema:{goal:z.string().min(8).max(2000),plan:planSchema,maxParallel:z.number().int().min(1).max(8).default(3),execute:z.boolean().default(false),requestId:z.string().uuid().optional()},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},_meta:{ui:{resourceUri:URI}}},guarded(async(args,extra)=>{
@@ -87,14 +88,14 @@ registerAppTool(server,'plan_team',{title:'组建当前项目团队',description
   return {kind:'team-detail',...await leader.receipt(o,team.id),reused,requestedGoal:args.goal,leaderAction:reused?'Reuse this fixed project team. Add missing roles with add_team_members, initialize only the new members, then append work and its independent review with add_team_tasks. Rebuild only at the user’s explicit request.':args.execute?'Initialize every fixed member using initializations and bind_team_roster_members, then claim ready tasks together and follow up the same native members. No model has been launched by plan_team.':null};
 }));
 registerAppTool(server,'rebuild_project_team',{description:'仅在用户明确要求重新组建团队时调用。要求旧成员全部停止并接收终态；归档旧团队并创建替代固定成员团队。普通新任务应 add_team_tasks 复用现有团队。',inputSchema:{goal:z.string().min(8).max(2000),plan:planSchema,maxParallel:z.number().int().min(1).max(8).default(3),execute:z.boolean().default(true),requestId:z.string().uuid()},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},_meta:{ui:{resourceUri:URI,visibility:['model']}}},guarded(async(args,extra)=>{const o=owner(extra),context=await currentProject(extra),{team}=await projectTeams.rebuild(o,context,args);return {kind:'team-detail',...await leader.read(o,team.id)};}));
-registerAppTool(server,'read_team',{description:'只读团队状态。默认 summary 返回当前成员、任务、就绪与恢复建议；state 用于面板轻量刷新；需要完整历史、公开交付或命令时明确传 full。面板可传最近 state 的 detailToken 读取同一已核对快照；当前项目授权和 revision 仍每次重新核对。不启动模型或恢复执行。',inputSchema:{...teamId,view:z.enum(['summary','state','full']).default('summary'),detailToken:z.string().regex(/^[a-f0-9]{64}$/).optional()},annotations:readOnly,_meta:{ui:{visibility:['app','model']}}},guarded(async(args,extra)=>{
+registerAppTool(server,'read_team',{description:'只读团队状态。默认 summary 返回当前成员、任务、就绪与恢复建议；state 用于面板轻量刷新；panel 返回有大小上限的展示预览，不能作为完整验收证据；完整历史、公开交付或命令明确传 full。panel/full 可传最近 state 的 detailToken 读取同一已核对快照；当前项目授权和 revision 仍每次重新核对。不启动模型或恢复执行。',inputSchema:{...teamId,view:z.enum(['summary','state','panel','full']).default('summary'),detailToken:z.string().regex(/^[a-f0-9]{64}$/).optional()},annotations:readOnly,_meta:{ui:{visibility:['app','model']}}},guarded(async(args,extra)=>{
  const o=await assertCurrentTeam(extra,args.teamId);
- if(args.view==='full'&&args.detailToken){
+ if(['full','panel'].includes(args.view)&&args.detailToken){
    const saved=await engine.store.get(args.teamId,o),cached=panelSnapshot.read(o,args.teamId,saved.revision,args.detailToken);
-   if(cached)return teamResponse(cached,'full');
+   if(cached)return teamResponse(cached,args.view);
  }
  const data=await readTeam(o,args.teamId);
- if(data.team.mode!=='host-leader')return {kind:'team-detail',...data,detailToken:'legacy-full'};
+ if(data.team.mode!=='host-leader'&&!['panel','state'].includes(args.view))return {kind:'team-detail',...data,detailToken:'legacy-full'};
  const projected=teamResponse(data,args.view);if(args.view==='state')panelSnapshot.save(o,data,projected.detailToken);return projected;
 }));
 registerAppTool(server,'request_team_navigation',{title:'定位原生成员会话',description:'保存用户点击的原生成员查看请求，核对当前Leader、项目、固定成员和指定任务轮次；返回主会话宿主导航操作，不创建或启动成员。',inputSchema:{...teamId,memberId:id,taskId:id.optional(),attemptId:z.string().uuid().optional(),destination:z.enum(['member','leader']).default('member'),requestId:z.string().uuid()},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:false},_meta:{ui:{visibility:['app','model']}}},guarded(async(a,e)=>navigation.request(await assertCurrentTeam(e,a.teamId),await currentProject(e),a)));

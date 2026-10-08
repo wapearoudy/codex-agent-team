@@ -2,6 +2,28 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {teamResponse} from '../src/team-responses.mjs';
 import {RequestContext} from '../src/request-context.mjs';
+import {PANEL_MAX_BYTES} from '../src/panel-response.mjs';
+
+import {largeDisplayFixture} from './fixtures/large-display.mjs';
+
+test('panel previews and state are bounded for multi-megabyte duplicated logs; full evidence stays exact',()=>{
+  const data=largeDisplayFixture(),panel=teamResponse(data,'panel'),state=teamResponse(data,'state');
+  assert.ok(Buffer.byteLength(JSON.stringify(panel))<=PANEL_MAX_BYTES);
+  assert.ok(Buffer.byteLength(JSON.stringify(state))<45*1024);
+  assert.equal(panel.displayLimits.truncated,true);assert.equal(panel.evidenceAccess.arguments.view,'full');
+  assert.equal(panel.team.tasks.length,6);assert.equal(panel.team.tasks[5].attempts.at(-1).id,'attempt5-2');
+  assert.equal(panel.team.tasks[0].attempts[0].observation,undefined);
+  assert.equal(state.runs.at(-1).activity.lastActivity,undefined);
+  assert.equal(teamResponse(data,'full').team,data.team);assert.equal(teamResponse(data,'full').runs[0].commands,data.runs[0].commands);
+  assert.equal(data.team.tasks[0].attempts[0].observation.commands[0].output.length,18000);
+});
+
+test('panel caps structural history and labels omissions without changing the saved roster or records',()=>{
+  const data=largeDisplayFixture();data.team.tasks=Array.from({length:300},(_,i)=>({...data.team.tasks[0],id:'task'+i,number:i+1,status:i===299?'running':'accepted'}));
+  const panel=teamResponse(data,'panel');assert.ok(Buffer.byteLength(JSON.stringify(panel))<=PANEL_MAX_BYTES);
+  assert.equal(panel.displayLimits.totalTasks,300);assert.equal(panel.displayLimits.truncated,true);
+  assert.ok(panel.team.tasks.some(t=>t.id==='task299'));assert.equal(data.team.tasks.length,300);
+});
 
 test('lightweight responses retain identities and dispatch but full evidence remains lossless',()=>{
   const original={team:{id:'team',revision:9,mode:'host-leader',state:'active',projectPath:'E:/project',leaderThreadId:'leader',members:[{id:'dev',role:'Dev',displayName:'project-Dev',agentThreadId:'child',agentPath:'/root/dev'}],tasks:[{id:'work',title:'Read source',memberId:'dev',status:'running',kind:'work',dependencies:[],attempts:[{id:'old'},{id:'now',state:'running',turnId:'turn',agentThreadId:'child'}],evidence:[{summary:'history '.repeat(20000)}]}]},runs:[{taskId:'work',attemptId:'old',outputs:[{text:'old evidence'}]},{taskId:'work',attemptId:'now',status:'inProgress',outputs:[{text:'exact public delivery'}],commands:[{command:'actual test',exitCode:0}],observedAt:'2026-10-07T12:00:00Z'}],readiness:[],recovery:[],initializations:[],messages:[],checkpoints:[],observationMode:'saved',dispatch:{attemptId:'now',marker:'exact-marker',prompt:'Every acceptance criterion and context stays here'}};

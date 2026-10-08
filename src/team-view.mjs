@@ -14,7 +14,7 @@ export function setupTeamView(app){
   const selectedTask=()=>current?.team.tasks.find(t=>t.id===ui.taskId);
   const selectedMember=()=>current?.team.members.find(m=>m.id===ui.memberId);
   const taskState=t=>taskDisplayState(t,current?.runs??[]);
-  const pollDelay=()=>document.hidden?10000:current?.team.tasks.some(t=>t.status==='running')?250:1000;
+  const pollDelay=()=>document.hidden?10000:current?.runs.some(r=>runIsActive(r)&&current.team.tasks.some(t=>t.status==='running'&&t.attempts.at(-1)?.id===r.attemptId))?250:1000;
   const liveFields=['status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','model','progress','activity','usage'];
   const liveRun=r=>Object.fromEntries(liveFields.filter(k=>r?.[k]!==undefined).map(k=>[k,r[k]]));
   const runSignature=runs=>JSON.stringify(runs.map(r=>[r.taskId,r.attemptId,r.status,r.connection,r.observationError,r.model,runIsActive(r),r.outputs,r.commands,r.progress,r.activity?.cursor,r.usage]));
@@ -63,7 +63,7 @@ export function setupTeamView(app){
     $('collapsedSummary').hidden=!ui.overviewCollapsed;$('teamBoard').hidden=!!ui.overviewCollapsed;
     $('emptyState').hidden=true;$('loadingState').hidden=true;
     const prep=team.preparation,omissions=prep?.omissions??prep?.excludedGeneratedLogs??[];
-    $('workspacePreparation').textContent=prep?.status==='blocked'?'工作区准备失败：'+prep.message:prep?.issues?.length?'验证限制：'+prep.issues.map(i=>i.path+' — '+i.message).join('；'):'';
+    $('workspacePreparation').textContent=prep?.status==='blocked'?'工作区准备失败：'+prep.message:prep?.issues?.length?'验证限制：'+prep.issues.map(i=>i.path+' — '+i.message).join('；'):current.displayLimits?.preview?'面板显示有限预览'+(current.displayLimits.totalTasks>tasks.length?'（'+tasks.length+'/'+current.displayLimits.totalTasks+' 项任务）':'')+'；完整交付和命令请打开原生成员会话，验收时按任务读取原始证据。':'';
     $('workspaceOmissions').hidden=!omissions.length;$('workspaceOmissions').replaceChildren(node('summary','历史产物筛选记录 · '+omissions.length+' 项'));
     for(const item of omissions)$('workspaceOmissions').append(node('p',item.path+' · '+item.reason));
     $('progressSegments').replaceChildren(...tasks.map(t=>{const b=button('',()=>chooseTask(t.id),'segment '+taskState(t),'progress:'+t.id);b.title=t.id+' '+t.title+' · '+label(taskState(t));b.setAttribute('aria-label',b.title);return b;}));
@@ -207,8 +207,10 @@ export function setupTeamView(app){
     const deliveryLabels={'queued':'待 Leader 发送 · 重试前先核对','host-accepted':'宿主已接收 · Leader 记录','unknown':'送达未知 · 不自动重发','failed':'发送失败','acknowledged':'成员公开确认'};
     for(const message of (current.messages??[]).filter(m=>m.taskId===task.id)){const el=node('div',undefined,'evidence');el.append(node('small',(deliveryLabels[message.status]??message.status)+(message.stale?' · 历史轮次':'')),node('p',message.text));box.append(el);}
     for(const r of current.runs.filter(r=>r.taskId===task.id))for(const message of r.messages??[]){const el=node('div',undefined,'evidence');el.append(node('small',message.delivery==='accepted-by-runtime'?'执行端已接收 · 是否已读未知':'送达未确认'),node('p',message.text));box.append(el);}
-    const raw=node('details');raw.dataset.key='task:'+task.id;raw.append(node('summary','执行标识与原始公开证据'),node('pre',JSON.stringify({attempts:task.attempts,evidence:task.evidence,runs:current.runs.filter(r=>r.taskId===task.id)},null,2)));box.append(raw);
+    const raw=node('details');raw.dataset.key='task:'+task.id;raw.append(node('summary',current.displayLimits?.preview?'执行标识与公开证据预览':'执行标识与原始公开证据'));
+    const populate=()=>{if(raw.open&&!raw.querySelector('pre'))raw.append(node('pre',JSON.stringify({attempts:task.attempts,evidence:task.evidence,runs:current.runs.filter(r=>r.taskId===task.id)},null,2)));};raw.addEventListener('toggle',populate);box.append(raw);
     raw.open=ui.expanded.includes(raw.dataset.key);
+    populate();
   }
   function renderMember(){
     const member=selectedMember(),box=$('memberDetail');box.hidden=!member||!ui.memberView;box.replaceChildren();if(box.hidden)return;
@@ -287,7 +289,7 @@ export function setupTeamView(app){
     const request=detailsWanted;detailsWanted=null;detailsRequest=request;
     void (async()=>{
       try{
-        const data=await call('read_team',{teamId:request.teamId,view:'full',...(request.detailToken?{detailToken:request.detailToken}:{})});
+        const data=await call('read_team',{teamId:request.teamId,view:'panel',...(request.detailToken?{detailToken:request.detailToken}:{})});
         if(request.generation===connectionGeneration&&targetTeamId===request.teamId)await accept(data);
       }catch(e){if(request.generation===connectionGeneration&&targetTeamId===request.teamId)errorState('详情同步失败：'+e.message+'；已收到的状态仍保留。');}
       finally{
@@ -324,7 +326,7 @@ export function setupTeamView(app){
       lastDiscovery=Date.now();$('projectName').textContent=data.context.cwd.split(/[\\/]/).filter(Boolean).at(-1);
       const teams=data.teams??[];$('teamSwitcher').hidden=true;
       targetTeamId=teams[0]?.id??null;
-      if(teams[0]){const detail=await call('read_team',{teamId:teams[0].id,view:current?.team.id===teams[0].id?'state':'full'});if(generation===connectionGeneration)await accept(detail);}
+      if(teams[0]){const detail=await call('read_team',{teamId:teams[0].id,view:current?.team.id===teams[0].id?'state':'panel'});if(generation===connectionGeneration)await accept(detail);}
       else{clearNavigation();renderNavigation();current=null;$('goalDetails').hidden=true;$('teamBoard').hidden=true;$('emptyState').hidden=false;$('loadingState').hidden=true;$('collapsedSummary').hidden=true;}
     }
     if(['team-update','team-summary','team-state'].includes(data.kind)){

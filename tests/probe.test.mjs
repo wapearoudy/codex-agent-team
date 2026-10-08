@@ -26,6 +26,7 @@ test('real stdio process: discovery, nonce roundtrip, resource and safe output',
     assert.deepEqual(tools.find(t=>t.name==='record_team_navigation')._meta.ui.visibility,['model']);
     assert.deepEqual(tools.find(t=>t.name==='open_team_workspace')._meta['openai/ui'].entrypoints,[{type:'thread'}]);
     const addMembers=tools.find(t=>t.name==='add_team_members');
+    assert.ok(tools.find(t=>t.name==='read_team').inputSchema.properties.view.enum.includes('panel'));
     assert.ok(addMembers.inputSchema.required.includes('requestId'));
     assert.equal(addMembers.inputSchema.properties.members.maxItems,8);
     assert.deepEqual(addMembers._meta.ui.visibility,['model']);
@@ -42,7 +43,7 @@ test('real stdio process: discovery, nonce roundtrip, resource and safe output',
     assert.equal(reply.structuredContent.bootId,opened.structuredContent.bootId);
     const invalid = await client.callTool({name:'probe_roundtrip',arguments:{nonce:'invalid'}});
     assert.equal(invalid.isError,true);
-    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.9.3/host.html'});
+    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.9.4/host.html'});
     assert.equal(contents[0].mimeType,'text/html;profile=mcp-app');
     assert.deepEqual(contents[0]._meta['openai/ui'].availableDisplayModes,['fullscreen']);
     assert.ok(contents[0].text.includes('团队跟随当前对话'));
@@ -70,7 +71,7 @@ test('conversation-first tools remove project picker and duplicate goal form',as
     const blocked=await client.callTool({name:'get_current_project',arguments:{}});assert.equal(blocked.isError,true);
     const unauthorizedAddition=await client.callTool({name:'add_team_members',arguments:{teamId:randomUUID(),revision:1,requestId:randomUUID(),members:[{id:'docs',role:'Docs',responsibility:'Documentation',reason:'New role',writeScopes:['docs']}]}});
     assert.equal(unauthorizedAddition.isError,true);assert.match(unauthorizedAddition.content[0].text,/host conversation identity/);
-    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.9.3/host.html'});
+    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.9.4/host.html'});
     for(const control of ['id="chooseProject"','id="projectSelect"','id="teamGoal"','id="planTeam"'])assert.equal(resource.contents[0].text.includes(control),false);
   }finally{await client.close();}
 });
