@@ -30,7 +30,7 @@ export function resumeTeam(team,input){
 export function validateControl(team){
   if(team.memberStartup!==undefined&&!['on-demand','eager'].includes(team.memberStartup))throw new Error('Invalid member startup mode');
   if(team.executionControl&&(!['active','stopping','halted'].includes(team.executionControl.status)||!team.executionControl.reason||team.executionControl.status!=='active'&&!team.dispatchPaused))throw new Error('Invalid team stop state');
-  if((team.executionControl||team.memberStartup||team.tasks.some(t=>t.contractRevision))&&team.requiresTeamWorkspaceVersion!=='0.12.0')throw new Error('New lifecycle records require Team Workspace 0.12.0');
+  if((team.executionControl||team.memberStartup||team.tasks.some(t=>t.contractRevision))&&!['0.12.0','0.13.0','0.14.0','0.15.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('New lifecycle records require Team Workspace 0.12.0');
 }
 
 export function controlSummary(team){const c=team.executionControl;if(!c)return undefined;return {...Object.fromEntries(['status','requestId','requestedAt','previousState','observedAt','stoppedAt','resumedAt'].filter(k=>c[k]!==undefined).map(k=>[k,c[k]])),reason:String(c.reason??'').slice(0,2000),...(c.resumeReason?{resumeReason:String(c.resumeReason).slice(0,2000)}:{}),pending:(c.pending??[]).slice(0,16).map(p=>({memberId:p.memberId,taskId:p.taskId,reason:String(p.reason??'').slice(0,240)}))};}

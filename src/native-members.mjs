@@ -14,7 +14,7 @@ export class NativeMembers {
     if(thread.id!==threadId||parent!==leaderThreadId||await realpath(thread.cwd)!==await realpath(cwd))throw new Error('Historical usage identity mismatch');
     return Promise.all(turnIds.map(async turnId=>({turnId,usage:(await this.publicFeed.read(thread,turnId)).usage})));
   }
-  async inspect(leaderThreadId,cwd,threadId,marker,{allowPending=false,requireIdle=false}={}){
+  async inspect(leaderThreadId,cwd,threadId,marker,{allowPending=false,requireIdle=false,requireFresh=false}={}){
     const rpc=await this.connect();
       let agentPath=null;
       if(threadId.startsWith('/')){
@@ -33,6 +33,7 @@ export class NativeMembers {
       agentPath??=recordedPath??null;
       const response=await rpc.call('thread/read',{threadId,includeTurns:true});
       const turns=response.thread?.turns??[];
+      if(requireFresh&&turns.some(t=>t.items?.some(i=>i.type==='agentMessage'&&typeof i.text==='string'&&(()=>{const first=i.text.split(/\r?\n/)[0].trim();if(/^TEAM_WORKSPACE_ATTEMPT:[0-9a-f-]{36}$/i.test(first))return first!==marker;try{const other=JSON.parse(i.text).attemptMarker;return typeof other==='string'&&other.startsWith('TEAM_WORKSPACE_ATTEMPT:')&&other!==marker;}catch{return false;}})())))throw new Error('Native context contains a different task attempt; use the clean reserved spawn with fork_turns=none');
       let quiescence;
       if(requireIdle){
         const latest=turns.at(-1);
@@ -59,7 +60,7 @@ export class NativeMembers {
       let activity;try{activity=await this.publicFeed.read(thread,turn.id);}catch(error){activity={events:[],cursor:0,usage:null,source:'unavailable',error:error.message};}
       const progress=turn.items.filter(i=>i.type==='agentMessage'&&i.phase==='commentary'&&typeof i.text==='string'&&!i.text.trim().startsWith('TEAM_WORKSPACE_')).slice(-5).map(i=>({text:i.text.slice(-4000),turnId:turn.id}));
       const messageAcknowledgements=[...new Set(turn.items.filter(i=>i.type==='agentMessage'&&typeof i.text==='string').flatMap(i=>i.text.split(/\r?\n/).map(s=>s.trim()).filter(s=>/^TEAM_WORKSPACE_MESSAGE:[0-9a-f-]{36}$/i.test(s))))];
-      return {threadId,agentPath,quiescence,turnId:turn.id,status,statusEvidence,model:thread.model??null,outputs,commands,progress,activity,usage:activity.usage??null,
+      return {threadId,agentPath,quiescence,turnId:turn.id,status,statusEvidence,model:thread.model??null,provider:thread.modelProvider??null,reasoningEffort:thread.reasoningEffort??null,outputs,commands,progress,activity,usage:activity.usage??null,
         messageAcknowledgements,
         attemptIdentitySource:prompt(turn)?'native-user-message':'public-member-acknowledgement',
         observedAt:new Date().toISOString(),source:'native-thread-persisted-snapshot',connection:'snapshot',

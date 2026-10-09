@@ -67,3 +67,25 @@ test('return-to-Leader navigation reuses the verified relationship and failed re
   await f.nav.record('owner',f.context,args);assert.equal((await f.nav.record('owner',f.context,args)).request.status,'failed');
   await assert.rejects(f.nav.record('owner',f.context,{...args,status:'opened'}),/已结束/);
 });
+test('direct navigation returns only a verified native deep link and separates host acceptance from rendered-page confirmation',async()=>{
+  const f=await fixture(),args={...f.args(),transport:'open-link'},r=await f.nav.request('owner',f.context,args);
+  assert.deepEqual(r.navigationAction,{type:'open-native-thread',threadId:'child',url:'codex://threads/child'});
+  assert.equal(r.message,undefined);assert.equal(r.leaderAction,undefined);assert.equal(r.request.target.attemptId,'old');
+  await assert.rejects(f.nav.record('owner',f.context,{teamId:'team',requestId:r.request.id,status:'opened',note:'Not a native tool receipt'}),/不匹配/);
+  const accepted=await f.nav.record('owner',f.context,{teamId:'team',requestId:r.request.id,status:'host-accepted',note:'openLink returned without error'});
+  assert.equal(accepted.request.source,'app-reported-open-link-result');assert.equal(accepted.navigationAction,null);assert.equal(accepted.request.status,'host-accepted');
+  await f.nav.request('owner',f.context,{...f.args(),transport:'open-link'});assert.equal((await f.nav.read('owner',f.context,'team',r.request.id)).request.status,'host-accepted');
+  await assert.rejects(f.nav.request('owner',f.context,{...args,transport:'host-tool'}),/requestId/);
+});
+test('direct return links target the verified Leader; expired or superseded requests never return an actionable link',async()=>{
+  const f=await fixture(),first=await f.nav.request('owner',f.context,{...f.args(),transport:'open-link'}),second=await f.nav.request('owner',f.context,{...f.args(),transport:'open-link',destination:'leader'});
+  assert.equal(second.navigationAction.url,'codex://threads/leader');assert.equal(second.navigationAction.threadId,'leader');
+  assert.equal((await f.nav.read('owner',f.context,'team',first.request.id)).navigationAction,null);
+  f.setClock(130000);assert.equal((await f.nav.read('owner',f.context,'team',second.request.id)).navigationAction,null);
+});
+test('unbound task attempts cannot substitute the member’s other native conversation',async()=>{
+  const f=await fixture();delete f.task.attempts[0].agentThreadId;
+  await assert.rejects(f.nav.request('owner',f.context,{...f.args(),transport:'open-link'}),/任务尚未绑定/);
+  const r=await f.nav.request('owner',f.context,{teamId:'team',memberId:'dev',transport:'open-link',requestId:randomUUID()});
+  assert.equal(r.navigationAction.threadId,'child');
+});

@@ -1,4 +1,5 @@
 import {memberNaming,memberTitleAction} from './team-naming.mjs';
+import {ownsNativeThread} from './task-context.mjs';
 // The founding roster initializes together. Later additions gate only their
 // own tasks, so an unbound new role cannot stop established members.
 export function requiredRosterMembers(team,taskIds){
@@ -15,7 +16,7 @@ export function validateRoster(team){
     if(member.removedAt&&(!Number.isFinite(Date.parse(member.removedAt))||member.status!=='removed'))throw new Error('Invalid removed member history');
     if(typeof member.rosterMarker!=='string'||!/^TEAM_WORKSPACE_MEMBER:[0-9a-f-]{36}$/i.test(member.rosterMarker)||markers.has(member.rosterMarker))throw new Error('Invalid member initialization marker');markers.add(member.rosterMarker);
     if(member.agentThreadId){if(threads.has(member.agentThreadId))throw new Error('Each team member must own a distinct native subagent');threads.add(member.agentThreadId);}
-    for(const task of team.tasks)for(const attempt of task.attempts??[])if((attempt.memberId??task.memberId)===member.id&&attempt.agentThreadId&&attempt.agentThreadId!==member.agentThreadId)throw new Error('Task attempt does not belong to its fixed native member');
+    for(const task of team.tasks)for(const attempt of task.attempts??[])if((attempt.memberId??task.memberId)===member.id&&attempt.agentThreadId&&!ownsNativeThread(team,member.id,attempt.agentThreadId))throw new Error('Task attempt does not belong to its fixed logical member');
   }
   for(const task of team.tasks)for(const attempt of task.attempts??[])if(attempt.memberId&&!team.members.some(m=>m.id===attempt.memberId))throw new Error('Task attempt has no historical member');
   if(team.memberChanges!==undefined){

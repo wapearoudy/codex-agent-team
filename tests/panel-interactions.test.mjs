@@ -27,16 +27,32 @@ async function open(options={}){
 }
 async function boot(page){
  await page.evaluate(async data=>{
-  const {setupTeamView}=await import('/team-view.mjs');window.data=data;window.calls=[];window.sent=[];window.navStatus='requested';window.rejectMessage=false;window.failRead=false;
-  window.view=setupTeamView({getHostCapabilities:()=>({message:{}}),async sendMessage(message){window.sent.push(message);return {isError:window.rejectMessage};},
+  const {setupTeamView}=await import('/team-view.mjs');window.data=data;window.calls=[];window.sent=[];window.navStatus='requested';window.links=[];window.linkCapability=true;window.rejectLink=false;window.rejectMessage=false;window.failRead=false;
+  window.view=setupTeamView({getHostCapabilities:()=>({message:{},...(window.linkCapability?{openLinks:{}}:{})}),async openLink(link){window.links.push(link);if(window.holdLink)await new Promise(r=>window.releaseLink=r);return {isError:window.rejectLink};},async sendMessage(message){window.sent.push(message);return {isError:window.rejectMessage};},
    async callServerTool({name,arguments:args}){window.calls.push({name,args});
     if(window.failRead&&['read_team','open_team_workspace'].includes(name))return {isError:true,content:[{type:'text',text:'fixture disconnect'}]};
     if(name==='open_team_workspace')return {structuredContent:{kind:'team-workspace',context:{cwd:window.data.team.projectPath},teams:[{id:window.data.team.id}]}};
     if(name==='read_team')return {structuredContent:structuredClone(window.data)};
+    if(name==='manage_team'&&args.operation==='member-goal'){
+     if(window.holdGoalRead)await new Promise(r=>window.releaseGoalRead=r);
+     const m=window.data.team.members.find(m=>m.id===args.memberId);return {structuredContent:{kind:'team-member-goal',teamId:window.data.team.id,revision:window.data.team.revision,memberId:m.id,role:m.role,goal:window.fullGoal??m.responsibility,goalRevision:m.goalRevision??1,history:window.goalHistory??[]}};
+    }
+    if(name==='update_team_member_goal'){
+     if(window.holdGoalSave)await new Promise(r=>window.releaseGoalSave=r);
+     if(window.failGoalSave)throw new Error('目标保存失败，草稿未丢失');
+     const m=window.data.team.members.find(m=>m.id===args.memberId),prior=window.goalRequests?.[args.requestId];
+     if(!prior){if((m.goalRevision??1)!==args.goalRevision||window.data.team.revision!==args.revision)throw new Error('角色目标已被其他操作修改，请重新读取后再保存');
+      const row={previous:{revision:m.goalRevision??1,goal:m.responsibility},next:{revision:args.goalRevision+1,goal:args.goal},at:new Date().toISOString(),note:args.note};
+      (window.goalHistory??=[]).push(row);m.responsibility=args.goal;m.goalRevision=args.goalRevision+1;window.data.team.revision++;window.fullGoal=null;(window.goalRequests??={})[args.requestId]=row;
+     }
+     if(window.loseGoalReply){window.loseGoalReply=false;throw new Error('保存结果未知，请重试');}
+     return {structuredContent:{kind:'team-member-goal',teamId:window.data.team.id,revision:window.data.team.revision,memberId:m.id,role:m.role,goal:m.responsibility,goalRevision:m.goalRevision,change:{replayed:!!prior}}};
+    }
     if(name==='request_team_navigation'){if(window.holdNavigation)await new Promise(r=>window.releaseNavigation=r);
-     window.lastNavigation={kind:'team-navigation',request:{id:args.requestId,status:'requested',target:{...args,memberLabel:'interaction-fixture-开发成员',threadId:'dev-thread'}},message:'TEAM_WORKSPACE_NAVIGATION:'+args.requestId};
+     window.lastNavigation={kind:'team-navigation',request:{id:args.requestId,status:'requested',target:{...args,memberLabel:'interaction-fixture-开发成员',threadId:window.data.team.tasks.find(t=>t.id===args.taskId)?.attempts.find(a=>a.id===args.attemptId)?.agentThreadId??window.data.team.members.find(m=>m.id===args.memberId).agentThreadId,parentThreadId:'fixture-leader'},transport:args.transport}};const target=window.lastNavigation.request.target;window.lastNavigation.navigationAction={type:'open-native-thread',threadId:args.destination==='leader'?target.parentThreadId:target.threadId,url:'codex://threads/'+encodeURIComponent(args.destination==='leader'?target.parentThreadId:target.threadId)};window.navStatus='requested';window.lastNavigation={...window.lastNavigation};
      return {structuredContent:structuredClone(window.lastNavigation)};}
-    if(name==='read_team_navigation')return {structuredContent:{...window.lastNavigation,request:{...window.lastNavigation.request,status:window.navStatus}}};
+    if(name==='record_team_navigation'){if(window.failNavigationRecord)throw new Error('receipt unavailable');window.navStatus=args.status;window.lastNavigation.request.status=args.status;return {structuredContent:structuredClone(window.lastNavigation)};}
+    if(name==='read_team_navigation'){if(window.holdNavigationRead)await new Promise(r=>window.releaseNavigationRead=r);return {structuredContent:{...window.lastNavigation,request:{...window.lastNavigation.request,status:window.navStatus}}};}
     return {structuredContent:{kind:'team-navigation',request:{id:args.requestId,status:'superseded'}}};
    }});
   await window.view.connect();
@@ -44,13 +60,71 @@ async function boot(page){
  await expect(page.locator('#projectName')).toHaveText('interaction-fixture');
 }
 async function update(page){await page.evaluate(async()=>{window.data.team.revision++;await window.view.accept(structuredClone(window.data));});}
+async function enableGoals(page){await page.evaluate(()=>{window.data.team.fixedRoster=true;});await update(page);}
+test('manual role goal editor reads the full goal, preserves a draft through refresh, and saves without navigation or messages',async()=>{
+ const {page,errors}=await open();try{
+  await enableGoals(page);await page.locator('[data-task-id="t1"]').click();
+  await page.evaluate(()=>{window.fullGoal='完整目标：'+ '目标原文'.repeat(100);window.data.team.members[0].responsibility='面板预览…';});await update(page);
+  const edit=page.locator('[data-focus-key="edit-member-goal:dev"]'),input=page.locator('#memberGoalInput'),modal=page.getByRole('dialog');
+  await expect(edit).toHaveAccessibleName('调整角色目标');await edit.click();await expect(modal).toBeVisible();await expect(input).toHaveValue('完整目标：'+'目标原文'.repeat(100));
+  await expect(page.locator('#memberGoalSave')).toBeDisabled();await input.fill('聚焦任务质量和可维护性');await input.evaluate(el=>el.setSelectionRange(3,6));
+  await update(page);await expect(input).toHaveValue('聚焦任务质量和可维护性');assert.deepEqual(await input.evaluate(el=>[el.selectionStart,el.selectionEnd]),[3,6]);await expect(input).toBeFocused();
+  await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+  await page.screenshot({path:dir+'/member-goal-edit-mobile.png',fullPage:true});
+  await page.locator('#memberGoalNote').fill('加强质量要求');await page.locator('#memberGoalSave').click();await expect(modal).toBeHidden();await expect(edit).toBeFocused();
+  await expect(page.locator('[data-member-id="dev"] .responsibility')).toContainText('聚焦任务质量和可维护性');await expect(page.locator('#taskDetail')).toContainText('任务 t1');
+  const actions=await page.evaluate(()=>({sent:window.sent.length,links:window.links.length,saves:window.calls.filter(c=>c.name==='update_team_member_goal')}));assert.equal(actions.sent,0);assert.equal(actions.links,0);assert.equal(actions.saves.length,1);assert.equal(actions.saves[0].args.source,'panel-user-action');assert.equal(actions.saves[0].args.goalRevision,1);
+  await edit.click();await expect(input).toHaveValue('聚焦任务质量和可维护性');await page.locator('#memberGoalHistoryLabel').click();await expect(page.locator('#memberGoalHistoryRows')).toContainText('加强质量要求');await expect(page.locator('#memberGoalHistoryRows')).toContainText('v1 → v2');
+  await input.fill('不保存的草稿');await page.keyboard.press('Escape');await expect(modal).toBeHidden();await expect(page.locator('#taskDetail')).toBeVisible();await edit.click();await expect(input).toHaveValue('聚焦任务质量和可维护性');
+  await page.locator('#memberGoalCancel').click();await page.locator('#teamLocale').selectOption('en');await edit.click();await expect(modal).toHaveAccessibleName('Edit role goal');await expect(input).toHaveValue('聚焦任务质量和可维护性');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('conflicting role edits keep the draft and require explicit reload; unknown saves retry the same UUID once',async()=>{
+ const {page,errors}=await open();try{
+  await enableGoals(page);await page.locator('[data-focus-key="edit-member-goal:dev"]').click();const input=page.locator('#memberGoalInput'),save=page.locator('#memberGoalSave');await input.fill('人工草稿');
+  await page.evaluate(()=>{window.data.team.members[0].responsibility='外部新目标';window.data.team.members[0].goalRevision=2;});await update(page);
+  await expect(input).toHaveValue('人工草稿');await expect(save).toBeDisabled();await expect(page.locator('#memberGoalFeedback')).toContainText('草稿已保留');await page.locator('#memberGoalReload').click();await expect(input).toHaveValue('外部新目标');
+  await input.fill('新目标第三版');await page.evaluate(()=>{window.holdGoalSave=true;window.loseGoalReply=true;});await save.click();await page.evaluate(()=>document.getElementById('memberGoalForm').dispatchEvent(new Event('submit',{bubbles:true,cancelable:true})));assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.name==='update_team_member_goal').length),1);
+  await page.evaluate(()=>{window.holdGoalSave=false;window.releaseGoalSave();});await expect(page.locator('#memberGoalFeedback')).toContainText('保存结果未知');await update(page);await expect(input).toHaveValue('新目标第三版');await expect(save).toBeEnabled();await page.evaluate(()=>window.view.setLanguage('en'));await expect(save).toHaveText('Save goal');await save.click();await expect(page.getByRole('dialog')).toBeHidden();
+  const requests=await page.evaluate(()=>window.calls.filter(c=>c.name==='update_team_member_goal').map(c=>c.args.requestId));assert.equal(requests.length,2);assert.equal(requests[0],requests[1]);assert.equal(await page.evaluate(()=>window.goalHistory.length),1);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('role goal management shares the editor and historical or removed roles remain read-only; stale read replies cannot reopen it',async()=>{
+ const {page,errors}=await open();try{
+  await enableGoals(page);await page.locator('#teamManageOpen').click();await page.getByLabel('管理操作').selectOption('member-goal');await page.getByRole('button',{name:'编辑角色目标',exact:true}).click();await expect(page.getByRole('dialog')).toBeVisible();await page.locator('#memberGoalCancel').click();
+  await page.evaluate(()=>{window.data.team.members[1].removedAt=new Date().toISOString();});await update(page);await expect(page.locator('[data-focus-key="edit-member-goal:qa"]')).toHaveCount(0);
+  await page.evaluate(()=>{window.holdGoalRead=true;});await page.locator('[data-focus-key="edit-member-goal:dev"]').click();await expect(page.locator('#memberGoalInput')).toBeDisabled();await page.keyboard.press('Escape');await page.evaluate(()=>{window.holdGoalRead=false;window.releaseGoalRead();});await expect(page.getByRole('dialog')).toBeHidden();
+  await page.locator('[data-focus-key="edit-member-goal:dev"]').click();await page.locator('#memberGoalInput').fill('未保存');await page.evaluate(()=>{window.data.team.id='another-team';});await update(page);await expect(page.getByRole('dialog')).toBeHidden();
+  await page.locator('[data-focus-key="edit-member-goal:dev"]').click();await expect(page.locator('#memberGoalInput')).toBeEnabled();await page.evaluate(()=>window.view.accept({kind:'team-workspace',context:{cwd:window.data.team.projectPath},teams:[]}));await expect(page.getByRole('dialog')).toBeHidden();await update(page);
+  await page.evaluate(()=>{window.data.team.planReview={scope:'initial',status:'pending',hash:'fixture',version:1};});await update(page);await expect(page.locator('[data-focus-key^="edit-member-goal:"]')).toHaveCount(0);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('compact member actions explain delayed hover, keyboard focus and unavailable navigation without disturbing task details',async()=>{
+ const {page,errors}=await open();try{
+  const inspect=page.locator('[data-focus-key="view-member:dev"]'),native=page.locator('[data-focus-key="open-member:dev"]'),tip=page.getByRole('tooltip');
+  await expect(inspect).toHaveAccessibleName('查看任务与执行');await expect(inspect.locator('svg')).toHaveCount(1);await expect(inspect).toHaveText('');await expect(native).not.toHaveAttribute('title');
+  const sizes=await inspect.evaluate(el=>({width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}));assert.equal(sizes.width,32);assert.equal(sizes.height,32);
+  await inspect.hover();await page.waitForTimeout(200);await page.mouse.move(0,0);await page.waitForTimeout(500);await expect(tip).toBeHidden();
+  await inspect.hover();await page.waitForTimeout(250);await expect(tip).toBeHidden();await expect(tip).toBeVisible();await expect(tip).toContainText('查看成员任务、交付与历史轮次');
+  await update(page);await expect(tip).toBeVisible();await tip.hover();await page.waitForTimeout(150);await expect(tip).toBeVisible();await page.mouse.move(0,0);await expect(tip).toBeHidden();
+  await inspect.click();await expect(page.locator('#memberDetail')).toBeVisible();await native.focus();await page.keyboard.press('Tab');await expect(inspect).toBeFocused();await expect(tip).toBeVisible();await expect(inspect).toHaveAttribute('aria-describedby',await tip.getAttribute('id'));
+  await page.keyboard.press('Escape');await expect(tip).toBeHidden();await expect(page.locator('#memberDetail')).toBeVisible();await update(page);await expect(tip).toBeHidden();
+  await page.locator('#teamLocale').selectOption('en');await native.focus();await expect(native).toHaveAccessibleName('Open native conversation');await expect(tip).toContainText('Open the existing subagent directly');
+  await page.evaluate(()=>{const m=window.data.team.members.find(m=>m.id==='qa');m.agentThreadId=null;m.rosterVerified=false;});await update(page);
+  const unavailable=page.locator('[data-focus-key="open-member:qa"]');await expect(unavailable).toBeDisabled();await unavailable.locator('..').focus();await expect(tip).toContainText('Member is not yet bound to a native thread');
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.name==='request_team_navigation').length),0);
+  await page.setViewportSize({width:320,height:900});await inspect.focus();await expect(tip).toBeVisible();const bounds=await tip.boundingBox();assert.ok(bounds.x>=0&&bounds.x+bounds.width<=320);
+  assert.deepEqual(errors,[]);await page.evaluate(()=>window.view.close());await expect(tip).toHaveCount(0);
+ }finally{await page.close();}
+});
 test('appended roles appear without losing existing task selection or native identity',async()=>{
  const {page,errors}=await open();try{
   await page.locator('[data-task-id="t1"]').click();
   await page.evaluate(()=>window.data.team.members.push({id:'docs',role:'文档岗位',responsibility:'维护项目文档',agentThreadId:null,rosterVerified:false,status:'planned'}));
   await update(page);
   await expect(page.locator('#membersHeading')).toHaveText('4 名成员');
-  await expect(page.locator('[data-focus-key="member:docs"]')).toHaveText('interaction-fixture-文档岗位');
+ await expect(page.locator('[data-focus-key="member:docs"]')).toHaveText('文档岗位');
+ await expect(page.locator('[data-focus-key="member:docs"]')).toHaveAttribute('title','interaction-fixture-文档岗位');
   await expect(page.locator('#taskDetail')).toContainText('任务 t1');
   await expect(page.locator('[data-member-id="dev"]')).toHaveAttribute('data-selected','true');
   await page.locator('[data-focus-key="member:docs"]').click();
@@ -64,12 +138,47 @@ test('appended roles appear without losing existing task selection or native ide
   await page.screenshot({path:dir+'/appended-role.png',fullPage:true});assert.deepEqual(errors,[]);
  }finally{await page.close();}
 });
-test('DAG hover, pin, full chain, sibling exclusion and keyboard Escape',async()=>{
+test('task list searches real titles, opens exact details with the keyboard and returns focus on close',async()=>{
  const {page,errors}=await open();try{
-  const t2=page.locator('[data-task-id="t2"]');await t2.hover();await expect(t2).toHaveAttribute('data-related','true');
+  await expect(page.locator('#teamGoalTitle')).toHaveText(fixture().team.goal);await expect(page.locator('#progressValue')).toHaveText('14%');await expect(page.locator('#taskList .task-row')).toHaveCount(7);
+  await page.getByLabel('查找任务',{exact:true}).fill('任务 t2');await expect(page.locator('#taskList .task-row')).toHaveCount(1);const row=page.locator('[data-list-task-id="t2"]');await expect(row).toContainText('审查成员');await row.press('Enter');await expect(page.locator('#selectionPanel')).toBeFocused();await expect(page.locator('#taskDetail')).toContainText('任务 t2');await page.locator('#closeInspection').click();await expect(page.locator('#taskDetail')).toBeHidden();await expect(row).toBeFocused();await expect(page.getByLabel('查找任务',{exact:true})).toHaveValue('任务 t2');
+  await page.getByLabel('查找任务',{exact:true}).fill('');await page.getByLabel('按状态筛选',{exact:true}).selectOption('accepted');await expect(page.locator('#taskList .task-row')).toHaveCount(1);await expect(page.locator('[data-list-task-id="done"]')).toBeVisible();
+  await page.getByLabel('按状态筛选',{exact:true}).selectOption('');await page.getByLabel('查找任务',{exact:true}).fill('任务 t2');await page.evaluate(()=>{const t=window.data.team.tasks.find(t=>t.id==='t2');t.status='running';t.attempts=[{id:'reserved-narrow',number:1,state:'reserved'}];});await update(page);await page.setViewportSize({width:360,height:900});
+  const cells=await page.locator('[data-list-task-id="t2"]').evaluate(row=>{const owner=row.querySelector('.task-owner').getBoundingClientRect(),status=row.querySelector('.status-pill').getBoundingClientRect();return {ownerRight:owner.right,statusLeft:status.left};});assert.ok(cells.ownerRight<=cells.statusLeft+1,'assignee and long status must occupy separate columns');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('execution limits stay visible while informational run notes start collapsed',async()=>{
+ const {page,errors}=await open();try{
+  await expect(page.locator('#panelNotes')).toBeHidden();await page.evaluate(()=>window.data.team.preparation={status:'blocked',message:'缺少必要的工作区输入'});await update(page);await expect(page.locator('#panelNotes')).toHaveAttribute('open','');await expect(page.locator('#panelNotes')).toHaveAttribute('data-severity','warning');await expect(page.locator('#workspacePreparation')).toBeVisible();await expect(page.locator('#workspacePreparation')).toContainText('缺少必要的工作区输入');await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('overview distinguishes review, observed execution, unknown state, halted control and ready work',async()=>{
+ const {page,errors}=await open();try{
+  await expect(page.locator('#overviewHeadline')).toHaveText('1 项等待独立审查');await expect(page.locator('#progressValue')).toHaveText('14%');
+  await page.evaluate(()=>{const t=window.data.team.tasks.find(t=>t.id==='t2');t.status='running';t.attempts=[{id:'overview-attempt',number:1,state:'running',agentThreadId:'qa-thread'}];window.data.runs.push({taskId:'t2',memberId:'qa',attemptId:'overview-attempt',threadId:'qa-thread',status:'inProgress',connection:'connected'});});await update(page);await expect(page.locator('#overviewHeadline')).toHaveText('1 项任务执行中');await expect(page.locator('#overviewTask')).toHaveText('t2 · 任务 t2');
+  await page.evaluate(()=>{window.data.runs.find(r=>r.attemptId==='overview-attempt').status='unknown';});await update(page);await expect(page.locator('#overviewStatus')).toHaveAttribute('data-state','unknown');await expect(page.locator('#overviewHeadline')).toContainText('状态待核对');
+  await page.evaluate(()=>{window.data.team.executionControl={status:'halted'};});await update(page);await expect(page.locator('#overviewHeadline')).toHaveText('团队已停止');await expect(page.locator('#overviewTask')).toBeHidden();
+  await page.evaluate(()=>{window.data.team.executionControl={status:'active'};window.data.team.tasks.find(t=>t.id==='t1').status='accepted';const t=window.data.team.tasks.find(t=>t.id==='t2');t.status='waiting';t.attempts=[];window.data.runs=window.data.runs.filter(r=>r.attemptId!=='overview-attempt');});await update(page);await expect(page.locator('#overviewHeadline')).toHaveText('1 项任务已就绪');await expect(page.locator('#progressValue')).toHaveText('29%');await page.locator('#teamLocale').selectOption('en');await expect(page.locator('#overviewHeadline')).toHaveText('1 task ready');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('current focus follows real task state and filters, opens the exact task and preserves paused wording',async()=>{
+ const {page,errors}=await open();try{
+  await expect(page.locator('#taskFocus')).toHaveAttribute('data-state','submitted');await expect(page.locator('[data-focus-task-id="t1"]')).toBeVisible();
+  await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t3').status='blocked';});await update(page);
+  await expect(page.locator('#taskFocus')).toHaveAttribute('data-state','blocked');await page.locator('[data-focus-task-id="t3"]').click();await expect(page.locator('#selectionPanel')).toBeFocused();await expect(page.locator('#taskDetail')).toContainText('任务 t3');await page.locator('#closeInspection').click();
+  await page.getByLabel('按状态筛选',{exact:true}).selectOption('accepted');await expect(page.locator('#taskFocus')).toBeHidden();
+  await page.getByLabel('按状态筛选',{exact:true}).selectOption('');await page.getByLabel('查找任务',{exact:true}).fill('任务 t2');await expect(page.locator('#taskFocus')).toContainText('已就绪，等待派发');
+  await page.evaluate(()=>{window.data.team.dispatchPaused=true;});await update(page);await expect(page.locator('#taskFocus')).toContainText('新任务派发已暂停');await expect(page.locator('#taskFocus')).not.toContainText('已就绪，等待派发');
+  await page.locator('#teamLocale').selectOption('en');await expect(page.locator('#taskFocus')).toContainText('Dispatch paused');await expect(page.locator('.task-table-head')).toContainText('Status');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('DAG hover and keyboard focus stay quiet; click selects the full chain and Escape closes details',async()=>{
+ const {page,errors}=await open();try{
+  const t2=page.locator('[data-task-id="t2"]');await t2.hover();await page.waitForTimeout(300);await expect(page.locator('#selectionPanel')).toBeHidden();await expect(t2).toHaveAttribute('data-related','false');await expect(t2).not.toHaveAttribute('title');
+  await t2.focus();await expect(page.locator('#selectionPanel')).toBeHidden();await t2.click();await expect(t2).toHaveAttribute('data-related','true');
   for(const id of ['t1','t3','t4','t5'])await expect(page.locator('[data-task-id="'+id+'"]')).toHaveAttribute('data-related','true');
   await expect(page.locator('[data-task-id="sibling"]')).toHaveAttribute('data-dimmed','true');
-  await t2.click();await page.locator('#projectName').hover();await expect(t2).toHaveAttribute('aria-pressed','true');
+  await page.locator('[data-task-id="sibling"]').hover();await expect(t2).toHaveAttribute('aria-pressed','true');await expect(page.locator('#taskDetail')).toContainText('任务 t2');
   await expect(page.locator('#taskDetail')).toContainText('完成后解锁');await expect(page.locator('#taskDetail')).toContainText('t3 · interaction-fixture-开发成员（验收后）');
   await page.keyboard.press('Escape');await expect(t2).toHaveAttribute('aria-pressed','false');await expect(page.locator('#taskDetail')).toBeHidden();
   await t2.focus();await page.keyboard.press('Enter');await expect(t2).toHaveAttribute('aria-pressed','true');
@@ -79,7 +188,7 @@ test('DAG hover, pin, full chain, sibling exclusion and keyboard Escape',async()
 });
 test('member/task links, exact old round, focus/open/scroll retention, restoration and project isolation',async()=>{
  const {page,errors}=await open();try{
-  await expect(page.locator('[data-focus-key="member:dev"]')).toHaveText('interaction-fixture-开发成员');
+  await expect(page.locator('[data-focus-key="member:dev"]')).toHaveText('开发成员');
   await page.locator('[data-task-id="t1"]').click();await page.getByRole('button',{name:'定位负责人 · interaction-fixture-开发成员',exact:true}).click();
   await expect(page.locator('[data-member-id="dev"]')).toHaveAttribute('data-selected','true');
   await page.locator('[data-focus-key="history:dev"]').click();
@@ -97,7 +206,7 @@ test('member/task links, exact old round, focus/open/scroll retention, restorati
   await page.getByRole('button',{name:'返回团队',exact:true}).click();await expect(page.locator('#memberDetail')).toBeHidden();
   await page.locator('[data-focus-key="member:dev"]').click();await expect(page.locator('#memberDetail')).toBeVisible();
   await page.evaluate(async()=>{window.data.team={...window.data.team,id:'second-team',projectPath:'E:/other'};await window.view.accept(structuredClone(window.data));});
-  await expect(page.locator('[data-focus-key="member:dev"]')).toHaveText('other-开发成员');
+  await expect(page.locator('[data-focus-key="member:dev"]')).toHaveText('开发成员');
   await expect(page.locator('#memberDetail')).toBeHidden();await expect(page.locator('#taskDetail')).toBeHidden();assert.deepEqual(errors,[]);
  }finally{await page.close();}
 });
@@ -115,18 +224,50 @@ test('collapsed members retain submitted/blocked work; parallel grid and overvie
   await expect(page.locator('[data-member-id="finished"]')).toHaveCount(0);assert.deepEqual(errors,[]);
  }finally{await page.close();}
 });
-test('navigation carries exact task/round; rejection stays visible after poll and retry/receipt works',async()=>{
+test('details stay in the panel; native navigation opens the exact historical thread without messages or selection changes',async()=>{
  const {page,errors}=await open();try{
-  await page.locator('[data-focus-key="history:dev"]').click();await page.locator('[data-focus-key="attempt:old-attempt"]').click();
-  await page.evaluate(()=>window.rejectMessage=true);await page.locator('[data-focus-key="member-native"]').click();
-  await expect(page.locator('#navigationState')).toContainText('宿主拒绝导航请求');await page.waitForTimeout(1800);
-  await expect(page.locator('#navigationState')).toContainText('宿主拒绝导航请求');
-  const request=await page.evaluate(()=>window.calls.find(c=>c.name==='request_team_navigation').args);assert.equal(request.taskId,'t1');assert.equal(request.attemptId,'old-attempt');assert.equal(request.memberId,'dev');
-  await page.evaluate(()=>window.rejectMessage=false);await page.getByRole('button',{name:'重试导航'}).click();await expect(page.locator('#navigationState')).toContainText('等待主会话打开');
-  await page.evaluate(()=>window.navStatus='opened');await expect(page.locator('#navigationState')).toContainText('宿主导航工具已确认');
-  await expect(page.locator('#memberDetail')).toContainText('第一轮公开结果');
-  await page.locator('[data-focus-key="leader-native"]').click();assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.name==='request_team_navigation').at(-1).args.destination),'leader');
-  assert.deepEqual(errors,[]);
+  await page.evaluate(()=>{window.data.team.tasks[0].attempts[0].agentThreadId='retired-dev-thread';window.data.runs[0].threadId='retired-dev-thread';});await update(page);
+  await page.locator('[data-task-id="t1"]').click();await expect(page.locator('#taskDetail')).toContainText('任务 t1');
+  await page.locator('[data-focus-key="view-member:dev"]').click();await expect(page.locator('#memberDetail')).toBeVisible();
+  await page.locator('[data-focus-key="execution-tab:old-attempt"]').click();await expect(page.locator('#memberDetail')).toContainText('第一轮公开结果');
+  assert.deepEqual(await page.evaluate(()=>({links:window.links,messages:window.sent,navigations:window.calls.filter(c=>c.name==='request_team_navigation')})),{links:[],messages:[],navigations:[]});
+  await page.locator('[data-focus-key="member-native"]').click();await expect(page.locator('#navigationState')).toContainText('已将会话跳转交给宿主');
+  const request=await page.evaluate(()=>window.calls.find(c=>c.name==='request_team_navigation').args);assert.equal(request.taskId,'t1');assert.equal(request.attemptId,'old-attempt');assert.equal(request.memberId,'dev');assert.equal(request.transport,'open-link');
+  assert.deepEqual(await page.evaluate(()=>window.links),[{url:'codex://threads/retired-dev-thread'}]);assert.equal(await page.evaluate(()=>window.sent.length),0);
+  assert.equal(await page.locator('[data-focus-key="execution-tab:old-attempt"]').getAttribute('aria-pressed'),'true');await expect(page.locator('#memberDetail')).toContainText('第一轮公开结果');
+  await page.locator('[data-focus-key="leader-native"]').click();await expect.poll(()=>page.evaluate(()=>window.links.at(-1)?.url)).toBe('codex://threads/fixture-leader');
+  await expect.poll(()=>page.evaluate(()=>window.calls.filter(c=>c.name==='record_team_navigation'&&c.args.status==='host-accepted').length)).toBe(2);assert.equal(await page.evaluate(()=>window.sent.length),0);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('rejected deep links show a durable failure and explicit retry never notifies the Leader',async()=>{
+ const {page,errors}=await open();try{
+  await page.locator('[data-task-id="t1"]').click();await page.evaluate(()=>window.rejectLink=true);await page.locator('[data-focus-key="task-open:t1"]').click();
+  await expect(page.locator('#navigationState')).toContainText('宿主拒绝打开会话');await page.waitForTimeout(1800);await expect(page.locator('#navigationState')).toContainText('宿主拒绝打开会话');
+  assert.equal(await page.evaluate(()=>window.sent.length),0);assert.equal(await page.evaluate(()=>window.links.length),1);
+  await page.evaluate(()=>window.rejectLink=false);await page.getByRole('button',{name:'重试导航'}).click();await expect(page.locator('#navigationState')).toContainText('已将会话跳转交给宿主');
+  assert.equal(await page.evaluate(()=>window.links.length),2);assert.equal(await page.evaluate(()=>window.sent.length),0);await expect(page.locator('#taskDetail')).toContainText('任务 t1');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('missing host link capability leaves details usable and cannot fall back to messaging',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>window.linkCapability=false);await page.locator('[data-focus-key="open-member:dev"]').click();await expect(page.locator('#navigationState')).toContainText('当前宿主不支持直接打开会话');
+  assert.equal(await page.evaluate(()=>window.calls.filter(c=>c.name==='request_team_navigation').length),0);assert.equal(await page.evaluate(()=>window.sent.length),0);
+  await page.locator('[data-task-id="t3"]').click();await expect(page.locator('#taskDetail')).toContainText('任务 t3');await expect(page.locator('[data-focus-key="task-open:t3"]')).toBeDisabled();await expect(page.locator('#taskDetail')).toContainText('任务尚未绑定执行会话');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('a lost navigation receipt cannot repeat an accepted host link',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>window.failNavigationRecord=true);await page.locator('[data-focus-key="open-member:dev"]').click();await expect(page.locator('#navigationState')).toContainText('跳转记录保存失败');
+  await update(page);await page.waitForTimeout(1200);assert.equal(await page.evaluate(()=>window.links.length),1);assert.equal(await page.evaluate(()=>window.sent.length),0);await expect(page.getByRole('button',{name:'重试导航'})).toHaveCount(0);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('changing details during navigation revalidation cancels the jump; late host replies cannot replace a newer selection',async()=>{
+ const {page,errors}=await open();try{
+  await page.locator('[data-task-id="t1"]').click();await page.evaluate(()=>window.holdNavigationRead=true);await page.locator('[data-focus-key="task-open:t1"]').click();
+  await expect.poll(()=>page.evaluate(()=>typeof window.releaseNavigationRead)).toBe('function');await page.locator('[data-task-id="t3"]').click();await page.evaluate(()=>{window.holdNavigationRead=false;window.releaseNavigationRead();});await page.waitForTimeout(100);
+  assert.equal(await page.evaluate(()=>window.links.length),0);await expect(page.locator('#taskDetail')).toContainText('任务 t3');
+  await page.locator('[data-task-id="t1"]').click();await page.evaluate(()=>window.holdLink=true);await page.locator('[data-focus-key="task-open:t1"]').click();await expect.poll(()=>page.evaluate(()=>typeof window.releaseLink)).toBe('function');
+  await page.locator('[data-task-id="t3"]').click();await page.evaluate(()=>window.releaseLink());await page.waitForTimeout(100);await expect(page.locator('#navigationState')).toBeHidden();await expect(page.locator('#taskDetail')).toContainText('任务 t3');assert.equal(await page.evaluate(()=>window.sent.length),0);assert.deepEqual(errors,[]);
  }finally{await page.close();}
 });
 test('obsolete navigation cannot send or replace selected task; reconnect restarts fresh polling',async()=>{
@@ -134,7 +275,7 @@ test('obsolete navigation cannot send or replace selected task; reconnect restar
   await page.locator('[data-task-id="t1"]').click();await page.evaluate(()=>window.holdNavigation=true);
   await page.locator('[data-focus-key="task-open:t1"]').click();await expect(page.locator('#navigationState')).toContainText('正在核对');
   await page.locator('[data-task-id="t3"]').click();await page.evaluate(()=>window.releaseNavigation());await page.waitForTimeout(100);
-  assert.equal(await page.evaluate(()=>window.sent.length),0);await expect(page.locator('#navigationState')).toBeHidden();await expect(page.locator('#taskDetail')).toContainText('t3 · 任务 t3');
+  assert.equal(await page.evaluate(()=>window.sent.length),0);assert.equal(await page.evaluate(()=>window.links.length),0);await expect(page.locator('#navigationState')).toBeHidden();await expect(page.locator('#taskDetail')).toContainText('t3 · 任务 t3');
   await page.evaluate(()=>{window.view.disconnect();window.failRead=true;});await page.locator('#retryConnection').click();await expect(page.locator('#errorState')).toContainText('fixture disconnect');
   await page.evaluate(()=>window.failRead=false);await page.locator('#retryConnection').click();await expect(page.locator('#errorState')).toBeHidden();
   await page.evaluate(()=>{window.data.team.goal='已恢复并持续同步';window.data.team.revision++;});await expect(page.locator('#teamGoalText')).toHaveText('已恢复并持续同步');

@@ -11,7 +11,7 @@ export function normalizePolicy(input={}) {
   if(!Number.isInteger(maxReviewRounds)||maxReviewRounds<1||maxReviewRounds>10)throw new Error('Review round limit must be 1–10');
   return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds};
 }
-export function nativeRoute(member){return {fork_turns:'none',...(member.route?.model?{model:member.route.model}:{}),...(member.route?.reasoningEffort?{reasoning_effort:member.route.reasoningEffort}:{})};}
+export function nativeRoute(member){const route=member.activeRoute??(member.route?.model?member.route:member.routeSnapshot)??{};return {fork_turns:'none',...(route.model?{model:route.model}:{}),...(route.reasoningEffort?{reasoning_effort:route.reasoningEffort}:{})};}
 export function usageReport(team,runs=[]) {
   const members=team.members.map(m=>({memberId:m.id,totalTokens:0,knownAttempts:0,unknownAttempts:0})),tasks=[];
   for(const task of team.tasks) {
@@ -46,13 +46,14 @@ export function compactHandoff(handoff,{contextChars=24000}={}) {
 }
 export class TeamProfiles {
   constructor(root){this.store=new DurableStore(join(root,'profiles.json'),{profiles:{}});}
-  async save(name,plan,policy={},note='',{taskPlanning='seed',constraints=''}={}) {
+  async save(name,plan,policy={},note='',{taskPlanning='seed',constraints='',expectedUpdatedAt}={}) {
     if(!/^[a-zA-Z0-9_-]{1,64}$/.test(name))throw new Error('Invalid profile name');
     if(!Array.isArray(plan.members)||!plan.members.length)throw new Error('A profile needs a roster');
     if(!['seed','leader'].includes(taskPlanning))throw new Error('Invalid profile task planning mode');
     if(taskPlanning==='leader'){validateMembers(plan.members);if(plan.tasks?.length)throw new Error('A leader-planned profile stores roles and constraints, not a fixed DAG');}else validatePlan(plan);
     const value={name,taskPlanning,constraints:String(constraints).slice(0,6000),plan:structuredClone(plan),policy:normalizePolicy(policy),note:String(note).slice(0,2000),updatedAt:new Date().toISOString()};
-    await this.store.transaction(d=>{d.profiles[name]=value;});return value;
+    await this.store.transaction(d=>{if(expectedUpdatedAt&&d.profiles[name]?.updatedAt!==expectedUpdatedAt)throw new Error('Profile changed; refresh before saving');value.updatedAt=new Date(Math.max(Date.now(),(Date.parse(d.profiles[name]?.updatedAt)||0)+1)).toISOString();d.profiles[name]=value;});return value;
   }
   async read(name){const d=await this.store.read();if(name){if(!d.profiles[name])throw new Error('Profile not found');return d.profiles[name];}return Object.values(d.profiles).map(({name,note,updatedAt,plan,taskPlanning})=>({name,note,updatedAt,taskPlanning:taskPlanning??'seed',members:plan.members.length}));}
+  async remove(name,updatedAt){return this.store.transaction(d=>{const p=d.profiles[name];if(!p||p.updatedAt!==updatedAt)throw new Error('Profile changed; refresh before deleting');delete d.profiles[name];return {name,deleted:true};});}
 }

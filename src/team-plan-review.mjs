@@ -3,7 +3,7 @@ import {createHash,randomUUID} from 'node:crypto';
 import {normalizePolicy} from './team-policy.mjs';
 
 const pick=(o,keys)=>Object.fromEntries(keys.filter(k=>o?.[k]!==undefined).map(k=>[k,structuredClone(o[k])]));
-const memberKeys=['id','role','responsibility','reason','writeScopes','route'];
+const memberKeys=['id','role','responsibility','reason','writeScopes','route','routeSnapshot','fallbackRoute'];
 const taskKeys=['id','title','goal','context','acceptance','acceptanceCriteria','contract','memberId','priority','kind','validationMode','reviewOfTaskId','parentTaskId','resources','dependencies'];
 const now=()=>new Date().toISOString();
 const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,stable(v[k])])):v;
@@ -11,7 +11,7 @@ export const planHash=value=>createHash('sha256').update(JSON.stringify(stable(v
 export function planConfiguration(team){return {...(team.memberStartup?{memberStartup:team.memberStartup}:{}),goal:team.goal,plan:{members:team.members.filter(m=>!m.removedAt).map(m=>pick(m,memberKeys)),tasks:team.tasks.map(t=>pick(t,taskKeys)),...(team.goalCriteria?{goalCriteria:structuredClone(team.goalCriteria)}:{})},maxParallel:team.maxParallel,policy:normalizePolicy(team.policy)};}
 export function assertPlanExecutable(team){if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')throw new Error('Plan approval is required before initializing members or dispatching tasks');}
 export function assertPlanMutable(team){if(team.state==='superseded')throw new Error('Historical team is read-only');if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')throw new Error('Use revise_team_plan or cancel_team_plan for this unapproved draft');}
-export function planReviewSummary(team){const p=team.planReview;if(!p)return undefined;return pick(p,['status','scope','version','hash','mode','reason','brief','approval','cancelledAt','updatedAt']);}
+export function planReviewSummary(team){const p=team.planReview;if(!p)return undefined;return pick(p,['status','scope','version','hash','mode','reason','brief','approval','cancelledAt','updatedAt','feedback']);}
 function recordVersion(team,p,configuration){team.planHistory??=[];team.planHistory.push({version:p.version,hash:p.hash,scope:p.scope,at:now(),configuration:structuredClone(configuration)});team.planHistory=team.planHistory.slice(-20);}
 export function setPlanReview(team,{mode='auto',execute=false,executionAuthorization,brief=''}={}){
   if(!['auto','required','immediate'].includes(mode))throw new Error('Unknown approval mode');
@@ -35,7 +35,15 @@ export function updateDraft(team,configuration,brief){
   if(configuration.plan.goalCriteria)team.goalCriteria=structuredClone(configuration.plan.goalCriteria);else delete team.goalCriteria;
   team.members=configuration.plan.members.map(m=>({...pick(m,memberKeys),status:'planned',agentThreadId:null,rosterMarker:old.get(m.id)?.rosterMarker??`TEAM_WORKSPACE_MEMBER:${randomUUID()}`,rosterVerified:false,lastActivityAt:at}));
   team.tasks=configuration.plan.tasks.map(t=>({...pick(t,taskKeys),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:at,updatedAt:at}));
-  p.version++;p.hash=planHash(planConfiguration(team));p.brief=brief??p.brief;p.updatedAt=at;delete p.approval;recordVersion(team,p,planConfiguration(team));
+  p.version++;p.hash=planHash(planConfiguration(team));p.brief=brief??p.brief;p.updatedAt=at;delete p.approval;delete p.feedback;recordVersion(team,p,planConfiguration(team));
+}
+export function requestPlanFeedback(team,input){
+  const p=team.planReview;
+  if(team.state==='superseded'||p?.status!=='pending'||p.version!==input.planVersion||p.hash!==input.planHash)throw new Error('Plan version changed; refresh before returning to chat');
+  if(!/^[0-9a-f-]{36}$/i.test(input.requestId??'')||!input.note?.trim())throw new Error('Plan feedback needs a stable UUID and a note');
+  if(p.feedback?.requestId===input.requestId){if(p.feedback.note!==input.note)throw new Error('Feedback request ID already has different contents');return p.feedback;}
+  p.feedback={requestId:input.requestId,note:input.note,version:p.version,at:now(),status:'awaiting-user-feedback'};
+  requireTeamVersion(team,'0.13.0');team.events.push({at:now(),type:'plan-feedback-requested',version:p.version});return p.feedback;
 }
 export function adoptExistingAuthorization(team){
   if(team.planReview)return;const configuration=planConfiguration(team),at=now();requireTeamVersion(team,'0.11.0');
@@ -63,7 +71,7 @@ export function reviewRequest(team,input,action){
   return {hash};
 }
 export function finishPlanDecision(team,input,action,hash){const p=team.planReview,at=now();p.status=action==='approve'?'approved':'cancelled';p.updatedAt=at;if(action==='approve')p.approval={source:input.source??'leader-recorded-user-confirmation',note:input.note,version:p.version,hash:p.hash,at};else p.cancelledAt=at;delete p.pending;team.planDecisions??=[];team.planDecisions.push({requestId:input.requestId,hash,action,version:p.version,at});team.planDecisions=team.planDecisions.slice(-200);team.events.push({at,type:`plan-${action}`,scope:p.scope,version:p.version,hash:p.hash,source:input.source??'leader-recorded-user-confirmation'});}
-export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
+export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0','0.13.0','0.14.0','0.15.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
 
 export function updateExpansionDraft(team,configuration,brief){const p=team.planReview;if(p?.scope!=='expansion'||p.status!=='pending')throw new Error('Only a pending expansion may be revised');const version=p.version;team.planReview={...p,status:'approved'};stageExpansion(team,{members:configuration.members??[],tasks:configuration.tasks??[],policy:configuration.policy,maxParallel:configuration.maxParallel},brief??p.brief);team.planReview.version=version+1;}
 

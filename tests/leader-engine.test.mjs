@@ -110,13 +110,14 @@ test('released reservations preserve unique history without exhausting real exec
   assert.ok(c.recovery.some(r=>r.taskId==='work'&&r.action==='verify-host-before-bind-or-release'));
   assert.ok(c.readiness.find(r=>r.taskId==='review').blockers.some(b=>b.code==='dependency'));
 });
-test('role reuse preserves native thread, attempt identity and rejects previous task results',async()=>{
+test('role identity survives task context rotation, while stale attempts and retired threads are rejected',async()=>{
   const f=await fixture(),c=await claim(f,'work');const submitted=await bindSettle(f,c,'child-dev','first');
   const rework=await f.engine.rework('owner',f.team.id,submitted.team.revision,'work','fix result');
-  await f.engine.start('owner',f.team.id,rework.team.revision);const next=await claim(f,'work');assert.equal(next.dispatch.existingThreadId,'child-dev');assert.equal(next.dispatch.action,'followup-native-member');assert.notEqual(next.dispatch.attemptId,c.dispatch.attemptId);
+  await f.engine.start('owner',f.team.id,rework.team.revision);const next=await claim(f,'work');assert.equal(next.dispatch.existingThreadId,null);assert.equal(next.dispatch.action,'spawn-native-member');assert.equal(next.dispatch.contextIsolation.generation,2);assert.equal(next.team.contextHistory[0].threadId,'child-dev');assert.notEqual(next.dispatch.attemptId,c.dispatch.attemptId);
   await assert.rejects(()=>f.engine.bind('owner',f.team.id,next.team.revision,'work',c.dispatch.attemptId,'child-dev'),/Stale/);
   await assert.rejects(()=>f.engine.bind('owner',f.team.id,next.team.revision,'work',next.dispatch.attemptId,'child-dev'),/verified/);
-  seed(f,next.dispatch,'different-child');await assert.rejects(()=>f.engine.bind('owner',f.team.id,next.team.revision,'work',next.dispatch.attemptId,'different-child'),/Reuse/);
+  seed(f,next.dispatch,'child-dev');await assert.rejects(()=>f.engine.bind('owner',f.team.id,next.team.revision,'work',next.dispatch.attemptId,'child-dev'),/Retired/);
+  seed(f,next.dispatch,'different-child');const fresh=await f.engine.bind('owner',f.team.id,next.team.revision,'work',next.dispatch.attemptId,'different-child');assert.equal(fresh.team.members[0].id,'dev');assert.equal(fresh.team.tasks[0].attempts[0].agentThreadId,'child-dev');
 });
 test('failed commands and unverified reviewer checks cannot be accepted',async()=>{
   const f=await fixture();await bindSettle(f,await claim(f,'work'),'dev','implementation');const c=await claim(f,'review');const submitted=await bindSettle(f,c,'qa',JSON.stringify({decision:'accept',checks:[{name:'browser',status:'NOT_RUN'}]}));
@@ -131,8 +132,8 @@ test('review-only recheck revokes acceptance without rerunning implementation',a
   const accepted=await f.engine.acceptReview('owner',f.team.id,submitted.team.revision,'review',c.dispatch.attemptId,'accept','checked');
   const recheck=await f.engine.rework('owner',f.team.id,accepted.team.revision,'review','Review updated gate');
   assert.equal(recheck.team.tasks[0].status,'submitted');assert.equal(recheck.team.tasks[0].attempt,1);assert.equal(recheck.team.tasks[1].status,'waiting');
-  await f.engine.start('owner',f.team.id,recheck.team.revision);const next=await claim(f,'review');assert.equal(next.dispatch.existingThreadId,'qa');
-  const resubmitted=await bindSettle(f,next,'qa',verdict);const done=await f.engine.acceptReview('owner',f.team.id,resubmitted.team.revision,'review',next.dispatch.attemptId,'accept','rechecked');assert.equal(done.team.state,'awaiting-leader-acceptance');
+  await f.engine.start('owner',f.team.id,recheck.team.revision);const next=await claim(f,'review');assert.equal(next.dispatch.existingThreadId,null);assert.equal(next.team.contextHistory[0].threadId,'qa');
+  const resubmitted=await bindSettle(f,next,'qa-fresh',verdict);const done=await f.engine.acceptReview('owner',f.team.id,resubmitted.team.revision,'review',next.dispatch.attemptId,'accept','rechecked');assert.equal(done.team.state,'awaiting-leader-acceptance');
 });
 test('observation failure is unknown and never launches a replacement; read never settles',async()=>{
   const f=await fixture(),c=await claim(f,'work');seed(f,c.dispatch,'child','working','inProgress');const bound=await f.engine.bind('owner',f.team.id,c.team.revision,'work',c.dispatch.attemptId,'child');

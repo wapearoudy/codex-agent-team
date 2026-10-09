@@ -18,6 +18,7 @@ docs/*
 scripts/*
 !scripts/build.mjs
 !scripts/package.py
+!scripts/package.mjs
 !scripts/validate-package.mjs
 !scripts/register-probe.ps1
 !scripts/stage-upgrade.py

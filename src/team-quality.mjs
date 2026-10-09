@@ -1,5 +1,6 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {isAbsolute,win32,posix} from 'node:path';
+import {contractCommandEvidence} from './verification-command.mjs';
 
 const stages=new Set(['requirements','implementation','verification','review','repair','integration']);
 const nonempty=v=>typeof v==='string'&&v.trim().length>0;
@@ -51,12 +52,16 @@ export function assertContractDelivery(task,member,output,commands=[]){
   }
   // A model's commandsRun claim cannot substitute for host command records.
   // Failed checks may be submitted for review, but cannot pass acceptance.
-  return {...delivery,scopeEvidenceSource:'member-reported-paths',verifiedCommands:(task.contract.verify??[]).map(command=>({command,observed:commands.some(c=>c.command?.trim()===command.trim()&&c.exitCode===0&&c.status==='completed')}))};
+  return {...delivery,scopeEvidenceSource:'member-reported-paths',verifiedCommands:contractCommandEvidence(task.contract.verify??[],commands),commandVerificationVersion:1};
 }
 export function assertContractPass(task){
   if(!task.contract||task.kind==='review')return;
-  const delivery=task.attempts.at(-1)?.delivery;
-  if(!delivery||delivery.acceptanceResults.some(c=>c.status!=='PASS')||delivery.verifiedCommands.some(c=>!c.observed))throw new Error('Contract acceptance requires every criterion PASS and successful host-observed verification commands');
+  const attempt=task.attempts.at(-1),delivery=attempt?.delivery;
+  // Recompute from this exact attempt's saved host observation. Old releases
+  // cached false negatives for wrapped commands; cached flags are not evidence.
+  const verifiedCommands=contractCommandEvidence(task.contract.verify??[],attempt?.observation?.commands??[]);
+  if(!delivery||delivery.acceptanceResults.some(c=>c.status!=='PASS')||verifiedCommands.some(c=>!c.observed))throw new Error('Contract acceptance requires every criterion PASS and successful host-observed verification commands');
+  return {verifiedCommands,commandVerificationVersion:1};
 }
 export const qualityRoot=task=>task.repairRootTaskId??task.id;
 export function openFindings(team,task){return (team.findings??[]).filter(f=>f.rootTaskId===qualityRoot(task)&&f.status==='open');}

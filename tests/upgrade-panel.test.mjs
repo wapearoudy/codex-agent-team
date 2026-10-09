@@ -20,7 +20,7 @@ test('shipping panel shows live public activity before completion, searches task
   await expect(page.locator('#memberDetail')).toContainText('正在核对真实执行记录');await expect(page.locator('#memberDetail')).toContainText('regression 8/8 passed');await expect(page.locator('#usageSummary')).toContainText('123');
   await page.getByRole('searchbox',{name:'查找任务'}).fill('t1');await expect(page.locator('[data-task-id]')).toHaveCount(1);
   await page.getByRole('searchbox',{name:'查找任务'}).fill('no-match');await expect(page.locator('#dependencyGraph')).toContainText('没有符合条件');
-  await page.getByRole('searchbox',{name:'查找任务'}).fill('');await page.getByRole('button',{name:'导出报告',exact:true}).click();await expect(page.locator('#recordOutput')).toHaveText('# 可读团队报告');
+  await page.getByRole('searchbox',{name:'查找任务'}).fill('');await page.locator('#teamRecords > summary').click();await page.getByRole('button',{name:'导出报告',exact:true}).click();await expect(page.locator('#recordOutput')).toHaveText('# 可读团队报告');
   await mkdir('evidence/upgrade-ui',{recursive:true});await page.screenshot({path:'evidence/upgrade-ui/wide.png',fullPage:true});await page.setViewportSize({width:360,height:900});assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);await page.screenshot({path:'evidence/upgrade-ui/narrow.png',fullPage:true});
   assert.deepEqual(errors,[]);await page.evaluate(()=>window.view.close());
  }finally{await browser.close();await new Promise(r=>server.close(r));}

@@ -49,7 +49,7 @@ export function buildHandoff(team,taskId){
   const member=team.members.find(m=>m.id===task.memberId);
   const checkpoint=checkpointProjection(team).filter(c=>c.taskId===taskId).at(-1)??null;
   return structuredClone({source:'leader-recorded',teamGoal:team.goal??'',taskId:task.id,title:task.title??'',goal:task.goal??'',context:task.context??'',acceptance:task.acceptance??'',acceptanceCriteria:task.acceptanceCriteria??[],status:task.status,attemptId:task.attempts.at(-1)?.id??null,
-    contract:task.contract??null,repairFindingIds:task.repairFindingIds??[],member:{id:task.memberId,role:member?.role??'',responsibility:member?.responsibility??'',writeScopes:member?.writeScopes??[]},
+    contract:task.contract??null,repairFindingIds:task.repairFindingIds??[],member:{id:task.memberId,role:member?.role??'',responsibility:(['running','submitted','accepted'].includes(task.status)?task.attempts.at(-1)?.memberGoalSnapshot?.goal:null)??member?.responsibility??'',writeScopes:member?.writeScopes??[]},
     dependencies:(task.dependencies??[]).map(d=>{
       const upstream=team.tasks.find(t=>t.id===d.taskId),attemptId=upstream?.attempts.at(-1)?.id??null;
       return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,candidate:upstream?.attempts.at(-1)?.candidate??null,workspace:team.members.find(m=>m.id===upstream?.memberId)?.workspace??null,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};

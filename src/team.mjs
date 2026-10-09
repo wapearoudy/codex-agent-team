@@ -1,3 +1,6 @@
+import {validateMemberGoals} from './member-goals.mjs';
+import {validateTaskContexts} from './task-context.mjs';
+import {requireTeamVersion} from './team-version.mjs';
 import {validateControl} from './team-control.mjs';
 import {validatePlanReview} from './team-plan-review.mjs';
 import { createHash, randomUUID } from 'node:crypto';
@@ -79,7 +82,7 @@ export function consumedAttempts(task){return task.attempts?.length?task.attempt
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
-  if(requiredRosterMembers(team,[task.id]).some(m=>team.memberStartup==='on-demand'?m.agentThreadId&&!m.rosterVerified:!m.agentThreadId||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
+  if(requiredRosterMembers(team,[task.id]).some(m=>team.memberStartup==='on-demand'?m.agentThreadId&&!m.rosterVerified:!m.agentThreadId&&!m.contextGeneration||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
   if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')add('plan-approval','请先确认当前版本的团队计划');
   if(team.executionControl&&team.executionControl.status!=='active')add('halted','团队已停止或正在停止，请先核对并明确恢复');
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
@@ -139,7 +142,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateRoster(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateMemberGoals(team);validateRoster(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}
@@ -148,6 +151,7 @@ export class TeamStore {
   document(id){return new TeamDocument(this.path(id),this.archive,validateTeam);}
   async create(input,owner){const team=createTeam(input);team.ownerId=owner;team.revision=1;const saved=team.requiresTeamWorkspaceVersion?await this.archive.compact(team):team;await this.document(team.id).transaction(d=>{if(d.id)throw new Error('Team already exists');Object.assign(d,saved);});return team;}
   async get(id,owner){const saved=await this.document(id).read();if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');const team=await this.archive.hydrate(saved);validateTeam(team);return team;}
+  async summaries(owner,projectPath){let names;try{names=await readdir(this.root);}catch(e){if(e.code==='ENOENT')return[];throw e;}const ids=[...new Set(names.filter(n=>/^[0-9a-f-]{36}(?:\.v2)?\.json$/i.test(n)).map(n=>n.replace(/(?:\.v2)?\.json$/,'')))],rows=[];for(const id of ids){const s=await this.document(id).read();if(s.ownerId===owner&&resolve(s.projectPath)===resolve(projectPath))rows.push({id:s.id,goal:s.goal,state:s.state,revision:s.revision,updatedAt:s.updatedAt,leaderThreadId:s.leaderThreadId});}return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
   async list(owner){let names;try{names=await readdir(this.root);}catch(e){if(e.code==='ENOENT')return[];throw e;}const rows=[];const ids=[...new Set(names.filter(n=>/^[0-9a-f-]{36}(?:\.v2)?\.json$/i.test(n)).map(n=>n.replace(/(?:\.v2)?\.json$/,'')))];for(const tid of ids){const saved=await this.document(tid).read();if(saved.ownerId===owner){const row=await this.archive.hydrate(saved);validateTeam(row);rows.push(row);}}return rows.sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt));}
-  async update(id,owner,expectedRevision,mutate){return this.document(id).transaction(async saved=>{if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');if(saved.revision!==expectedRevision)throw new Error('Team changed in another Desktop window; refresh the board before retrying');const team=await this.archive.hydrate(structuredClone(saved));validateTeam(team);const result=await mutate(team);team.revision++;team.updatedAt=now();validateTeam(team);const compact=await this.archive.compact(team);for(const key of Object.keys(saved))delete saved[key];Object.assign(saved,compact);return{team,result};});}
+  async update(id,owner,expectedRevision,mutate){return this.document(id).transaction(async saved=>{if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');if(saved.revision!==expectedRevision)throw new Error('Team changed in another Desktop window; refresh the board before retrying');const team=await this.archive.hydrate(structuredClone(saved));validateTeam(team);const result=await mutate(team);if(team.members.some(m=>m.routeSnapshot||m.fallbackRoute)||team.planReview?.feedback)requireTeamVersion(team,'0.13.0');team.revision++;team.updatedAt=now();validateTeam(team);const compact=await this.archive.compact(team);for(const key of Object.keys(saved))delete saved[key];Object.assign(saved,compact);return{team,result};});}
 }

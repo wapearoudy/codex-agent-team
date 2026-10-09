@@ -3,7 +3,7 @@ import {planReviewSummary} from './team-plan-review.mjs';
 // Display previews have a separate budget. Saved observations and full evidence
 // are never rewritten, and remain available through read_team(view=full).
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
-const attemptKeys=['id','memberId','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection'];
+const attemptKeys=['id','memberId','number','state','contextGeneration','contextBudget','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection'];
 const runKeys=['taskId','memberId','attemptId','threadId','turnId','status','statusEvidence','observedAt','connection','source','attemptIdentitySource','model','usage'];
 export const PANEL_MAX_BYTES=256*1024;
 export function panelTasks(tasks){
@@ -44,11 +44,12 @@ export function stateRuns(runs){const budget=previewBudget(24*1024);return runs.
 export function panelResponse(data,detailToken){
   const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster']);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0'].includes(data.team.requiresTeamWorkspaceVersion);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);
   if(data.team.planReview)team.planReview=planReviewSummary(data.team);
-  team.members=data.team.members.map(m=>({...pick(m,['id','role','displayName','threadTitle','taskName','status','agentThreadId','agentPath','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','workspace','recoveryControl']))}));
+  team.members=data.team.members.map(m=>({...pick(m,['id','role','goalRevision','goalUpdatedAt','displayName','threadTitle','taskName','status','agentThreadId','agentPath','contextGeneration','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','routeSnapshot','fallbackRoute','activeRoute','workspace','recoveryControl']))}));
   team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound','contractRevision']),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
   const relevant=data.runs.filter(r=>ids.has(r.taskId));
   const latest=new Set(rows.map(t=>t.attempts.at(-1)?.id));

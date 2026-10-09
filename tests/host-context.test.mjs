@@ -2,6 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {realpath} from 'node:fs/promises';
 import {HostContext} from '../src/host-context.mjs';
+import {ModelCatalog} from '../src/model-catalog.mjs';
+
+test('model catalog releases the read-only helper after idle rather than clearing its only shutdown timer',async()=>{
+  let closed=0;const methods=[];
+  const host=new HostContext({idleMs:10,rpcFactory:()=>({async connect(){},async call(method){methods.push(method);return {data:[]};},async close(){closed++;}})});
+  await new ModelCatalog(host).read();await new Promise(resolve=>setTimeout(resolve,40));
+  assert.deepEqual(methods,['model/list']);assert.equal(closed,1);assert.equal(host.rpc,null);await host.close();
+});
 
 test('current project comes from host thread metadata, never a caller path or plugin cwd',async()=>{
   const cwd=await realpath('.'),calls=[];let closed=false;

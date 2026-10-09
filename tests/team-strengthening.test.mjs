@@ -35,7 +35,7 @@ async function fixture(options={}){
   for(const m of team.members){f.seed(m.rosterMarker,'child-'+m.id);const t=await f.saved();await engine.bindRoster('owner',team.id,t.revision,m.id,'child-'+m.id);}
   if(options.autoRepair){const t=await f.saved();await engine.store.update(t.id,'owner',t.revision,t=>{t.policy=normalizePolicy({autoRepair:true,maxReviewRounds:options.maxReviewRounds??3});});}
   f.claim=async taskId=>{const t=await f.saved();return engine.claim('owner',team.id,t.revision,taskId);};
-  f.run=async(taskId,output,commands=[],status='completed')=>{const c=await f.claim(taskId),thread=c.dispatch.existingThreadId;f.seed(c.dispatch.marker,thread,status,output,commands);const b=await engine.bind('owner',team.id,c.team.revision,taskId,c.dispatch.attemptId,thread);const data=await engine.settle('owner',team.id,b.team.revision,taskId,c.dispatch.attemptId);return {...data,attemptId:c.dispatch.attemptId};};
+  f.run=async(taskId,output,commands=[],status='completed')=>{const c=await f.claim(taskId),thread=c.dispatch.existingThreadId??'child-'+c.dispatch.taskName;f.seed(c.dispatch.marker,thread,status,output,commands);const b=await engine.bind('owner',team.id,c.team.revision,taskId,c.dispatch.attemptId,thread);const data=await engine.settle('owner',team.id,b.team.revision,taskId,c.dispatch.attemptId);return {...data,attemptId:c.dispatch.attemptId};};
   f.decide=async(taskId,decision='accept')=>{const t=await f.saved();return engine.acceptReview('owner',team.id,t.revision,taskId,t.tasks.find(x=>x.id===taskId).attempts.at(-1).id,decision,'Independent evidence checked');};
   return f;
 }
@@ -73,6 +73,28 @@ test('model-claimed checks, wrong commands and failed criteria cannot pass indep
     const f=await fixture();await f.run('work',output,records);await f.run('review',review());const before=await f.saved();
     await assert.rejects(()=>f.decide('review'),/Contract acceptance/);assert.deepEqual(await f.saved(),before);
   }
+});
+test('upgrading revalidates settled shell-wrapped commands during explicit acceptance without replacing attempts or execution evidence',async()=>{
+  const f=await fixture(),records=[{command:"/bin/zsh -lc 'node --test'",exitCode:0,status:'completed'}];
+  await f.run('work',delivery(),records);await f.run('review',review());
+  const old=await f.saved();
+  await f.engine.store.update(old.id,'owner',old.revision,t=>{
+    const a=t.tasks.find(t=>t.id==='work').attempts.at(-1);
+    a.delivery.verifiedCommands=[{command:'node --test',observed:false}];delete a.delivery.commandVerificationVersion;
+  });
+  const before=await f.saved(),engine=new LeaderEngine({root:f.engine.root,observer:f.observer});
+  const accepted=await engine.acceptReview('owner',before.id,before.revision,'review',before.tasks.find(t=>t.id==='review').attempts.at(-1).id,'accept','Existing independent review and original host evidence checked');
+  const work=accepted.team.tasks.find(t=>t.id==='work'),prior=before.tasks.find(t=>t.id==='work');
+  assert.equal(work.status,'accepted');assert.equal(work.attempts.at(-1).delivery.verifiedCommands[0].observed,true);
+  assert.deepEqual(work.attempts.map(a=>a.id),prior.attempts.map(a=>a.id));assert.deepEqual(work.attempts.at(-1).observation,prior.attempts.at(-1).observation);assert.deepEqual(work.evidence,prior.evidence);
+  const saved=await f.saved();await f.engine.store.update(saved.id,'owner',saved.revision,t=>{t.tasks.find(t=>t.id==='work').attempts.at(-1).delivery.verifiedCommands[0].observed=false;});
+  const ready=await f.saved(),finished=await engine.finish('owner',ready.id,ready.revision,'Final checks explicitly verified',[{name:'project verification',status:'PASS',evidence:'Controlled final check'}]);
+  assert.equal(finished.team.state,'delivered');assert.equal(finished.team.tasks.find(t=>t.id==='work').attempts.at(-1).delivery.verifiedCommands[0].observed,true);
+});
+test('acceptance rechecks original current-attempt commands instead of trusting a cached success flag',async()=>{
+  const f=await fixture();await f.run('work',delivery(),[]);await f.run('review',review());
+  const old=await f.saved();await f.engine.store.update(old.id,'owner',old.revision,t=>{t.tasks.find(t=>t.id==='work').attempts.at(-1).delivery.verifiedCommands=[{command:'node --test',observed:true}];});
+  const before=await f.saved();await assert.rejects(()=>f.decide('review'),/Contract acceptance/);assert.deepEqual(await f.saved(),before);
 });
 test('automatic repair preserves evidence, redirects both dependency types, and independently resolves stable findings',async()=>{
   const f=await fixture({autoRepair:true,next:true});await f.run('work',delivery(),commands);await f.run('review',review({decision:'rework',findings:[finding]}));

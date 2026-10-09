@@ -17,7 +17,7 @@ test('panel shows bounded quality metadata and selects the correct historical ex
       window.view=setupTeamView({async callServerTool(){return {structuredContent:data};}});await window.view.accept(data);
     });
     await expect(page.locator('#qualitySummary')).toContainText('1 次修复 · 1 项未关闭问题');
-    await expect(page.locator('#memberTree')).toContainText('岗位已移除');await expect(page.locator('#headerSummary')).toContainText('1 名成员');
+    await expect(page.locator('#memberTree')).toContainText('岗位已移除');await expect(page.locator('#membersHeading')).toContainText('1 名成员');
     await page.locator('[data-task-id="repair"]').click();await expect(page.locator('#taskDetail')).toContainText('node --test');await expect(page.locator('#taskDetail')).toContainText('high · F-1');
     await page.locator('[data-member-id="old"] [data-focus-key="view-member:old"]').click();await page.locator('[data-focus-key="execution-tab:old-attempt"]').click();
     await expect(page.locator('#memberDetail h2')).toContainText('原开发');await expect(page.locator('#memberDetail')).toContainText('原执行者的公开交付');

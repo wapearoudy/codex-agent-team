@@ -26,7 +26,7 @@ export function memberExecutions(member,tasks,runs){
   return tasks.flatMap(task=>(task.attempts??[]).filter(a=>(a.memberId??task.memberId)===member.id).map(attempt=>{
     const run=runs.find(r=>r.attemptId===attempt.id&&r.taskId===task.id&&r.memberId===member.id);
     return {taskId:task.id,attemptId:attempt.id,number:attempt.number,threadId:run?.threadId??attempt.agentThreadId,
-      turnId:run?.turnId??attempt.turnId,model:run?.model??null,status:run?.status==='inProgress'&&run?.statusEvidence?.freshUntil&&Date.parse(run.statusEvidence.freshUntil)<=Date.now()?'unknown':run?.status??attempt.runtimeStatus??'unknown',
+      turnId:run?.turnId??attempt.turnId,contextGeneration:attempt.contextGeneration??1,model:run?.model??null,status:run?.status==='inProgress'&&run?.statusEvidence?.freshUntil&&Date.parse(run.statusEvidence.freshUntil)<=Date.now()?'unknown':run?.status??attempt.runtimeStatus??'unknown',
       connection:run?.connection??attempt.connection,active:task.memberId===member.id&&task.status==='running'&&runIsActive(run),current:task.memberId===member.id&&task.attempts.at(-1).id===attempt.id,startedAt:attempt.startedAt,endedAt:attempt.endedAt};
   }));
 }

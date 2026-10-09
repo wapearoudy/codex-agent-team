@@ -1,3 +1,5 @@
+import {lastMemberExecution,retireTaskContext,assertFreshBinding,boundedDispatchPrompt} from './task-context.mjs';
+import {memberGoalRequest,changeMemberGoal,memberGoalSnapshot,memberGoalDetail} from './member-goals.mjs';
 import {memberClaimRequest,memberReport,assertMember} from './member-work.mjs';
 import {amendContract} from './team-contracts.mjs';
 import {requestStop,resumeTeam,stopTargets,controlRequest} from './team-control.mjs';
@@ -13,7 +15,7 @@ import {queueMessage,messageAction,recordMessageDelivery,acknowledgeMessage,mail
 import {recordCheckpoint,checkpointProjection,buildHandoff} from './team-checkpoints.mjs';
 import {rosterPacket,requiredRosterMembers} from './team-roster.mjs';
 import {memberNaming,memberTitleAction} from './team-naming.mjs';
-import {assertBudget,usageReport,normalizePolicy,compactHandoff,nativeRoute} from './team-policy.mjs';
+import {assertBudget,usageReport,normalizePolicy,nativeRoute} from './team-policy.mjs';
 import {diagnostics} from './team-diagnostics.mjs';
 import {workflowActions} from './team-workflow.mjs';
 import {peerActions} from './team-peer-mailbox.mjs';
@@ -21,7 +23,7 @@ import {TeamWorktrees} from './team-worktrees.mjs';
 import {assertContractDelivery,assertContractPass,recordFindings,planRepair,qualityReport,assertQualityFinish,openFindings} from './team-quality.mjs';
 import {lifecycleRequest,reassignTask,removeMember,verifyQuiescence} from './team-lifecycle.mjs';
 
-import {setPlanReview,assertPlanExecutable,assertDispatchAllowed,assertPlanMutable,editablePlan,updateDraft,updateExpansionDraft,stageExpansion,expansionCandidate,policyExpands,reviewRequest,finishPlanDecision,planHash} from './team-plan-review.mjs';
+import {requestPlanFeedback,setPlanReview,assertPlanExecutable,assertDispatchAllowed,assertPlanMutable,editablePlan,updateDraft,updateExpansionDraft,stageExpansion,expansionCandidate,policyExpands,reviewRequest,finishPlanDecision,planHash} from './team-plan-review.mjs';
 
 const now=()=>new Date().toISOString();
 const terminal=s=>['completed','failed','interrupted'].includes(s);
@@ -37,18 +39,16 @@ export class LeaderEngine {
     return new DurableStore(join(this.root,'leader-plan-requests.json'),{requests:{}}).transaction(async d=>{
       if(d.requests[key])return this.store.get(d.requests[key],owner);
       const team=await this.store.create({projectId:createHash('sha256').update(context.cwd).digest('hex').slice(0,24),projectPath:context.cwd,goal:args.goal,plan:args.plan,maxParallel:args.maxParallel??3},owner);
-      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.policy)t.policy=normalizePolicy(args.policy);if(args.memberStartup){t.memberStartup=args.memberStartup;requireTeamVersion(t,'0.12.0');}if(args.approvalMode)setPlanReview(t,{mode:args.approvalMode,execute:args.execute,executionAuthorization:args.executionAuthorization,brief:args.brief});if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
+      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';if(t.members.some(m=>m.routeSnapshot||m.fallbackRoute))requireTeamVersion(t,'0.13.0');t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.policy)t.policy=normalizePolicy(args.policy);if(args.memberStartup){t.memberStartup=args.memberStartup;requireTeamVersion(t,'0.12.0');}if(args.approvalMode)setPlanReview(t,{mode:args.approvalMode,execute:args.execute,executionAuthorization:args.executionAuthorization,brief:args.brief});if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
       d.requests[key]=saved.id;return saved;
     });
   }
   async native(owner,id){const team=await this.store.get(id,owner);if(team.mode!=='host-leader')throw new Error('This is a legacy isolated team; native delegation requires a host-leader plan');return team;}
   packet(team,task){
     const a=task.attempts.at(-1),m=team.members.find(x=>x.id===task.memberId);
-    const handoff=compactHandoff(buildHandoff(team,task.id),normalizePolicy(team.policy));
-    return {taskId:task.id,attemptId:a.id,memberId:m.id,...memberNaming(team,m),titleAction:memberTitleAction(team,m),existingThreadId:m.agentThreadId,existingAgentPath:m.agentPath??null,marker:a.marker,spawnOptions:nativeRoute(m),workspace:m.workspace??{path:team.projectPath,mode:'shared'},contextBudget:handoff.contextBudget,
-      action:m.agentThreadId?'followup-native-member':'spawn-native-member',
-      prompt:[a.marker,`Before working, emit this exact marker as a standalone public commentary message: ${a.marker}. Include it as the first line of your final delivery, or as attemptMarker in a JSON review. Do not repeat markers from earlier attempts.`, `Leader: ${team.leaderThreadId}. Project: ${team.projectPath}.`,
-        `Fixed member name: ${memberNaming(team,m).displayName}. Role: ${m.role}. Responsibility: ${m.responsibility}.`, `Task: ${task.title}\n${task.goal}`,`Acceptance: ${task.acceptance}`,
+    const naming=memberNaming(team,m),generation=m.contextGeneration??1,contextSuffix='_ctx_'+generation+'_'+a.id.replaceAll('-','');
+    const bounded=boundedDispatchPrompt(handoff=>[a.marker,`Before working, emit this exact marker as a standalone public commentary message: ${a.marker}. Include it as the first line of your final delivery, or as attemptMarker in a JSON review. Do not repeat markers from earlier attempts.`, `Leader: ${team.leaderThreadId}. Project: ${team.projectPath}.`,
+        `Fixed member name: ${memberNaming(team,m).displayName}. Role: ${m.role}. Responsibility: ${a.memberGoalSnapshot?.goal??m.responsibility}.`, `Task: ${task.title}\n${task.goal}`,`Acceptance: ${task.acceptance}`,
         `Team goal: ${handoff.teamGoal}`,`Acceptance criteria: ${JSON.stringify(task.acceptanceCriteria??[])}`,`Additional context: ${task.context??''}`,`Upstream evidence: ${JSON.stringify(handoff.dependencies)}`,
         `Quality contract: ${JSON.stringify(task.contract??null)}. Declared goal coverage: ${JSON.stringify(team.goalCriteria??[])}. Scope paths are project-relative; explicit outOfScope paths must never be changed.`,
         `Open findings for this delivery: ${JSON.stringify(openFindings(team,task.kind==='review'?team.tasks.find(t=>t.id===task.reviewOfTaskId):task).map(({history,...f})=>f))}. Keep their IDs and severities across repair/review rounds. Only an independent reviewer can resolve them with concrete resolutionEvidence.`,
@@ -56,10 +56,12 @@ export class LeaderEngine {
         `Validation scope: ${task.validationMode??'execute'}. Report actual commands and results; source-only review is not proof that tests ran.`,
         `Allowed source writes: ${m.writeScopes.join(', ')||'none (read-only reviewer)'}. Shared project: other members are working here; do not revert their edits. Read only what this task needs.`,
         m.workspace?`Your assigned Git worktree is ${m.workspace.path}. Use this directory for every file write and command workdir. The native conversation remains in the Leader project. Commit the candidate in this worktree; do not merge or write back to the Leader workspace.`:'Work in the current shared project.',
-        'The current main conversation is your Leader. Do not create a separate team. You may read_member_team_work, claim_member_team_task, bind_member_team_task and report_member_team_task for your own assigned work only; never accept your own delivery or change scope/other members. Report blockers to the Leader; do not install dependencies or expand scope without authorization.',
-        `For task-scoped coordination, use send_team_peer_message with teamId ${team.id}, attemptId ${a.id} and a stable requestId. Send only to a roster member or leader. The returned nativeAction may be delivered using the existing native send_message tool; record its actual result with record_team_peer_sender_delivery. Never auto-resend an unknown delivery. Read your own inbox and acknowledge the original message/recipient attempt.`,
+        'Use the team_member router: operation=describe with toolName to read one operation schema, then operation=<business tool name>, arguments=<that input>. The current main conversation is your Leader. Do not create a separate team. You may read_member_team_work, claim_member_team_task, bind_member_team_task and report_member_team_task for your own assigned work only; never accept your own delivery or change scope/other members. Report blockers to the Leader; do not install dependencies or expand scope without authorization.',
+        `For task-scoped coordination, use send_team_peer_message with teamId ${team.id}, attemptId ${a.id} and a stable requestId. Send only to a roster member or leader. The returned nativeAction may be delivered using the existing native send_message tool; record its actual result with record_team_peer_sender_delivery. Never auto-resend an unknown delivery. Read your own inbox and acknowledge the original message/recipient attempt. After your final delivery, finish this turn and wait. Never self-claim another task in this execution context.`,
         task.kind==='review'?`Return JSON with attemptMarker, summary, decision (accept or rework), reason, checks [{name,criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], findings [{id,severity:blocker|high|medium|low,status:open|resolved,description,resolutionEvidence}]. Use stable IDs for new findings and preserve supplied IDs when resolving earlier findings. Use findings:[] if none. Every PASS check requires concrete evidence. Cover these target criteria: ${JSON.stringify(team.tasks.find(t=>t.id===task.reviewOfTaskId)?.acceptanceCriteria??[])}. Review independently; do not fix the implementation.`:task.contract?'Return JSON with attemptMarker, summary, changedPaths (project-relative), acceptanceResults [{criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], commandsRun and limitations. Execute every exact contract.verify command using native command tools, so the host records its exit code. Report missing/failed checks honestly; submission is not acceptance.':'Return a summary, changed file paths, test commands/results and remaining limitations. Completion is a submission, not acceptance.'
-      ].join('\n\n')};
+      ].join('\n\n'),buildHandoff(team,task.id),normalizePolicy(team.policy).contextChars);
+    return {taskId:task.id,attemptId:a.id,memberId:m.id,...naming,taskName:generation>1?naming.taskName.slice(0,64-contextSuffix.length)+contextSuffix:naming.taskName,titleAction:memberTitleAction(team,m),existingThreadId:m.agentThreadId,existingAgentPath:m.agentPath??null,marker:a.marker,spawnOptions:nativeRoute(m),workspace:m.workspace??{path:team.projectPath,mode:'shared'},...bounded,contextIsolation:{mode:'task',generation,previousThreadId:team.contextHistory?.findLast(c=>c.memberId===m.id)?.threadId??null},
+      action:m.agentThreadId?'followup-native-member':'spawn-native-member'};
   }
   async claim(owner,id,revision,taskId){
     const data=await this.claimMany(owner,id,revision,[taskId]);const {dispatches,...rest}=data;return {...rest,dispatch:dispatches[0]};
@@ -71,28 +73,42 @@ export class LeaderEngine {
     if(rosterTeam.state==='superseded')throw new Error('Historical team cannot dispatch; use the project’s current team');
     if(rosterTeam.policy?.tokenLimit)assertBudget(rosterTeam,await this.observations(rosterTeam));
     if(rosterTeam.members.some(m=>!m.removedAt&&m.recoveryControl?.status==='unavailable'))throw new Error('A native member handle is unavailable; preserve the roster and verify recovery before dispatch');
+    const retirements=new Map();
+    for(const taskId of taskIds){
+      const task=rosterTeam.tasks.find(t=>t.id===taskId),member=rosterTeam.members.find(m=>m.id===task?.memberId);
+      if(!member||task.status==='running')continue;
+      const last=lastMemberExecution(rosterTeam,member);if(!last)continue;
+      if(rosterTeam.tasks.some(t=>t.memberId===member.id&&t.status==='running'))throw new Error('Member still has an active attempt; preserve its context');
+      const run=await this.observer.inspect(rosterTeam.leaderThreadId,rosterTeam.projectPath,member.agentThreadId,last.attempt.marker,{requireIdle:true});
+      if(!last.attempt.endedAt||!terminal(run.status)||run.turnId!==last.attempt.turnId)throw new Error('Native member is not confirmed terminal; preserve its task context');
+      retirements.set(member.id,run);
+    }
     if(rosterTeam.fixedRoster){
       const required=requiredRosterMembers(rosterTeam,taskIds);
-      if(rosterTeam.memberStartup!=='on-demand'&&required.some(m=>!m.agentThreadId))throw new Error('Initialize and bind every fixed native member required by these tasks before dispatching');
+      if(rosterTeam.memberStartup!=='on-demand'&&required.some(m=>!m.agentThreadId&&!m.contextGeneration))throw new Error('Initialize and bind every fixed native member required by these tasks before dispatching');
       verified.push(...await Promise.all(required.filter(m=>m.agentThreadId&&!m.rosterVerified).map(async m=>{const run=await this.observer.inspect(rosterTeam.leaderThreadId,rosterTeam.projectPath,m.agentThreadId,m.rosterMarker);if(!run.turnId||run.status!=='completed')throw new Error('Member initialization is not complete; observe the same member without respawning');return {id:m.id,threadId:m.agentThreadId,turnId:run.turnId};})));
     }
-    const {team}=await this.store.update(id,owner,revision,t=>{
+    const {result:dispatches}=await this.store.update(id,owner,revision,t=>{
       for(const item of verified){const m=t.members.find(m=>m.id===item.id);if(m.agentThreadId!==item.threadId)throw new Error('Roster changed');m.rosterVerified=true;m.initializationTurnId=item.turnId;m.status='idle';}
       if(t.mode!=='host-leader'||t.dispatchPaused)throw new Error('Leader dispatch is paused or this is a legacy team');
       for(const taskId of taskIds){
       const task=t.tasks.find(x=>x.id===taskId);if(!task)throw new Error('Task not found');
       if(task.status==='running'&&task.attempts.at(-1)?.state==='reserved')continue;
       const blockers=dispatchBlockers(t,task);if(blockers.length)throw new Error('Task is not ready: '+blockers.map(b=>b.message).join('; '));
+      const retiringMember=t.members.find(m=>m.id===task.memberId);
+      if(retirements.has(retiringMember.id))retireTaskContext(t,retiringMember,retirements.get(retiringMember.id));
       const draft=structuredClone(t);draft.maxParallel=Math.min(t.maxParallel,t.tasks.filter(x=>x.status==='running').length+1);
       draft.tasks.find(x=>x.id===taskId).priority=0;
       const selected=schedule(draft);if(selected.length!==1||selected[0].id!==taskId)throw new Error('Task is not ready: check dependencies, member availability, write conflicts and parallel limit');
       const candidate=selected[0];candidate.priority=task.priority;Object.assign(task,candidate);
       const member=t.members.find(x=>x.id===task.memberId);Object.assign(member,draft.members.find(x=>x.id===member.id));
-      const a=task.attempts.at(-1);a.state='reserved';a.runtimeStatus='reserved';a.marker=`TEAM_WORKSPACE_ATTEMPT:${a.id}`;
+      const a=task.attempts.at(-1);a.state='reserved';a.runtimeStatus='reserved';a.marker=`TEAM_WORKSPACE_ATTEMPT:${a.id}`;a.contextGeneration=member.contextGeneration??1;requireTeamVersion(t,'0.14.0');
+      if(member.goalRevision)a.memberGoalSnapshot={...memberGoalSnapshot(member),source:'task-reservation'};
       t.events.push({at:now(),type:'leader-task-reserved',taskId,attemptId:a.id});
       }
+      return taskIds.map(taskId=>{const task=t.tasks.find(x=>x.id===taskId),packet=this.packet(t,task);task.attempts.at(-1).contextBudget=packet.contextBudget;return packet;});
     });
-    return {...await this.receipt(owner,id),dispatches:taskIds.map(taskId=>this.packet(team,team.tasks.find(x=>x.id===taskId)))};
+    return {...await this.receipt(owner,id),dispatches};
   }
   async bind(owner,id,revision,taskId,attemptId,threadId){
     const data=await this.bindMany(owner,id,revision,[{taskId,attemptId,threadId}]);const {titleActions,...rest}=data;return {...rest,titleAction:titleActions[0]};
@@ -105,7 +121,7 @@ export class LeaderEngine {
       const task=team.tasks.find(x=>x.id===input.taskId),a=task?.attempts.at(-1);
       if(!a||a.id!==input.attemptId||task.status!=='running')throw new Error('Stale or inactive attempt');
       const member=team.members.find(m=>m.id===task.memberId);
-      const snapshot=await this.observer.inspect(team.leaderThreadId,team.projectPath,input.threadId,a.marker,{allowPending:true});
+      const snapshot=await this.observer.inspect(team.leaderThreadId,team.projectPath,input.threadId,a.marker,{allowPending:true,requireFresh:!!a.contextGeneration});
       return {...input,threadId:snapshot.threadId,snapshot};
     }));
     await this.store.update(id,owner,revision,t=>{
@@ -115,8 +131,8 @@ export class LeaderEngine {
       if(t.tasks.some(x=>x.id!==taskId&&x.status==='running'&&x.attempts.at(-1)?.agentThreadId===threadId))throw new Error('Member is already executing another task');
       const m=t.members.find(x=>x.id===task.memberId);
       if(m.agentThreadId&&m.agentThreadId!==threadId)throw new Error('Reuse the existing native member; do not silently replace it');
-      if(t.members.some(x=>x.id!==m.id&&x.agentThreadId===threadId))throw new Error('Different roles require distinct native members');
-        const first=!a.agentThreadId;bindMemberThread(t,taskId,threadId,attemptId);m.agentPath=snapshot.agentPath??m.agentPath??null;if(t.memberStartup==='on-demand'){m.rosterVerified=true;m.initializationTurnId??=snapshot.turnId;}a.state=snapshot.turnId?'running':'linking';a.turnId=snapshot.turnId;a.runtimeStatus=snapshot.status;a.observation=snapshot;a.executedRoute={model:snapshot.model??m.route?.model??null,reasoningEffort:m.route?.reasoningEffort??null,source:snapshot.model?'host-observed-model':'requested-route-only'};if(first){a.boundAt=now();t.totalDispatches++;}
+      assertFreshBinding(t,m,threadId);
+        const first=!a.agentThreadId;bindMemberThread(t,taskId,threadId,attemptId);m.agentPath=snapshot.agentPath??m.agentPath??null;if(t.memberStartup==='on-demand'||m.contextGeneration){m.rosterVerified=true;m.initializationTurnId??=snapshot.turnId;}a.state=snapshot.turnId?'running':'linking';a.turnId=snapshot.turnId;a.runtimeStatus=snapshot.status;a.observation=snapshot;a.executedRoute={model:snapshot.model??nativeRoute(m).model??null,provider:snapshot.provider??m.routeSnapshot?.provider??null,reasoningEffort:snapshot.reasoningEffort??nativeRoute(m).reasoning_effort??null,source:snapshot.model?'host-observed-model':'frozen-route-only'};if(first){a.boundAt=now();t.totalDispatches++;}
       }
     });
     const data=await this.receipt(owner,id);return {...data,titleActions:verified.map(v=>memberTitleAction(data.team,data.team.members.find(m=>m.id===data.team.tasks.find(t=>t.id===v.taskId).memberId)))};
@@ -129,11 +145,12 @@ export class LeaderEngine {
     const team=await this.native(owner,id);assertDispatchAllowed(team);if(team.revision!==revision)throw new Error('Team changed; refresh before controlling members');
     const verified=await Promise.all(assignments.map(async input=>{
       const member=team.members.find(m=>m.id===input.memberId&&!m.removedAt);if(!team.fixedRoster||!member)throw new Error('An active fixed roster member is required');
+      if(member.contextGeneration)throw new Error('Bind an isolated task context through its reserved attempt; do not reinitialize the roster');
       return {...input,snapshot:await this.observer.inspect(team.leaderThreadId,team.projectPath,input.threadId,member.rosterMarker,{allowPending:true})};
     }));
     await this.store.update(id,owner,revision,t=>{for(const {memberId,snapshot} of verified){const m=t.members.find(m=>m.id===memberId);
       if(m.agentThreadId&&m.agentThreadId!==snapshot.threadId)throw new Error('Reuse this member’s existing native subagent');
-      if(t.members.some(x=>x.id!==memberId&&x.agentThreadId===snapshot.threadId))throw new Error('Different members require distinct native subagents');
+      assertFreshBinding(t,m,snapshot.threadId);
       m.agentThreadId=snapshot.threadId;m.agentPath=snapshot.agentPath;delete m.initializationNeedsRetry;m.rosterVerified=snapshot.status==='completed'&&!!snapshot.turnId;m.initializationTurnId=snapshot.turnId;m.status=m.rosterVerified?'idle':'starting';m.lastActivityAt=now();
       t.events.push({at:now(),type:'native-roster-member-linked',memberId,threadId:snapshot.threadId,verified:m.rosterVerified});
     }});const data=await this.receipt(owner,id);return {...data,titleActions:verified.map(v=>memberTitleAction(data.team,data.team.members.find(m=>m.id===v.memberId)))};
@@ -194,7 +211,7 @@ export class LeaderEngine {
           if(candidate.dirty||!submitted||candidate.head!==submitted.head||candidate.workspace.path!==submitted.path)throw new Error('Isolated candidate changed after submission; rework and independently review the new commit');
         }
         assertReviewPass(verdict,a.observation?.commands??[],target?.acceptanceCriteria??[],nonValidationFailures);
-        assertContractPass(target);
+        const verification=assertContractPass(target);if(verification)Object.assign(target.attempts.at(-1).delivery,verification);
         if(nonValidationFailures.length)a.commandExplanations={source:'main-conversation-leader',note,items:structuredClone(nonValidationFailures),at:now()};
       }
       if(verdict?.findings)recordFindings(t,task,target,verdict,{accept:decision==='accept'});
@@ -205,7 +222,7 @@ export class LeaderEngine {
   async finish(owner,id,revision,note,checks){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(!t.tasks.every(x=>['accepted','cancelled'].includes(x.status)))throw new Error('All deliveries require independent acceptance first');
     if(!checks?.length||checks.some(c=>c.status!=='PASS'||!c.evidence?.trim()))throw new Error('Leader must supply final project validation evidence; missing checks are not a pass');
-    assertQualityFinish(t);for(const task of t.tasks.filter(t=>t.status==='accepted'))assertContractPass(task);
+    assertQualityFinish(t);for(const task of t.tasks.filter(t=>t.status==='accepted')){const verification=assertContractPass(task);if(verification)Object.assign(task.attempts.at(-1).delivery,verification);}
     t.state='delivered';t.finalAcceptance={source:'main-conversation-leader',note,checks,at:now()};t.dispatchPaused=true;
   });return this.receipt(owner,id);}
   async start(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{assertDispatchAllowed(t);if(t.state==='superseded')throw new Error('Historical team cannot restart');if(t.state==='delivered')return;t.dispatchPaused=false;t.state='active';});return this.receipt(owner,id);}
@@ -259,6 +276,7 @@ export class LeaderEngine {
     if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}if(t.state==='delivered')t.dispatchPaused=false;if(!t.executionControl||t.executionControl.status==='active')t.state='active';t.events.push({at:timestamp,type:'tasks-added-to-fixed-team',taskIds:tasks.map(t=>t.id)});
   });return this.receipt(owner,id);}
   validateExpansion(team){const candidate=expansionCandidate(team);validatePlan(candidate);for(const task of candidate.tasks.filter(t=>t.kind!=='review'))if(candidate.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('Each work task requires one independent review');if(!Number.isInteger(candidate.maxParallel)||candidate.maxParallel<1||candidate.maxParallel>8)throw new Error('Parallel member limit must be 1–8');}
+  async requestPlanFeedback(owner,id,revision,input){const old=await this.native(owner,id);if(old.planReview?.feedback?.requestId===input.requestId){requestPlanFeedback(structuredClone(old),input);return this.readPlan(owner,id);}await this.store.update(id,owner,revision,t=>requestPlanFeedback(t,input));return this.readPlan(owner,id);}
   async readPlan(owner,id){return editablePlan(await this.native(owner,id));}
   async revisePlan(owner,id,revision,configuration,brief){await this.store.update(id,owner,revision,t=>{if(t.planReview?.scope==='expansion'){updateExpansionDraft(t,configuration,brief);this.validateExpansion(t);return;}updateDraft(t,configuration,brief);validatePlan(t);for(const task of t.tasks.filter(t=>t.kind!=='review'))if(t.tasks.filter(r=>r.kind==='review'&&r.reviewOfTaskId===task.id).length!==1)throw new Error('Each work task requires one independent review');});return this.readPlan(owner,id);}
   async proposeChange(owner,id,revision,change,brief){await this.store.update(id,owner,revision,t=>{stageExpansion(t,change,brief);this.validateExpansion(t);});return this.receipt(owner,id);}
@@ -299,6 +317,13 @@ export class LeaderEngine {
   }
   async reassign(owner,id,revision,taskId,memberId,note,requestId){return this.changeMember(owner,id,revision,requestId,{type:'reassign',taskId,memberId,note});}
   async removeMember(owner,id,revision,memberId,note,requestId){return this.changeMember(owner,id,revision,requestId,{type:'remove',memberId,note});}
+  async updateMemberGoal(owner,id,revision,input){
+    const team=await this.native(owner,id),request=memberGoalRequest(team,input);
+    if(request.prior)return {...memberGoalDetail(team,input.memberId,{historyLimit:0}),change:{requestId:input.requestId,replayed:true}};
+    let change;try{({result:change}=await this.store.update(id,owner,revision,t=>changeMemberGoal(t,input)));}
+    catch(error){const {prior}=memberGoalRequest(await this.native(owner,id),input);if(!prior)throw error;change={...prior,replayed:true};}
+    return {...memberGoalDetail(await this.native(owner,id),input.memberId,{historyLimit:0}),change:{requestId:input.requestId,replayed:change.replayed}};
+  }
   async pause(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,pauseDispatch);return this.receipt(owner,id);}
   async stop(owner,id,revision,input){
     const t=await this.native(owner,id);if(!input||!controlRequest(t,'stop',input).saved)try{await this.store.update(id,owner,revision,t=>requestStop(t,input));}catch(error){if(!input||!controlRequest(await this.native(owner,id),'stop',input).saved)throw error;}
@@ -307,7 +332,7 @@ export class LeaderEngine {
   async reconcileStop(owner,id,revision,{unstartedTaskIds=[],note=''}={}){
     const team=await this.native(owner,id);if(team.executionControl?.status!=='stopping')throw new Error('Team is not stopping');
     if(unstartedTaskIds.length&&!note.trim())throw new Error('Record host evidence that these dispatches never started');
-    const observations=await Promise.all(stopTargets(team).filter(x=>x.threadId).map(async x=>{try{const m=team.members.find(m=>m.id===x.memberId),a=team.tasks.find(t=>t.id===x.taskId)?.attempts.at(-1);return {...x,run:await this.observer.inspect(team.leaderThreadId,team.projectPath,x.threadId,a?.marker??m.rosterMarker,{allowPending:true,requireIdle:true})};}catch(error){return {...x,error:error.message};}}));
+    const observations=await Promise.all(stopTargets(team).filter(x=>x.threadId).map(async x=>{try{const m=team.members.find(m=>m.id===x.memberId),a=team.tasks.find(t=>t.id===x.taskId)?.attempts.at(-1);return {...x,run:await this.observer.inspect(team.leaderThreadId,team.projectPath,x.threadId,a?.marker??lastMemberExecution(team,m)?.attempt.marker??m.rosterMarker,{allowPending:true,requireIdle:true})};}catch(error){return {...x,error:error.message};}}));
     await this.store.update(id,owner,revision,t=>{
       const pending=[];
       for(const item of observations){if(item.error||!item.run.quiescence){pending.push({memberId:item.memberId,reason:item.error??'Latest native turn has no confirmed terminal record'});continue;}
@@ -378,9 +403,9 @@ export class LeaderEngine {
   }
   async usage(owner,id,{refreshHistorical=false}={}) {
     const data=await this.read(owner,id);
-    if(refreshHistorical&&this.observer.historicalUsage)for(const member of data.team.members.filter(m=>m.agentThreadId)){
-      const attempts=data.team.tasks.flatMap(t=>t.attempts.filter(a=>(a.memberId??t.memberId)===member.id)).filter(a=>a.agentThreadId===member.agentThreadId&&a.turnId);
-      const observed=await this.observer.historicalUsage(data.team.leaderThreadId,data.team.projectPath,member.agentThreadId,[...new Set(attempts.map(a=>a.turnId))]);
+    if(refreshHistorical&&this.observer.historicalUsage)for(const threadId of new Set(data.team.tasks.flatMap(t=>t.attempts.filter(a=>a.agentThreadId&&a.turnId).map(a=>a.agentThreadId)))){
+      const attempts=data.team.tasks.flatMap(t=>t.attempts).filter(a=>a.agentThreadId===threadId&&a.turnId);
+      const observed=await this.observer.historicalUsage(data.team.leaderThreadId,data.team.projectPath,threadId,[...new Set(attempts.map(a=>a.turnId))]);
       for(const a of attempts){const run=data.runs.find(r=>r.attemptId===a.id);if(run)run.usage=observed.find(o=>o.turnId===a.turnId)?.usage??null;}
     }
     return usageReport(data.team,data.runs);

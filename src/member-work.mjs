@@ -6,13 +6,19 @@ export function assertMember(team,context){
   const member=team.members.find(m=>!m.removedAt&&m.agentThreadId===context.threadId);
   if(!member||context.cwd!==team.projectPath||context.parentThreadId!==team.leaderThreadId||team.state==='superseded')throw new Error('Only the authenticated active native member can access its own work');return member;
 }
-export function memberWork(team,context){const member=assertMember(team,context);return {kind:'member-work',teamId:team.id,revision:team.revision,memberId:member.id,dispatchPaused:team.dispatchPaused,executionStatus:team.executionControl?.status??'active',tasks:team.tasks.filter(t=>t.memberId===member.id&&!['accepted','cancelled'].includes(t.status)).slice(0,40).map(t=>({taskId:t.id,title:t.title,status:t.status,attemptId:t.attempts.at(-1)?.id??null,ready:!dispatchBlockers(team,t).length,blockers:dispatchBlockers(team,t)})),nextAction:'Claim only an assigned ready task in this existing native turn, publicly emit its marker, then bind your own current thread. Submit progress/delivery with report_member_team_task. Final acceptance remains independent.'};}
+export function memberWork(team,context){
+  const member=assertMember(team,context),hasTaskHistory=team.tasks.some(t=>t.attempts?.some(a=>(a.memberId??t.memberId)===member.id&&a.agentThreadId===context.threadId&&a.state!=='released'));
+  return {kind:'member-work',teamId:team.id,revision:team.revision,memberId:member.id,dispatchPaused:team.dispatchPaused,executionStatus:team.executionControl?.status??'active',contextGeneration:member.contextGeneration??1,
+    tasks:team.tasks.filter(t=>t.memberId===member.id&&!['accepted','cancelled'].includes(t.status)).slice(0,40).map(t=>{const blockers=dispatchBlockers(team,t);if(hasTaskHistory&&t.status!=='running')blockers.push({code:'task-context-isolation',message:'The Leader must dispatch new work in a clean task session'});return {taskId:t.id,title:t.title,status:t.status,attemptId:t.attempts.at(-1)?.id??null,ready:!blockers.length,blockers};}),
+    nextAction:hasTaskHistory?'Report only your bound current attempt. After final delivery finish this turn; the Leader dispatches subsequent work in a clean task context. Final acceptance remains independent.':'Claim only your first assigned ready task, publicly emit its marker, then bind your current thread. Final acceptance remains independent.'};
+}
 export function memberClaimRequest(team,context,{taskId,requestId}){
   const member=assertMember(team,context);assertDispatchAllowed(team);
   if(!/^[0-9a-f-]{36}$/i.test(requestId??''))throw new Error('A stable UUID is required');
   const hash=planHash({taskId,memberId:member.id}),prior=team.memberClaims?.find(r=>r.requestId===requestId);
   if(prior&&prior.hash!==hash)throw new Error('Member claim request ID already has different contents');
   const task=team.tasks.find(t=>t.id===taskId);if(!task||task.memberId!==member.id)throw new Error('Members may claim only their own assigned tasks');
+  if(task.status!=='running'&&team.tasks.some(t=>t.attempts?.some(a=>(a.memberId??t.memberId)===member.id&&a.agentThreadId===context.threadId&&a.state!=='released')))throw new Error('Task isolation requires the Leader to reserve a clean execution session; do not claim new work in a completed task context');
   if(prior&&task.attempts.at(-1)?.id!==prior.attemptId)throw new Error('Member claim refers to an old attempt');
   return {member,task,prior,hash};
 }

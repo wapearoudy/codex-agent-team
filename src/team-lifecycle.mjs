@@ -1,4 +1,5 @@
 import {createHash} from 'node:crypto';
+import {lastMemberExecution} from './task-context.mjs';
 
 const now=()=>new Date().toISOString();
 export function lifecycleRequest(team,requestId,payload){
@@ -37,11 +38,11 @@ export function removeMember(team,{memberId,note}){
 }
 export async function verifyQuiescence(team,member,observer,{task}={}){
   if(task?.status==='running')throw new Error('Stop and settle the active native attempt before reassignment');
-  const attempts=(task?[task]:team.tasks).flatMap(t=>(t.attempts??[]).filter(a=>(a.memberId??t.memberId)===member.id).map(a=>({a,task:t}))).filter(({a})=>a.agentThreadId&&a.state!=='released');
+  const attempts=(task?[task]:team.tasks).flatMap(t=>(t.attempts??[]).filter(a=>(a.memberId??t.memberId)===member.id).map(a=>({a,task:t}))).filter(({a})=>a.agentThreadId===member.agentThreadId&&a.state!=='released');
   if(task?.attempts.at(-1)?.state==='reserved')throw new Error('Release the unbound reservation only after verifying no member was launched');
   if(!member.agentThreadId)return;
   const last=attempts.sort((x,y)=>Date.parse(x.a.startedAt)-Date.parse(y.a.startedAt)).at(-1)?.a;
-  const marker=last?.marker??member.rosterMarker;
+  const marker=last?.marker??lastMemberExecution(team,member)?.attempt.marker??member.rosterMarker;
   if(!marker)throw new Error('Member has no verifiable native identity');
   const run=await observer.inspect(team.leaderThreadId,team.projectPath,member.agentThreadId,marker,{requireIdle:true});
   if(!run.turnId||!['completed','failed','interrupted'].includes(run.status)||last?.turnId&&run.turnId!==last.turnId)throw new Error('Native member is not confirmed terminal; preserve ownership and verify the existing member');

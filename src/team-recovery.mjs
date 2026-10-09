@@ -1,9 +1,10 @@
 import {buildHandoff} from './team-checkpoints.mjs';
+import {lastMemberExecution} from './task-context.mjs';
 
 export async function recoveryPacket(team,observer) {
   const members=await Promise.all(team.members.map(async m=>{
     if(m.removedAt)return {memberId:m.id,threadId:m.agentThreadId??null,status:'removed',action:'history-only'};
-    const task=team.tasks.find(t=>t.memberId===m.id&&t.status==='running'),a=task?.attempts.at(-1),marker=a?.marker??m.rosterMarker;
+    const task=team.tasks.find(t=>t.memberId===m.id&&t.status==='running'),a=task?.attempts.at(-1),marker=a?.marker??lastMemberExecution(team,m)?.attempt.marker??m.rosterMarker;
     if(!m.agentThreadId||!marker)return {memberId:m.id,status:'not-bound',action:'initialize-original-roster'};
     try {
       const observed=await observer.inspect(team.leaderThreadId,team.projectPath,m.agentThreadId,marker,{allowPending:true});

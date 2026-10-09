@@ -1,13 +1,13 @@
 {
   "name": "codex-agent-team",
-  "version": "0.12.0",
+  "version": "0.15.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test --test-concurrency=4 tests/*.test.mjs",
     "validate": "node scripts/validate-package.mjs",
-    "package": "python scripts/package.py"
+    "package": "node scripts/package.mjs"
   },
   "engines": { "node": ">=22" },
   "repository": { "type": "git", "url": "https://github.com/wapearoudy/codex-agent-team.git" },
