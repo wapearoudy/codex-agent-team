@@ -47,7 +47,7 @@ test('real stdio process: discovery, nonce roundtrip, resource and safe output',
     assert.equal(reply.structuredContent.bootId,opened.structuredContent.bootId);
     const invalid = await client.callTool({name:'probe_roundtrip',arguments:{nonce:'invalid'}});
     assert.equal(invalid.isError,true);
-    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.15.0/host.html'});
+    const { contents } = await client.readResource({uri:'ui://team-workspace-probe/0.15.1/host.html'});
     assert.equal(contents[0].mimeType,'text/html;profile=mcp-app');
     assert.deepEqual(contents[0]._meta['openai/ui'].availableDisplayModes,['fullscreen']);
     assert.ok(contents[0].text.includes('团队跟随当前对话'));
@@ -75,7 +75,7 @@ test('conversation-first tools remove project picker and duplicate goal form',as
     const blocked=await client.callTool({name:'get_current_project',arguments:{}});assert.equal(blocked.isError,true);
     const unauthorizedAddition=await client.callTool({name:'add_team_members',arguments:{teamId:randomUUID(),revision:1,requestId:randomUUID(),members:[{id:'docs',role:'Docs',responsibility:'Documentation',reason:'New role',writeScopes:['docs']}]}});
     assert.equal(unauthorizedAddition.isError,true);assert.match(unauthorizedAddition.content[0].text,/host conversation identity/);
-    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.15.0/host.html'});
+    const resource=await client.readResource({uri:'ui://team-workspace-probe/0.15.1/host.html'});
     for(const control of ['id="chooseProject"','id="projectSelect"','id="teamGoal"','id="planTeam"'])assert.equal(resource.contents[0].text.includes(control),false);
   }finally{await client.close();}
 });

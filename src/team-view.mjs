@@ -8,7 +8,7 @@ export function setupTeamView(app){
   let current=null,linked=false,timer=null,expiryTimer=null,loading=false,lastDiscovery=0,connectionGeneration=0,selectionGeneration=0;
   let detailsRequest=null,detailsWanted=null,polling=null,wakeRequested=false,navigationRead=null,targetTeamId=null;
   let ui={},storageKey='',navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
-  let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',controlBusy=false,controlTeamId=null,controlStatus=null;
+  let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',controlBusy=false,controlTeamId=null,controlStatus=null,controlFeedback='',controlNotice=null;
   let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='',planExpanded=false;
   const language=setupTeamLanguage();
   const actionTooltips=setupActionTooltips();
@@ -168,11 +168,16 @@ export function setupTeamView(app){
   }
   function renderControl(){
     const box=$('teamControl');if(!box)return;
-    if(controlTeamId!==current?.team.id){controlTeamId=current?.team.id;controlStatus=null;$('teamControlReason').value='';$('teamControlFeedback').textContent='';$('teamControlOptions').open=false;}
+    if(controlTeamId!==current?.team.id){controlTeamId=current?.team.id;controlStatus=null;controlFeedback='';controlNotice=null;$('teamControlReason').value='';$('teamControlFeedback').textContent='';$('teamControlOptions').open=false;}
     box.hidden=viewingHistory||!current||current.team.mode!=='host-leader'||['superseded','delivered','cancelled'].includes(current.team.state)||current.team.planReview?.scope==='initial'&&current.team.planReview.status!=='approved';if(box.hidden)return;
     const status=current.team.executionControl?.status??'active',active=current.runs.some(runIsActive);
     box.dataset.status=status;
-    if(status!==controlStatus){$('teamControlFeedback').textContent=status==='halted'?language.text('进度与交付记录已保留。'):'';controlStatus=status;}
+    if(status!==controlStatus){
+      if(status==='halted')controlFeedback='进度与交付记录已保留。';
+      else if((status==='stopping'&&!(controlNotice?.action==='stop'&&controlNotice.requestId===current.team.executionControl?.requestId))||(status==='active'&&controlNotice?.action!=='resume'))controlFeedback='';
+      controlStatus=status;
+    }
+    $('teamControlFeedback').textContent=language.text(controlFeedback);
     $('teamControlStatus').textContent=language.text(status==='stopping'?'正在停止':status==='halted'?'团队已停止':active?'执行中':'等待执行');
     $('teamStop').hidden=status!=='active';$('teamResume').hidden=status!=='halted';$('teamStop').disabled=controlBusy;$('teamResume').disabled=controlBusy;
     $('teamStop').textContent=language.text(controlBusy?'正在提交…':'停止');$('teamResume').textContent=language.text(controlBusy?'正在提交…':'继续执行');
@@ -187,7 +192,7 @@ export function setupTeamView(app){
   async function controlTeam(action){
     if(controlBusy||!current||viewingHistory)return;const status=current.team.executionControl?.status??'active';if(action==='stop'?status!=='active':status!=='halted')return;
     const note=$('teamControlReason').value.trim(),reason=note||language.text(action==='stop'?'用户在团队面板点击停止':'用户在团队面板点击继续执行');
-    const teamId=current.team.id,revision=current.team.revision,requestId=crypto.randomUUID(),feedback=$('teamControlFeedback'),say=value=>{if(teamId===current?.team.id&&!viewingHistory)feedback.textContent=language.text(action==='stop'&&current.team.executionControl?.status==='halted'?'进度与交付记录已保留。':value);};controlBusy=true;renderControl();
+    const teamId=current.team.id,revision=current.team.revision,requestId=crypto.randomUUID(),say=value=>{if(teamId===current?.team.id&&!viewingHistory){controlFeedback=action==='stop'&&current.team.executionControl?.status==='halted'?'进度与交付记录已保留。':value;$('teamControlFeedback').textContent=language.text(controlFeedback);}};controlNotice={teamId,requestId,action};controlFeedback='';controlBusy=true;renderControl();
     try{const result=await call(action==='stop'?'stop_team':'resume_team',{teamId,revision,reason,requestId,...(action==='resume'?{retryTaskIds:[...$('teamRetryTasks').querySelectorAll('input:checked')].map(e=>e.value)}:{})});
       if(teamId===current?.team.id){await accept(result);$('teamControlReason').value='';$('teamControlOptions').open=false;}
       say(action==='stop'?'正在通知主会话结束成员任务…':'正在通知主会话继续执行…');

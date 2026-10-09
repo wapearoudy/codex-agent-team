@@ -35,10 +35,10 @@ function registerAppTool(target,name,options,handler){
   const metadata={...options._meta,ui:{...options._meta?.ui,...(!compactTools.has(name)?{visibility:['app']}:{})}};
   return registerSdkTool(target,name,{...options,_meta:metadata},handler);
 }
-const URI = 'ui://team-workspace-probe/0.15.0/host.html';
+const URI = 'ui://team-workspace-probe/0.15.1/host.html';
 const bootId = randomUUID();
 const startedAt = new Date().toISOString();
-const server = new McpServer({ name: 'team-workspace-probe', version: '0.15.0' });
+const server = new McpServer({ name: 'team-workspace-probe', version: '0.15.1' });
 const runtime = new PrototypeRuntime();
 const engine=new TeamEngine({root:process.env.TEAM_WORKSPACE_DATA_ROOT});
 const leader=new LeaderEngine({root:process.env.TEAM_WORKSPACE_DATA_ROOT,store:engine.store});
@@ -64,7 +64,7 @@ const owner=extra=>runtime.scope(extra?._meta);
 function snapshot(extra) {
   const peer = server.server.getClientVersion();
   return {
-    kind: 'host-connection-probe', pluginVersion:'0.15.0', productReady: false,
+    kind: 'host-connection-probe', pluginVersion:'0.15.1', productReady: false,
     observedAt: new Date().toISOString(), bootId, startedAt,
     source: 'live-mcp-connection',
     client: peer ? { name: peer.name, version: peer.version } : null,
@@ -101,7 +101,7 @@ const currentProject=extra=>requestContext.project(extra);
 async function assertCurrentTeam(extra,teamId){return authorizeTeam({owner:owner(extra),context:await currentProject(extra),store:engine.store,teamId});}
 registerAppTool(server,'open_team_workspace',{title:'团队',description:'打开当前 Codex 项目、当前会话关联的团队监管面板。项目来自宿主线程元数据，不要求重新选择项目或填写目标，不启动成员。',inputSchema:{},annotations:readOnly,_meta:{ui:{resourceUri:URI},'openai/ui':{entrypoints:[{type:'thread'}]}}},guarded(async(_,extra)=>{
   const context=await currentProject(extra),current=await projectTeams.current(owner(extra),context),teams=current?[current]:[];
-  return{kind:'team-workspace',version:'0.15.0',context,teams:teams.map(t=>({id:t.id,goal:t.goal,state:t.state,revision:t.revision,updatedAt:t.updatedAt})),observedAt:new Date().toISOString(),productReady:false};
+  return{kind:'team-workspace',version:'0.15.1',context,teams:teams.map(t=>({id:t.id,goal:t.goal,state:t.state,revision:t.revision,updatedAt:t.updatedAt})),observedAt:new Date().toISOString(),productReady:false};
 }));
 registerAppTool(server,'get_current_project',{title:'读取当前项目上下文',description:'自动读取触发此工具的 Codex 会话项目目录及必要说明。协调者直接沿用当前对话目标；不得要求用户去面板重选项目或重填需求。不会启动模型成员。',inputSchema:{},annotations:readOnly,_meta:{ui:{visibility:['app','model']}}},guarded(async(_,extra)=>({context:await currentProject(extra),executionMode:'host-leader',projectScan:false,instructions:'当前主会话就是 Leader。使用当前项目和已有对话上下文；按任务读取必要文件。'})));
 registerAppTool(server,'plan_team',{title:'组建当前项目团队',description:'直接用当前对话中用户已给出的目标和当前 Codex 项目组队。先调用 get_current_project 了解项目，再按实际需要生成成员和任务图。每项交付有独立审查。execute=true 表示有执行意图；approvalMode=auto 时复杂新团队仍先等待计划确认，required 强制先审阅，immediate 仅限用户明确说直接做并记录 executionAuthorization。只要计划时 execute=false。待确认时不得初始化成员；用 read_team_plan 展示目标、范围、分工和验收，用户随后在聊天确认可用 approve_team_plan，无需再点面板。',inputSchema:{...approvalFields,goal:z.string().min(8).max(2000),plan:planSchema,maxParallel:z.number().int().min(1).max(8).default(3),execute:z.boolean().default(false),requestId:z.string().uuid().optional()},annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true},_meta:{ui:{resourceUri:URI}}},guarded(async(args,extra)=>{
