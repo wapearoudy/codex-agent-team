@@ -18,19 +18,21 @@ async function fixture(t,maxParallel=2,writeScopes=[]){
   return {engine,observer,team};
 }
 
-test('a control receipt does not wait for or reread an unrelated running member',async t=>{
+test('a control receipt does not wait for or reread an unrelated running member',{timeout:10000},async t=>{
   const {engine,observer,team}=await fixture(t);
   const claimed=await engine.claim('owner',team.id,team.revision,'a');
   const bound=await engine.bind('owner',team.id,claimed.team.revision,'a',claimed.dispatch.attemptId,'child-a');
   assert.equal(observer.calls.length,1,'bind must inspect its target once, not again for the receipt');
-  let release;const gate=new Promise(resolve=>{release=resolve;});
-  observer.calls=[];observer.inspect=async()=>{observer.calls.push('unrelated-member');await gate;return {};};
+  let release,entered;const gate=new Promise(resolve=>{release=resolve;}),observation=new Promise(resolve=>{entered=resolve;});
+  observer.calls=[];observer.inspect=async()=>{observer.calls.push('unrelated-member');entered('waiting-for-peer');await gate;return {};};
+  const checkpoint=engine.checkpoint('owner',team.id,bound.team.revision,{taskId:'a',attemptId:claimed.dispatch.attemptId,requestId:'dc5c7144-29eb-43e3-aa61-68b5e92d9f9f',summary:'Read first source',decisions:[],remainingWork:['Read next source'],validation:[],evidence:[]});
   try{
-    const checkpoint=engine.checkpoint('owner',team.id,bound.team.revision,{taskId:'a',attemptId:claimed.dispatch.attemptId,requestId:'dc5c7144-29eb-43e3-aa61-68b5e92d9f9f',summary:'Read first source',decisions:[],remainingWork:['Read next source'],validation:[],evidence:[]});
-    const outcome=await Promise.race([checkpoint.then(()=> 'returned'),new Promise(resolve=>setTimeout(()=>resolve('waiting-for-peer'),150))]);
+    // Detect the unwanted observer call directly. Durable filesystem writes on
+    // shared Windows runners can exceed 150 ms even when no observer is called.
+    const outcome=await Promise.race([checkpoint.then(()=> 'returned'),observation]);
     assert.equal(outcome,'returned','a durable control update must not wait for an unrelated observation');
     assert.deepEqual(observer.calls,[]);
-  }finally{release();}
+  }finally{release();await checkpoint.catch(()=>{});}
 });
 
 test('batch reservation and binding preserve gates and commit each batch atomically',async t=>{
