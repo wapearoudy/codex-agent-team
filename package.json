@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-team",
-  "version": "0.15.1",
+  "version": "0.17.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,8 +9,13 @@
     "validate": "node scripts/validate-package.mjs",
     "package": "node scripts/package.mjs"
   },
-  "engines": { "node": ">=22" },
-  "repository": { "type": "git", "url": "https://github.com/wapearoudy/codex-agent-team.git" },
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wapearoudy/codex-agent-team.git"
+  },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.1",

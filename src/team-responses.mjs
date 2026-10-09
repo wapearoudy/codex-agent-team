@@ -13,8 +13,8 @@ export function teamResponse(data,view='summary',kind='team-summary'){
   const token=detailToken(data);
   if(view==='full')return {...data,kind:'team-detail',detailToken:token};
   if(view==='panel')return panelResponse(data,token);
-  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster','policy','profile']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster','archival','policy','profile']);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0'].includes(data.team.requiresTeamWorkspaceVersion);
   const taskRows=view==='summary'?data.team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(data.team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-20)):panelTasks(data.team.tasks);
   const numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const runs=stateRuns(currentRuns(data).filter(r=>taskRows.some(t=>t.id===r.taskId)));

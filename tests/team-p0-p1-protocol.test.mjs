@@ -4,6 +4,7 @@ import {mkdtemp,writeFile,chmod,readdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {TeamStore} from '../src/team.mjs';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
 test('public MCP tools validate real catalog routes, stage roster-only profiles, and stop/resume with authenticated project metadata',{skip:process.platform==='win32'?'Controlled host fixture uses a POSIX executable script':false},async()=>{
@@ -29,5 +30,16 @@ test('public MCP tools validate real catalog routes, stage roster-only profiles,
  t=(await read()).team;assert.equal(t.requiresTeamWorkspaceVersion,'0.15.0');assert.equal(t.members[0].responsibility,goalInput.goal);assert.deepEqual(t.members[0].writeScopes,['src']);assert.ok(t.tasks.every(task=>task.attempts.length===0));assert.equal((await call('manage_team',{operation:'member-goal',teamId:id,memberId:'dev'})).history.length,1);
  const stopInput={teamId:id,revision:t.revision,requestId:randomUUID(),reason:'在执行前核查配置'};await call('stop_team',stopInput);const stopped=await call('stop_team',stopInput);assert.equal(stopped.team.executionControl.status,'stopping');t=(await read()).team;await assert.rejects(()=>call('start_team',{teamId:id,revision:t.revision}),/halted/);
  await call('reconcile_team_stop',{teamId:id,revision:t.revision});t=(await read()).team;assert.equal(t.state,'halted');await call('resume_team',{teamId:id,revision:t.revision,reason:'配置已核实，明确恢复',requestId:randomUUID()});t=(await read()).team;assert.equal(t.executionControl.status,'active');assert.ok(t.members.every(m=>m.agentThreadId===null));assert.ok(t.tasks.every(task=>task.attempts.length===0));
+
+ const archiveSchema=await call('team_leader',{operation:'describe',toolName:'archive_team'});assert.ok(archiveSchema.inputSchema.required.includes('requestId'));assert.ok(archiveSchema.inputSchema.required.includes('source'));
+ await assert.rejects(()=>call('archive_team',{teamId:id,revision:t.revision,requestId:randomUUID(),reason:'目标尚未验收',source:'leader-recorded-user-instruction'}),/最终验收/);
+ const store=new TeamStore(join(root,'records','teams'));await store.update(id,t.ownerId,t.revision,x=>{x.tasks.forEach(task=>task.status='accepted');});t=(await read()).team;
+ await call('finish_team',{teamId:id,revision:t.revision,note:'受控最终验收',checks:[{name:'Controlled final checks',status:'PASS',evidence:'Controlled final acceptance evidence'}]});t=(await read()).team;
+ const archiveInput={teamId:id,revision:t.revision,requestId:randomUUID(),reason:'用户明确要求归档完成目标，后续目标另建团队',source:'leader-recorded-user-instruction'};
+ await assert.rejects(()=>call('team_member',{operation:'archive_team',arguments:archiveInput}),/not available/);
+ const archived=await call('team_leader',{operation:'archive_team',arguments:archiveInput});assert.equal(archived.kind,'team-archive');assert.equal(archived.replayed,false);assert.equal((await call('open_team_workspace')).teams.length,0);
+ const history=await call('manage_team',{operation:'history'});assert.equal(history.teams.find(x=>x.id===id).readOnly,true);assert.equal(history.teams.find(x=>x.id===id).state,'archived');t=(await read()).team;assert.equal(t.requiresTeamWorkspaceVersion,'0.16.0');assert.equal(t.finalAcceptance.note,'受控最终验收');assert.equal(t.memberGoalChanges.length,1);
+ await assert.rejects(()=>call('start_team',{teamId:id,revision:t.revision}),/read-only|Historical/);
+ const next=await call('plan_team',{goal:'新的无关工作重新规划团队',execute:false,plan:{members,tasks}});assert.notEqual(next.team.id,id);assert.equal((await call('archive_team',archiveInput)).replayed,true);assert.equal((await call('open_team_workspace')).teams[0].id,next.team.id);
  }finally{await client.close();}
 });

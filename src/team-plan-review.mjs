@@ -10,7 +10,7 @@ const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fro
 export const planHash=value=>createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
 export function planConfiguration(team){return {...(team.memberStartup?{memberStartup:team.memberStartup}:{}),goal:team.goal,plan:{members:team.members.filter(m=>!m.removedAt).map(m=>pick(m,memberKeys)),tasks:team.tasks.map(t=>pick(t,taskKeys)),...(team.goalCriteria?{goalCriteria:structuredClone(team.goalCriteria)}:{})},maxParallel:team.maxParallel,policy:normalizePolicy(team.policy)};}
 export function assertPlanExecutable(team){if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')throw new Error('Plan approval is required before initializing members or dispatching tasks');}
-export function assertPlanMutable(team){if(team.state==='superseded')throw new Error('Historical team is read-only');if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')throw new Error('Use revise_team_plan or cancel_team_plan for this unapproved draft');}
+export function assertPlanMutable(team){if(['superseded','archived'].includes(team.state))throw new Error('Historical team is read-only');if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')throw new Error('Use revise_team_plan or cancel_team_plan for this unapproved draft');}
 export function planReviewSummary(team){const p=team.planReview;if(!p)return undefined;return pick(p,['status','scope','version','hash','mode','reason','brief','approval','cancelledAt','updatedAt','feedback']);}
 function recordVersion(team,p,configuration){team.planHistory??=[];team.planHistory.push({version:p.version,hash:p.hash,scope:p.scope,at:now(),configuration:structuredClone(configuration)});team.planHistory=team.planHistory.slice(-20);}
 export function setPlanReview(team,{mode='auto',execute=false,executionAuthorization,brief=''}={}){
@@ -25,7 +25,7 @@ export function setPlanReview(team,{mode='auto',execute=false,executionAuthoriza
 }
 export function editablePlan(team){const p=team.planReview;if(!p)throw new Error('This legacy team has no plan review; keep its existing authorization');return {kind:'team-plan',teamId:team.id,revision:team.revision,review:planReviewSummary(team),configuration:p.status==='pending'?(p.scope==='expansion'?structuredClone(p.pending??{}):planConfiguration(team)):structuredClone(team.planHistory?.findLast(h=>h.version===p.version&&h.hash===p.hash)?.configuration??planConfiguration(team)),history:(team.planHistory??[]).map(h=>pick(h,['version','hash','scope','at']))};}
 export function updateDraft(team,configuration,brief){
-  if(team.state==='superseded')throw new Error('Historical team is read-only');
+  if(['superseded','archived'].includes(team.state))throw new Error('Historical team is read-only');
   const p=team.planReview;if(p?.status!=='pending'||p.scope!=='initial'||team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length))throw new Error('Only an unstarted pending initial plan may be revised');
   if(typeof configuration.goal!=='string'||configuration.goal.trim().length<8||configuration.goal.length>2000)throw new Error('Describe a specific goal (8–2000 characters)');
   if(!Number.isInteger(configuration.maxParallel)||configuration.maxParallel<1||configuration.maxParallel>8)throw new Error('Parallel member limit must be 1–8');
@@ -39,7 +39,7 @@ export function updateDraft(team,configuration,brief){
 }
 export function requestPlanFeedback(team,input){
   const p=team.planReview;
-  if(team.state==='superseded'||p?.status!=='pending'||p.version!==input.planVersion||p.hash!==input.planHash)throw new Error('Plan version changed; refresh before returning to chat');
+  if(['superseded','archived'].includes(team.state)||p?.status!=='pending'||p.version!==input.planVersion||p.hash!==input.planHash)throw new Error('Plan version changed; refresh before returning to chat');
   if(!/^[0-9a-f-]{36}$/i.test(input.requestId??'')||!input.note?.trim())throw new Error('Plan feedback needs a stable UUID and a note');
   if(p.feedback?.requestId===input.requestId){if(p.feedback.note!==input.note)throw new Error('Feedback request ID already has different contents');return p.feedback;}
   p.feedback={requestId:input.requestId,note:input.note,version:p.version,at:now(),status:'awaiting-user-feedback'};
@@ -61,7 +61,7 @@ export function stageExpansion(team,change,brief=''){
 export function expansionCandidate(team){const p=team.planReview?.pending??{};return {...team,members:[...team.members,...(p.members??[])],tasks:[...team.tasks,...(p.tasks??[])],maxParallel:p.maxParallel??team.maxParallel};}
 export function policyExpands(before,after){const a=normalizePolicy(before),b=normalizePolicy(after);return a.tokenLimit!==null&&(b.tokenLimit===null||b.tokenLimit>a.tokenLimit)||b.maxAttempts>a.maxAttempts||b.maxReviewRounds>a.maxReviewRounds||b.contextChars>a.contextChars||!a.autoRepair&&b.autoRepair||a.requireKnownUsage&&!b.requireKnownUsage;}
 export function reviewRequest(team,input,action){
-  if(team.state==='superseded')throw new Error('Historical team is read-only');
+  if(['superseded','archived'].includes(team.state))throw new Error('Historical team is read-only');
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.requestId??''))throw new Error('A stable UUID request ID is required');
   const hash=planHash({action,version:input.planVersion,hash:input.planHash,note:input.note,source:input.source??'leader-recorded-user-confirmation'}),saved=team.planDecisions?.find(r=>r.requestId===input.requestId);
   if(saved&&saved.hash!==hash)throw new Error('Plan decision request ID already has different contents');
@@ -71,7 +71,7 @@ export function reviewRequest(team,input,action){
   return {hash};
 }
 export function finishPlanDecision(team,input,action,hash){const p=team.planReview,at=now();p.status=action==='approve'?'approved':'cancelled';p.updatedAt=at;if(action==='approve')p.approval={source:input.source??'leader-recorded-user-confirmation',note:input.note,version:p.version,hash:p.hash,at};else p.cancelledAt=at;delete p.pending;team.planDecisions??=[];team.planDecisions.push({requestId:input.requestId,hash,action,version:p.version,at});team.planDecisions=team.planDecisions.slice(-200);team.events.push({at,type:`plan-${action}`,scope:p.scope,version:p.version,hash:p.hash,source:input.source??'leader-recorded-user-confirmation'});}
-export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0','0.13.0','0.14.0','0.15.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
+export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
 
 export function updateExpansionDraft(team,configuration,brief){const p=team.planReview;if(p?.scope!=='expansion'||p.status!=='pending')throw new Error('Only a pending expansion may be revised');const version=p.version;team.planReview={...p,status:'approved'};stageExpansion(team,{members:configuration.members??[],tasks:configuration.tasks??[],policy:configuration.policy,maxParallel:configuration.maxParallel},brief??p.brief);team.planReview.version=version+1;}
 

@@ -41,7 +41,7 @@ export class TeamArchive {
   }
   async hydrate(stored) {
     const manifest=stored.archiveManifest;if(!manifest)return stored;
-    if(![1,2].includes(manifest.schemaVersion)||!Array.isArray(manifest.segments)||manifest.schemaVersion===2&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0'].includes(stored.requiresTeamWorkspaceVersion))throw new Error('Unsupported archive manifest; use the required Team Workspace version');
+    if(![1,2].includes(manifest.schemaVersion)||!Array.isArray(manifest.segments)||manifest.schemaVersion===2&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0'].includes(stored.requiresTeamWorkspaceVersion))throw new Error('Unsupported archive manifest; use the required Team Workspace version');
     const team=structuredClone(stored),groups=new Map();
     for(const segment of manifest.segments) {
       if(!fields.includes(segment.field)||!Number.isSafeInteger(segment.offset)||segment.offset<0||!Number.isSafeInteger(segment.count)||segment.count<1||!/^[a-f0-9]{64}$/.test(segment.hash))throw new Error('Invalid archive segment');

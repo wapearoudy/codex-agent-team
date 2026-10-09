@@ -38,13 +38,14 @@ export function stateRun(run,budget=previewBudget(24*1024)){
   state.progress=(run.progress??[]).slice(-3).map(p=>({...pick(p,['id','type','at']),text:budget.text(p.text,1000)}));
   if(run.activity)state.activity={...pick(run.activity,['cursor','source','status','observedAt']),events:(run.activity.events??[]).slice(-3).map(e=>({...pick(e,['id','type','at','status','exitCode']),...(e.command?{command:budget.text(e.command,500)}:{}),...(e.text?{text:budget.text(e.text,1000)}:{}),...(e.paths?{paths:e.paths.slice(0,10).map(p=>budget.text(p,300))}:{})}))};
   state.observationError=run.observationError?budget.text(run.observationError,1000):null;
+  if(run.turnHistory)state.continuation={turnCount:run.turnHistory.length,currentTurnId:run.turnId,turns:run.turnHistory.slice(-10).map(row=>({...pick(row,['turnId','status']),commandCount:row.commands?.length??0,source:row.statusEvidence?.source??row.source})),evidenceAccess:'read_team(view=full)'};
   return state;
 }
 export function stateRuns(runs){const budget=previewBudget(24*1024);return runs.map(run=>stateRun(run,budget));}
 export function panelResponse(data,detailToken){
   const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
-  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','fixedRoster','archival']);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0'].includes(data.team.requiresTeamWorkspaceVersion);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);

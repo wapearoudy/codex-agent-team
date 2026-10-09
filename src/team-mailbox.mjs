@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {attemptTurnIds} from './turn-association.mjs';
 const now=()=>new Date().toISOString();
 function target(team,taskId){
   const task=team.tasks.find(t=>t.id===taskId),attempt=task?.attempts.at(-1);
@@ -32,7 +33,7 @@ export function recordMessageDelivery(team,messageId,status,note){
 export function acknowledgeMessage(team,messageId,observation){
   const message=team.messages?.find(m=>m.id===messageId);if(!message)throw new Error('Message not found');
   const task=team.tasks.find(t=>t.id===message.taskId),attempt=task?.attempts.find(a=>a.id===message.attemptId);
-  if(!attempt?.turnId||attempt.agentThreadId!==message.threadId||(attempt.memberId??task.memberId)!==message.memberId||observation.threadId!==message.threadId||observation.turnId!==attempt.turnId||(message.turnId!=null&&observation.turnId!==message.turnId)||!observation.messageAcknowledgements?.includes(message.marker))throw new Error('No exact public member receipt in the original message turn');
+  if(!attempt?.turnId||attempt.agentThreadId!==message.threadId||(attempt.memberId??task.memberId)!==message.memberId||observation.threadId!==message.threadId||!attemptTurnIds(attempt).includes(observation.turnId)||(message.turnId!=null&&observation.turnId!==message.turnId)||!observation.messageAcknowledgements?.includes(message.marker))throw new Error('No exact public member receipt in the original message turn');
   if(message.turnId==null){
     message.turnId=observation.turnId;
     message.events.push({at:now(),type:'turn-bound',status:message.status,source:'native-public-member-receipt',previousTurnId:null,threadId:observation.threadId,turnId:observation.turnId,observedAt:observation.observedAt});
@@ -52,7 +53,7 @@ export function validateMailbox(team){
     // Early steering is anchored to the verified attempt/member/thread. An unknown turn
     // stays unknown when binding or settlement discovers the turn; it is not a receipt.
     const unknownTurn=m.turnId==null;
-    const invalidTurn=unknownTurn?m.status==='acknowledged'||m.events.some(e=>e?.status==='acknowledged'||e?.type==='turn-bound'):typeof m.turnId!=='string'||!m.turnId||attempt?.turnId!==m.turnId;
+    const invalidTurn=unknownTurn?m.status==='acknowledged'||m.events.some(e=>e?.status==='acknowledged'||e?.type==='turn-bound'):typeof m.turnId!=='string'||!m.turnId||!attemptTurnIds(attempt??{}).includes(m.turnId);
     if(!attempt||typeof m.threadId!=='string'||!m.threadId||attempt.agentThreadId!==m.threadId||invalidTurn||(attempt.memberId??task.memberId)!==m.memberId||m.marker!==`TEAM_WORKSPACE_MESSAGE:${m.id}`)throw new Error('Message identity mismatch');
     ids.add(m.id);requests.add(m.requestId);
   }

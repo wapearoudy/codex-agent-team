@@ -41,7 +41,7 @@ export function memberGoalDetail(team,memberId,{historyLimit=10}={}){
 }
 export function validateMemberGoals(team){
   if(team.memberGoalChanges===undefined&&!team.members.some(m=>m.goalRevision))return;
-  if(team.requiresTeamWorkspaceVersion!=='0.15.0'||!Array.isArray(team.memberGoalChanges)||team.memberGoalChanges.length>200)throw new Error('角色目标修订需要 Team Workspace 0.15.0');
+  if(!['0.15.0','0.16.0','0.17.0'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(team.memberGoalChanges)||team.memberGoalChanges.length>200)throw new Error('角色目标修订需要 Team Workspace 0.15.0');
   const ids=new Set();
   for(const member of team.members){let revision=1,goal;
     for(const row of team.memberGoalChanges.filter(r=>r.memberId===member.id)){

@@ -1,10 +1,11 @@
 import {createHash} from 'node:crypto';
 import {lastMemberExecution} from './task-context.mjs';
+import {assertObservationTurn} from './turn-association.mjs';
 
 const now=()=>new Date().toISOString();
 export function lifecycleRequest(team,requestId,payload){
   if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestId??''))throw new Error('A stable UUID request ID is required');
-  if(!team.fixedRoster||team.state==='superseded')throw new Error('Member lifecycle changes require the current fixed native roster');
+  if(!team.fixedRoster||['superseded','archived'].includes(team.state))throw new Error('Member lifecycle changes require the current fixed native roster');
   const hash=createHash('sha256').update(JSON.stringify(payload)).digest('hex'),prior=team.memberChanges?.find(r=>r.requestId===requestId);
   if(prior&&prior.hash!==hash)throw new Error('Member change request ID already has different contents');
   if(!prior&&(team.memberChanges?.length??0)>=200)throw new Error('Member change history is full; preserve history and rebuild explicitly');
@@ -44,6 +45,8 @@ export async function verifyQuiescence(team,member,observer,{task}={}){
   const last=attempts.sort((x,y)=>Date.parse(x.a.startedAt)-Date.parse(y.a.startedAt)).at(-1)?.a;
   const marker=last?.marker??lastMemberExecution(team,member)?.attempt.marker??member.rosterMarker;
   if(!marker)throw new Error('Member has no verifiable native identity');
-  const run=await observer.inspect(team.leaderThreadId,team.projectPath,member.agentThreadId,marker,{requireIdle:true});
+  const run=await observer.inspect(team.leaderThreadId,team.projectPath,member.agentThreadId,marker,{requireIdle:true,boundTurnId:last?.turnId});
+  if(last)assertObservationTurn(last,run);
   if(!run.turnId||!['completed','failed','interrupted'].includes(run.status)||last?.turnId&&run.turnId!==last.turnId)throw new Error('Native member is not confirmed terminal; preserve ownership and verify the existing member');
+  return run;
 }

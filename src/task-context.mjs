@@ -26,7 +26,7 @@ export function assertFreshBinding(team,member,threadId){
 }
 export function validateTaskContexts(team){
   if(team.contextHistory===undefined&&!team.tasks.some(t=>t.attempts?.some(a=>a.contextGeneration)))return;
-  if(!['0.14.0','0.15.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task context isolation requires Team Workspace 0.14.0');
+  if(!['0.14.0','0.15.0','0.16.0','0.17.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task context isolation requires Team Workspace 0.14.0');
   const seen=new Set(team.members.filter(m=>m.agentThreadId).map(m=>m.agentThreadId));
   if(team.contextHistory!==undefined&&!Array.isArray(team.contextHistory))throw new Error('Invalid task context history');
   for(const c of team.contextHistory??[]){

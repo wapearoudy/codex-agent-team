@@ -73,6 +73,8 @@ read_team_handoff 只读返回该任务目标、约束、职责、验收条件�
 
 只有用户明确要求“重新组建团队”时调用 rebuild_project_team，并使用稳定 requestId。先停止并接收旧执行和初始化轮次；重建将旧团队归入历史。历史团队不能 start/claim 再派发，允许只读和必要停止/接收终态清理。open_team_workspace 主视图只返回一个当前项目团队，旧记录保留，不提供多个并行团队选择。
 
+目标完成且已有 Leader 最终验收时，用户可显式选择 `archive_team`（0.16.0）归档当前团队，无需同时创建替代团队。调用前读取当前 revision，使用稳定 UUID requestId、reason 和 source（Leader 记录用户指令时为 leader-recorded-user-instruction）。面板提供完成后的确认入口。必须先处理待确认变更、预留及未结束成员；归档会读取最新原生轮次核实空闲，不能代替停止或验收。归档后保留最终验收和全部执行历史，团队只读，后续 plan_team 可创建新团队，即使相同目标配置也不复活旧计划。原请求重试只核对旧归档，不改变新团队。该冻结状态不允许历史停止/接收清理；不会自动停止或删除原生会话，也不清理 worktree。归档数据最低版本 0.16.0，旧连接拒绝写入。
+
 同一项目在其他 Leader 对话已有固定团队时保持归属并说明需在原 Leader 接续；插件不能把无宿主句柄的旧成员伪装成新主会话可控。禁止为了绕过这一边界自动创建第二个团队。
 
 ## 追加岗位（0.9.3）
@@ -134,3 +136,9 @@ read_team_model_catalog 从宿主 model/list 读取实际模型及支持档位�
 save_team_profile 的 taskPlanning=seed 保存完整任务模板；taskPlanning=leader 只保存 members、constraints 和 policy，不保存固定 tasks。plan_team_from_profile 未传 tasks 时只返回规划请求，不创建空团队；Leader 根据当前目标设计含独立审查的 DAG，再传 tasks 建立可审阅计划。不得忽略模板 constraints；它们随实际任务规划和初始 brief 保留。
 
 真实成员可 read_member_team_work 查看自己的分配。Leader 已完成上一轮 settle 并唤醒该成员后，成员可 claim_member_team_task（只限自己的就绪任务，稳定 UUID 去重），公开发出 marker，再 bind_member_team_task 绑定当前原生线程，直接在当前轮次工作，不自行 spawn/followup。report_member_team_task 保存自己的进度与可选交付草稿，来源标为 authenticated-member；最终仍须公开输出交付。报告不直接改为 submitted：只有宿主真实终态经 Leader settle 后提交，再由另一名成员独立审查，Leader 决定验收。没有常驻后台模型或自动验收器；跨轮唤醒继续由宿主和 Leader 负责。
+
+## 0.17.0 中断续跑的轮次关联
+
+一个 attempt 可关联同一原生会话的多个连续 turn。前置 turn 必须由 persisted-turn-aborted 证实中断，各 turn 必须有原 attempt 标记且不能夹入别的轮次/标记；多份 completed 或 failed 前置不按时间猜测。观察返回 turnHistory 和 turnAssociation；bind/settle/停止核对在 revision 事务中保存 fromTurnId → toTurnId、时间与来源，当前 turnId 指向续跑轮次。历史消息仍归原 message.turnId，只有该轮实际公开回执才能确认，续跑不移动或伪造回执。
+
+停止核对先核实最新宿主轮次空闲；任务关联歧义与停止事实分开保存。完成且有效的交付接收为 submitted，仍须 accept_team_review 和 finish_team，最后才能 archive_team。无效交付保留逐轮证据和 settlementError；关联歧义保存 associationError，任务 blocked，不影响已确认空闲的团队 halted。用量按唯一 turnId 合计，有一轮缺失用量则当前 attempt 用量未知，不能回退旧单轮用量；历史回读不重复计算。续跑记录最低数据版本 0.17.0，旧插件拒绝写入。

@@ -1,17 +1,46 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {join,resolve} from 'node:path';
 import {DurableStore} from './durable-store.mjs';
+import {archiveRequest,assertArchivable} from './team-retirement.mjs';
+import {verifyQuiescence} from './team-lifecycle.mjs';
+import {requireTeamVersion} from './team-version.mjs';
 const pathKey=p=>process.platform==='win32'?resolve(p).toLowerCase():resolve(p);
 export class ProjectTeams {
   constructor(leader){this.leader=leader;this.registry=new DurableStore(join(leader.root,'project-teams.json'),{projects:{}});}
   key(context){return createHash('sha256').update(pathKey(context.cwd)).digest('hex');}
   async candidate(owner,context,data){
     const entry=data.projects[this.key(context)];
-    if(entry){if(entry.ownerId!==owner)throw new Error('This project already has a fixed team in another Leader conversation; continue in that conversation before changing its members');return this.leader.store.get(entry.teamId,owner);}
-    const teams=(await this.leader.store.list(owner)).filter(t=>t.mode==='host-leader'&&t.state!=='superseded'&&pathKey(t.projectPath)===pathKey(context.cwd));
+    if(entry){if(!entry.teamId)return null;const team=await this.leader.store.get(entry.teamId,entry.ownerId);if(team.state==='archived')return null;if(entry.ownerId!==owner)throw new Error('This project already has a fixed team in another Leader conversation; continue in that conversation before changing its members');return team;}
+    const teams=(await this.leader.store.list(owner)).filter(t=>t.mode==='host-leader'&&!['superseded','archived'].includes(t.state)&&pathKey(t.projectPath)===pathKey(context.cwd));
     return teams.find(t=>t.fixedRoster)??teams[0]??null;
   }
   async current(owner,context){return this.candidate(owner,context,await this.registry.read());}
+  async archive(owner,context,input){return this.registry.transaction(async data=>{
+    const team=await this.leader.store.get(input.teamId,owner);
+    if(pathKey(team.projectPath)!==pathKey(context.cwd))throw new Error('团队不属于当前项目，不能归档');
+    const request=archiveRequest(team,input),key=this.key(context);
+    if(!request.replayed){
+      const current=await this.candidate(owner,context,data);
+      if(current?.id!==team.id)throw new Error('只有当前团队可以归档');
+      if(team.revision!==input.revision)throw new Error('团队已变化，请重新读取并确认归档');
+      assertArchivable(team);
+      const members=await Promise.all(team.members.filter(m=>m.agentThreadId).map(async member=>{
+        const run=await verifyQuiescence(team,member,this.leader.observer);
+        if(!run.quiescence?.turnId||!['completed','failed','interrupted'].includes(run.quiescence.status))throw new Error('成员的最新轮次终态尚未确认，不能归档');
+        return {memberId:member.id,threadId:member.agentThreadId,...run.quiescence,source:'native-latest-turn'};
+      }));
+      await this.leader.store.update(team.id,owner,input.revision,t=>{
+        assertArchivable(t);t.state='archived';t.dispatchPaused=true;requireTeamVersion(t,'0.16.0');
+        t.archival={...request.payload,requestId:input.requestId,hash:request.hash,previousState:'delivered',at:new Date().toISOString(),members};
+        t.events.push({at:t.archival.at,type:'team-archived',requestId:input.requestId,source:input.source,reason:request.payload.reason});
+      });
+    }
+    // The team document is the retirement authority. If this index write fails,
+    // discovery still excludes the archived team and the same UUID repairs it.
+    if(!data.projects[key]||data.projects[key].teamId===team.id)data.projects[key]={teamId:null,archivedTeamId:team.id};
+    const saved=await this.leader.store.get(team.id,owner);
+    return {kind:'team-archive',teamId:saved.id,revision:saved.revision,archival:saved.archival,replayed:request.replayed};
+  });}
   async plan(owner,context,args){return this.registry.transaction(async data=>{
     const existing=await this.candidate(owner,context,data);
     const team=existing??await this.leader.planOnce(owner,context,{...args,initializeMembers:true});

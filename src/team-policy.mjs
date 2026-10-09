@@ -18,7 +18,7 @@ export function usageReport(team,runs=[]) {
     const row={taskId:task.id,memberId:task.memberId,totalTokens:0,knownAttempts:0,unknownAttempts:0};
     for(const a of task.attempts??[]) {
       if(!a.agentThreadId)continue;
-      const u=runs.find(r=>r.attemptId===a.id)?.usage??a.observation?.usage;
+      const run=runs.find(r=>r.attemptId===a.id),u=run?run.usage:a.observation?.usage;
       const m=members.find(m=>m.memberId===(a.memberId??task.memberId));
       if(Number.isSafeInteger(u?.totalTokens)&&u.totalTokens>=0) {row.totalTokens+=u.totalTokens;row.knownAttempts++;if(m){m.totalTokens+=u.totalTokens;m.knownAttempts++;}}else {row.unknownAttempts++;if(m)m.unknownAttempts++;}
     }
