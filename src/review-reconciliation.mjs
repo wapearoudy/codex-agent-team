@@ -46,7 +46,7 @@ export function validateReviewReconciliations(team){
   for(const task of team.tasks)for(const a of task.attempts??[]){
     if(a.reviewReconciliations===undefined)continue;
     const records=a.reviewReconciliations;
-    if(team.requiresTeamWorkspaceVersion!=='0.31.0'||task.kind!=='review'||!Array.isArray(records)||records.length>10||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid saved review reconciliation audit');
+    if(!['0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion)||task.kind!=='review'||!Array.isArray(records)||records.length>10||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid saved review reconciliation audit');
     for(const r of records){
       const {integrityHash,...body}=r,dependency=a.dependencyAttempts?.find(d=>d.taskId===task.reviewOfTaskId);
       if(integrityHash!==evidenceHash(body)||r.source!=='plugin-saved-review-registration'||!uuid(r.requestId)||! /^[a-f0-9]{64}$/.test(r.requestHash)||r.taskId!==task.id||r.attemptId!==a.id||r.targetTaskId!==task.reviewOfTaskId||r.targetAttemptId!==dependency?.attemptId||!['waiting','submitted'].includes(r.originalStatus)||r.originalEvidenceHash!==evidenceHash(task.evidence.findLast(e=>e.attemptId===a.id)?.summary)||r.originalException?.source!=='plugin-quality-checks'||r.originalException.attemptId!==a.id||!r.note?.trim()||!Number.isFinite(Date.parse(r.at)))throw new Error('Invalid saved review registration receipt');

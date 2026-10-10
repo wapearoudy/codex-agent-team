@@ -3,7 +3,7 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.31.0
+# Team Workspace 0.32.0
 
 当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
 
@@ -29,7 +29,7 @@ claim_team_tasks 或 advance_team_workflow(dispatchReady=true) 批量预留。�
 
 成员工作期间保持 Leader 当前轮次，优先单独 wait_team_event(timeoutMs=55000)，同时等待人工控制、必要消息和原生终态，不交替 wait_agent + 零时探测。普通进度/用量保存合并在同一等待内，不唤醒模型；面板持续正常更新。插件没有唤醒已结束 Leader 轮次的内部接口，不能退回聊天桥或伪称已执行。
 
-- unchanged/timeout：沿用返回 revision，再次单独等待，不配套状态/收件箱查询或重复进度。
+- unchanged/timeout：复用返回 continuationArgs（teamId/revision/waitCursor/timeoutMs=55000），再次单独等待，不配套状态/收件箱/schema 查询或重复进度。functions.exec 设置 yield_time_ms=60000，避免等待未结束就多一次模型往返。waitCursor 按业务变化比较，跨两次等待之间的普通进度保存不会唤醒。
 - changed/member-terminal：回执内已含 coordination 与准确 attempt IDs，直接按动作处理；终态 advance_team_workflow，不再先 read_team。仅 inbox.readRequired=true 用 consume_team_inbox；stopping 优先处理。
 - 句柄失效：等待已登记原生终态，不重建；用户暂停/取消结束等待。无活动 Leader 的面板操作只保存为待处理。
 
@@ -47,7 +47,7 @@ advance 的 advancement.errors/partial 与 changes 一起核对：部分已提�
 
 命令工作目录或中断历史验证缺少关联时，用 reconcile_team_verification 先预览，核对明确 commandId、真实 cwd/退出码和未变输入后补登记；操作细节按需读取 [历史验证关联](references/protocol-details.md#历史验证关联与结果复用)。不重跑已完成检查，不覆盖旧报告、null 退出码或审查结论。
 
-长任务达到约90000当前输入 token 或50次命令时，在有意义的阶段边界考虑交接，不在执行中强制重置。成员 report_member_team_task(handoff=true) 保存完整 decisions/remainingWork/evidence/validation 与 verificationInputs，不含最终 delivery；将返回 finalReceipt JSON 作为最终公开答复并结束轮次。Leader 仅在确切 completed + 检查点回执验证后，将同一 task 置 waiting，下一派发生成 fork_turns=none 的干净上下文并保留阶段链。续接前 read_team_context(view=evidence, section=checkpoint, attemptId=前阶段) 分页读取完整决策与剩余工作；阶段交接不是提交/验收，不解锁下游。每任务最多3次，不消耗失败重试额度；审核任务不使用阶段交接。仅成功宿主命令和声明输入内容指纹不变可复用；改变输入即失效，最终审查仍独立。连接失败/未知不能触发轮换。
+长任务达到约60000当前输入 token 或30次命令时，在有意义的阶段边界考虑交接，不在执行中强制重置。成员 report_member_team_task(handoff=true) 保存完整 decisions/remainingWork/evidence/validation 与 verificationInputs，不含最终 delivery；将返回 finalReceipt JSON 作为最终公开答复并结束轮次。Leader 仅在确切 completed + 检查点回执验证后，将同一 task 置 waiting，下一派发生成 fork_turns=none 的干净上下文并保留阶段链。续接前 read_team_context(view=evidence, section=checkpoint, attemptId=前阶段) 分页读取完整决策与剩余工作；阶段交接不是提交/验收，不解锁下游。每任务最多3次，不消耗失败重试额度；审核任务不使用阶段交接。仅成功宿主命令和声明输入内容指纹不变可复用；改变输入即失效，最终审查仍独立。连接失败/未知不能触发轮换。
 
 中断续跑保持原 attempt/标记；仅连续且所有前序均有宿主持久中断证据时关联最新完成轮次，保留逐轮历史。多个完成结果或混入其他任务不能按“最新”猜测。合同修订、停止核对、source-only 延期说明、控制恢复需读取协议对应段落；不能通过扩大范围、放松条件或修改 owner 绕过门禁。
 

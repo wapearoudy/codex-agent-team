@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {assertContractDelivery} from '../src/team-quality.mjs';
-import {verificationCommandMatches,contractCommandEvidence} from '../src/verification-command.mjs';
+import {verificationCommandMatches,contractCommandEvidence,initializationBinding} from '../src/verification-command.mjs';
 
 const observed=(command,expected='npm run typecheck',record={})=>assertContractDelivery(
   {kind:'work',acceptanceCriteria:[{id:'check'}],contract:{verify:[expected]}},
@@ -76,4 +76,19 @@ test('latest matching native outcome overrides old PASS while unrelated commands
     assert.equal(contractCommandEvidence(['npm test'],[...rows,{...good,commandId:'recovered'}],{workspace:'/project'})[0].observed,true);
   }
   for(const extra of [{...good,command:'npm lint',exitCode:1},{...good,cwd:'/other',exitCode:1}])assert.equal(contractCommandEvidence(['npm test'],[good,extra],{workspace:'/project'})[0].observed,true);
+});
+
+test('declared initialization preserves exact argv, cwd and failure semantics without granting implicit PASS',()=>{
+  const required='cd /project && env JAVA_HOME=/jdk mvn test -Dtest=*Requirement*Test,LegacyTest',setup=[". '/tmp/exact.env'",'python3 audit/warm.py'];
+  const command=`/bin/zsh -lc 'cd /project && . /tmp/exact.env && python3 audit/warm.py && env JAVA_HOME=/jdk mvn test "-Dtest=*Requirement*Test,LegacyTest" > "$LOG" 2>&1'`;
+  const verificationBinding=initializationBinding(command,required,{cwd:'/project',workspace:'/project',initializationCommands:setup});assert.ok(verificationBinding);
+  const row={command,cwd:'/project',status:'completed',exitCode:0,source:'reconciled-native-command',verificationBinding};
+  assert.equal(contractCommandEvidence([required],[row],{workspace:'/project'})[0].observed,true);
+  assert.equal(contractCommandEvidence([required],[{...row,verificationBinding:undefined}],{workspace:'/project'})[0].observed,false);
+  assert.equal(contractCommandEvidence([required],[{...row,verificationBinding:{...verificationBinding,hash:'a'.repeat(64)}}],{workspace:'/project'})[0].observed,false);
+  for(const suffix of [' || true','; echo PASS',' | cat',' && echo PASS'])assert.equal(initializationBinding(command.slice(0,-1)+suffix+"'",required,{cwd:'/project',workspace:'/project'}),null);
+  for(const script of ['echo mvn test && env JAVA_HOME=/jdk mvn test -Dtest=*Requirement*Test,LegacyTest','source "$ENV" && env JAVA_HOME=/jdk mvn test -Dtest=*Requirement*Test,LegacyTest','cd /other && . /tmp/exact.env && env JAVA_HOME=/jdk mvn test -Dtest=*Requirement*Test,LegacyTest'])assert.equal(initializationBinding(script,required,{cwd:'/project',workspace:'/project'}),null);
+  assert.equal(initializationBinding(command,required,{cwd:'/project',workspace:'/project',initializationCommands:['. /other.env','python3 audit/warm.py']}),null);
+  assert.equal(initializationBinding(command,required.replace('LegacyTest','OtherTest'),{cwd:'/project',workspace:'/project'}),null);
+  for(const bad of [{status:'failed',exitCode:1},{status:'completed',exitCode:null},{status:'inProgress',exitCode:null}])assert.equal(contractCommandEvidence([required],[row,{...row,...bad,verificationBinding:undefined}],{workspace:'/project'})[0].observed,false);
 });

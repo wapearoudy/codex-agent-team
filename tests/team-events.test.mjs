@@ -71,3 +71,13 @@ test('native subscriptions reject a foreign parent and concurrent exact observat
  const observer=new NativeMembers({rpcFactory:()=>({async connect(){},async close(){},async call(method){assert.equal(method,'thread/read');reads++;await new Promise(r=>setTimeout(r,10));return {thread:{...thread,parentThreadId:parent}};}}),publicFeed:new NativePublicFeed({sessionsRoot:root})});
  const result=await Promise.all([observer.inspect('leader',root,'child','MARK'),observer.inspect('leader',root,'child','MARK')]);assert.equal(reads,2);assert.ok(result.every(r=>r.status==='completed'));parent='foreign';await assert.rejects(()=>observer.subscribe({leaderThreadId:'leader',projectPath:root,tasks:[{status:'running',attempts:[{agentThreadId:'child',turnId:'turn'}]}]},()=>{}),/identity mismatch/);await observer.close();
 });
+
+test('semantic wait cursor survives progress between calls, while controls still wake immediately',async()=>{
+ const f=await fixture(),first=await waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:f.team.revision,timeoutMs:0});assert.match(first.waitCursor,/^[a-f0-9]{64}$/);
+ const progressed=(await f.engine.store.update(f.team.id,'owner',f.team.revision,t=>{t.members[0].progress='Useful progress';t.events.push({type:'member-progress',at:new Date().toISOString()});})).team;
+ const quiet=await waitTeamEvent(f.engine.store,'owner',f.team.id,{...first.continuationArgs,timeoutMs:0});assert.equal(quiet.status,'timeout');assert.equal(quiet.revision,progressed.revision);assert.equal(quiet.waitCursor,first.waitCursor);assert.equal(quiet.readRequired,false);
+ const approved=(await f.engine.decidePlan('owner',f.team.id,progressed.revision,{planVersion:progressed.planReview.version,planHash:progressed.planReview.hash,requestId:randomUUID(),note:'Approve'},'approve')).team;
+ const changed=await waitTeamEvent(f.engine.store,'owner',f.team.id,{...quiet.continuationArgs,timeoutMs:0});assert.equal(changed.status,'changed');assert.equal(changed.revision,approved.revision);assert.notEqual(changed.waitCursor,quiet.waitCursor);
+ assert.throws(()=>waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:approved.revision,waitCursor:'invalid'}),/semantic wait cursor/);
+ const foreign=await waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:approved.revision,waitCursor:'a'.repeat(64),timeoutMs:0});assert.equal(foreign.status,'changed');
+});

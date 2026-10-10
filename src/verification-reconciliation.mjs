@@ -6,7 +6,7 @@ import {captureEvidenceSnapshot,assertEvidenceSnapshot,evidenceHash} from './evi
 import {assertObservationTurn,attemptTurnIds} from './turn-association.mjs';
 import {registrationOptions} from './native-registration.mjs';
 import {requireTeamVersion} from './team-version.mjs';
-import {contractCommandEvidence,verificationRecords} from './verification-command.mjs';
+import {contractCommandEvidence,verificationRecords,verificationCommandMatches,initializationBinding,verifiedInitializationBinding,declaredCommandMatches} from './verification-command.mjs';
 
 const digest=bytes=>createHash('sha256').update(bytes).digest('hex');
 const uuid=v=>typeof v==='string'&&/^[a-f0-9-]{36}$/i.test(v);
@@ -47,7 +47,9 @@ async function inputSnapshot(engine,team,task,proof,commands,original){
     if(!uuid(proof.requestId)||commands.length!==1)throw new Error('One prepared command request is required per receipt');
     const bytes=await safeRead(await realpath(engine.root),'command-logs/'+team.id+'/'+a.id+'/'+proof.requestId+'.json');
     const p=JSON.parse(bytes.toString('utf8'));
-    if(p.teamId!==team.id||p.taskId!==task.id||p.attemptId!==a.id||p.requestId!==proof.requestId||!p.inputSnapshot?.fingerprint||p.nativeCommand!==commands[0].command||p.workspace!==commands[0].cwd)throw new Error('Native command does not match its original prepared input proof');
+    if(p.teamId!==team.id||p.taskId!==task.id||p.attemptId!==a.id||p.requestId!==proof.requestId)throw new Error('Prepared command identity does not match this attempt');
+    if(!p.inputSnapshot?.fingerprint||!p.nativeCommand)throw new Error('Legacy prepared command has no before-command input fingerprint; use the original report file map or declared manifest SHA256, never reconstruct a historical fingerprint');
+    if(!verificationCommandMatches(commands[0].command,p.nativeCommand,{cwd:commands[0].cwd,workspace:p.workspace})||p.workspace!==commands[0].cwd)throw new Error('Native command does not match its original prepared input proof');
     const current=await captureEvidenceSnapshot(team,task,p.inputSnapshot.roots);
     if(current.workspace!==p.inputSnapshot.workspace||current.fingerprint!==p.inputSnapshot.fingerprint)throw new Error('Prepared verification inputs changed; do not reuse this result');
     return {snapshot:current,proof:{kind:proof.kind,requestId:proof.requestId,metadataHash:digest(bytes),source:'plugin-before-command-inputs'}};
@@ -68,7 +70,9 @@ async function inputSnapshot(engine,team,task,proof,commands,original){
   const inputRoots=proof.roots.map(p=>posix.normalize(prefix+'/'+p));
   // The original candidate remains a gate. The legacy map expands its closure;
   // it cannot replace a changed submission or silently narrow its inputs.
-  const checked=await captureEvidenceSnapshot(team,task,[...Object.keys(expected),...inputRoots],{fileHashes:true});
+  let checked;
+  try{checked=await captureEvidenceSnapshot(team,task,[...Object.keys(expected),...inputRoots],{fileHashes:true});}
+  catch(error){if(error.message==='Evidence input snapshot exceeds bounds')throw new Error('Historical input roots exceed snapshot bounds; select the source/configuration roots declared by the original manifest instead of the entire project. Every manifest file is still checked.');throw error;}
   if(Object.entries(expected).some(([p,h])=>checked.files[p]!==h)||Object.entries(checked.files).some(([p,h])=>h!=='directory'&&expected[p]!==h))throw new Error('Historical verification inputs changed, are missing, or the declared input closure is incomplete');
   const roots=[...new Set([...a.evidenceSnapshot.roots,...Object.keys(expected),...inputRoots,...(proof.kind==='report-manifest'?[proof.path]:[])])];
   return {snapshot:await captureEvidenceSnapshot(team,task,roots),proof:{kind:proof.kind,field:proof.field,basePath:prefix,roots:proof.roots,mapHash:evidenceHash(Object.entries(expected).sort(([a],[b])=>a.localeCompare(b))),fileCount:Object.keys(expected).length,...(manifestHash?{path:proof.path,sha256:manifestHash}:{}),source:'original-member-input-declaration-plugin-rechecked'}};
@@ -102,7 +106,15 @@ export async function reconcileVerification(engine,owner,id,revision,input){
     const before=old.commands.filter(x=>x.commandId?x.commandId===c.commandId:x.command===c.command);
     if(before.length!==1||before[0].command!==c.command||before[0].cwd&&before[0].cwd!==c.cwd||Number.isInteger(before[0].exitCode)&&before[0].exitCode!==0)throw new Error('Original native command identity or terminal result conflicts with fresh receipt');
     if(!inside(base,await realpath(c.cwd)))throw new Error('Native verification directory is outside the assigned workspace');
-    commands.push({commandId:c.commandId,turnId:c.turnId,command:c.command,cwd:c.cwd,status:c.status,exitCode:c.exitCode,originThreadId:a.agentThreadId,source:'reconciled-native-command'});
+    const record={commandId:c.commandId,turnId:c.turnId,command:c.command,cwd:c.cwd,status:c.status,exitCode:c.exitCode,originThreadId:a.agentThreadId,source:'reconciled-native-command'};
+    if(wanted.contractCommand!==undefined||wanted.initializationCommands!==undefined){
+      if(typeof wanted.contractCommand!=='string'||!(task.contract.verify??[]).includes(wanted.contractCommand)||!Array.isArray(wanted.initializationCommands)||!wanted.initializationCommands.length||wanted.initializationCommands.length>11)throw new Error('Declare the exact contract command and every literal initialization clause');
+      const binding=initializationBinding(c.command,wanted.contractCommand,{cwd:c.cwd,workspace:base,initializationCommands:wanted.initializationCommands});
+      if(!binding)throw new Error('Initialization chain must end in the exact contract command, use only declared literal setup and preserve its failure exit');
+      if(!(original.commandsRun??[]).some(d=>declaredCommandMatches(c.command,typeof d==='string'?d:d?.command,{cwd:c.cwd,workspace:d?.cwd??c.cwd})))throw new Error('The entire initialization chain must be declared in the original submitted report');
+      record.verificationBinding=binding;
+    }
+    commands.push(record);
   }
   const proof=await inputSnapshot(engine,team,task,input.inputProof,commands,original);
   const receipt={requestId:input.requestId,requestHash,taskId:task.id,attemptId:a.id,marker:a.marker,threadId:a.agentThreadId,turnId:a.turnId,contractRevision:task.contractRevision??1,candidateFingerprint:a.evidenceSnapshot.fingerprint,originalReportHash:digest(raw),source:'plugin-reconciled-native-verification',commands,nonPassCriteria:original.acceptanceResults.filter(c=>c.status!=='PASS'&&task.acceptanceCriteria.some(x=>x.id===c.criterionId)).map(c=>({criterionId:c.criterionId,status:c.status})),outOfContractNotes:original.acceptanceResults.filter(c=>c.status==='NOT_RUN'&&!task.acceptanceCriteria.some(x=>x.id===c.criterionId)).map(c=>({criterionId:c.criterionId,status:c.status})),verifiedChecks:contractCommandEvidence(task.contract.verify??[],verificationRecords({...a,verificationReconciliations:[...(a.verificationReconciliations??[]),{commands}]}),{workspace:proof.snapshot.workspace}).map((c,index)=>({index,observed:c.observed})),inputProof:proof.proof,inputSnapshot:proof.snapshot,note:input.note,at:new Date().toISOString()};
@@ -116,6 +128,7 @@ export async function reconcileVerification(engine,owner,id,revision,input){
     if(checked.workspace!==receipt.inputSnapshot.workspace||checked.fingerprint!==receipt.inputSnapshot.fingerprint)throw new Error('Verification inputs changed during reconciliation');
     attempt.verificationReconciliations??=[];attempt.verificationReconciliations.push(receipt);
     requireTeamVersion(t,'0.30.0');
+    if(commands.some(c=>c.verificationBinding))requireTeamVersion(t,'0.32.0');
     // Only derived caches change. Raw delivery, interruption and review evidence
     // retain every byte and every original FAIL/BLOCKED/unknown declaration.
     attempt.delivery.verifiedCommands=contractCommandEvidence(current.contract.verify??[],verificationRecords(attempt),{workspace:checked.workspace});
@@ -129,10 +142,11 @@ export async function reconcileVerification(engine,owner,id,revision,input){
 export function validateVerificationReconciliations(team){
   for(const task of team.tasks)for(const a of task.attempts??[]){
     const records=a.verificationReconciliations;if(records===undefined)continue;
-    if(!['0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(records)||records.length>30||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid historical verification audit version or requests');
+    if(!['0.30.0','0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(records)||records.length>30||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid historical verification audit version or requests');
     for(const r of records){
       const {integrityHash,...body}=r;
       if(integrityHash!==evidenceHash(body)||!uuid(r.requestId)||!sha(r.requestHash)||r.source!=='plugin-reconciled-native-verification'||r.taskId!==task.id||r.attemptId!==a.id||r.threadId!==a.agentThreadId||r.turnId!==a.turnId||r.marker!==a.marker||r.contractRevision!==(a.contractRevision??1)||r.candidateFingerprint!==a.evidenceSnapshot?.fingerprint||!sha(r.originalReportHash)||!Number.isFinite(Date.parse(r.at))||r.inputSnapshot?.source!=='plugin-declared-input-content-hash'||!sha(r.inputSnapshot.fingerprint)||r.inputSnapshot.workspace!==a.evidenceSnapshot.workspace||!Array.isArray(r.inputSnapshot.roots)||r.inputSnapshot.roots.some(p=>!safeQualityPath(p))||!r.commands?.length||r.commands.some(c=>c.originThreadId!==a.agentThreadId||!attemptTurnIds(a).includes(c.turnId)||!c.commandId||!isAbsolute(c.cwd??'')||c.source!=='reconciled-native-command'||c.status!=='completed'||c.exitCode!==0))throw new Error('Invalid historical native verification evidence');
+      for(const c of r.commands.filter(c=>c.verificationBinding))if(team.requiresTeamWorkspaceVersion!=='0.32.0'||!verifiedInitializationBinding(c,c.verificationBinding.required,{workspace:r.inputSnapshot.workspace}))throw new Error('Invalid declared initialization binding; preserve evidence and upgrade');
     }
   }
 }

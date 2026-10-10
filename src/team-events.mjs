@@ -4,14 +4,15 @@ import {coordinationSignature} from './team-efficiency.mjs';
 
 // Wait inside the existing Leader tool call, never inject a chat item or start
 // a model. Watch the directory because atomic saves replace the document inode.
-export function waitTeamEvent(store,owner,teamId,{revision,timeoutMs=45000,signal,observe,subscribe}={}) {
+export function waitTeamEvent(store,owner,teamId,{revision,waitCursor,timeoutMs=55000,signal,observe,subscribe}={}) {
   if(!Number.isInteger(revision)||revision<1||!Number.isInteger(timeoutMs)||timeoutMs<0||timeoutMs>55000)throw new Error('A saved revision and a timeout between 0 and 55000 ms are required');
+  if(waitCursor!==undefined&&!/^[a-f0-9]{64}$/.test(waitCursor))throw new Error('Use the semantic wait cursor returned by the preceding wait');
   const names=new Set([basename(store.path(teamId)),teamId+'.v2.json']);
   return new Promise((resolve,reject)=>{
-    let finished=false,reading=false,pending=false,expired=false,nativeDirty=!!observe,lastNativeAt=0,watcher,timer,fallback,nativeTimer,unsubscribe,signature,currentRevision=revision;
+    let finished=false,reading=false,pending=false,expired=false,nativeDirty=!!observe,lastNativeAt=0,watcher,timer,fallback,nativeTimer,unsubscribe,signature=waitCursor,currentRevision=revision;
     const finish=(error,value)=>{
       if(finished)return;finished=true;watcher?.close();clearTimeout(timer);clearInterval(fallback);clearTimeout(nativeTimer);unsubscribe?.();signal?.removeEventListener('abort',abort);
-      if(error)reject(error);else resolve({kind:'team-event',teamId,...value,chatMessages:false,nextTool:value.status==='timeout'?'wait_team_event':value.status==='cancelled'?null:'read_team',...(value.status==='timeout'?{unchanged:true,readRequired:false}:{} )});
+      if(error)reject(error);else resolve({kind:'team-event',teamId,...value,...(signature?{waitCursor:signature}:{}),chatMessages:false,nextTool:value.status==='timeout'?'wait_team_event':value.status==='cancelled'?null:'read_team',...(value.status==='timeout'?{unchanged:true,readRequired:false,continuationArgs:{teamId,revision:value.revision,waitCursor:signature,timeoutMs:55000}}:{} )});
     };
     const abort=()=>finish(null,{status:'cancelled',revision:currentRevision});
     const check=async(timedOut=false)=>{
@@ -25,7 +26,9 @@ export function waitTeamEvent(store,owner,teamId,{revision,timeoutMs=45000,signa
         if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');
         if(saved.revision<currentRevision)throw new Error('Team revision moved backwards; refresh before waiting');
         const nextSignature=coordinationSignature(saved);
-        if(signature===undefined&&saved.revision!==revision||signature!==undefined&&signature!==nextSignature)finish(null,{status:'changed',revision:saved.revision});
+        const changed=signature===undefined?saved.revision!==revision:signature!==nextSignature;
+        signature=nextSignature;
+        if(changed)finish(null,{status:'changed',revision:saved.revision});
         else if(['archived','superseded','cancelled','delivered'].includes(saved.state))finish(null,{status:'terminal',revision:saved.revision});
         else {
           signature=nextSignature;currentRevision=saved.revision;

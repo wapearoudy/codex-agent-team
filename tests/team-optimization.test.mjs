@@ -120,6 +120,7 @@ test('oversized legacy messages page exact text without acknowledging a partial 
 test('schema reuse requires explicit matching version hash and current usage triggers advice without automatic resets',()=>{
  const a=new SchemaCatalog('0.29.0'),first=a.describe('op',{type:'object'},'Operation');assert.ok(first.inputSchema);assert.equal(a.describe('op',{type:'object'},'Operation',first.schemaHash).unchanged,true);assert.ok(a.describe('op',{type:'object'},'Operation').inputSchema);assert.ok(new SchemaCatalog('0.30.0').describe('op',{type:'object'},'Operation',first.schemaHash).inputSchema);
  assert.equal(efficiencyAdvice({usage:{currentInputTokens:95000}}).phaseHandoffRecommended,true);assert.equal(efficiencyAdvice({usage:{totalTokens:2000000,currentInputTokens:10000},commands:[]}).phaseHandoffRecommended,false);assert.equal(efficiencyAdvice({commands:Array(51)}).automaticReset,false);
+ assert.equal(efficiencyAdvice({usage:{currentInputTokens:59999},commands:Array(29)}).phaseHandoffRecommended,false);assert.equal(efficiencyAdvice({usage:{currentInputTokens:60000}}).phaseHandoffRecommended,true);assert.equal(efficiencyAdvice({commands:Array(30)}).phaseHandoffRecommended,true);
 });
 test('public usage exposes current input size separately from cumulative processing',async t=>{
  const root=await mkdtemp(join(tmpdir(),'current-input-'));t.after(()=>rm(root,{recursive:true,force:true}));const path=join(root,'child.jsonl'),rows=[{type:'session_meta',payload:{id:'child'}},{type:'event_msg',payload:{type:'task_started',turn_id:'turn'}}];

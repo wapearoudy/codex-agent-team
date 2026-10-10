@@ -37,7 +37,7 @@ export function scopeAudit(team,review,verdict,items){
 export function validateReviewScope(team,review,a){
   const r=a.futureCheckAssociations;if(!r)return;
   const {integrityHash,...body}=r,dependency=a.dependencyAttempts?.find(d=>d.taskId===review.reviewOfTaskId),raw=review.evidence.findLast(e=>e.attemptId===a.id)?.summary;
-  if(team.requiresTeamWorkspaceVersion!=='0.31.0'||review.kind!=='review'||r.source!=='plugin-contract-scope'||integrityHash!==evidenceHash(body)||r.reviewAttemptId!==a.id||r.targetTaskId!==review.reviewOfTaskId||r.targetAttemptId!==dependency?.attemptId||r.contractRevision!==(dependency?.contractRevision??1)||r.reportHash!==evidenceHash(raw)||!Number.isFinite(Date.parse(r.at))||!Array.isArray(r.acceptanceCriteria)||!r.acceptanceCriteria.length||!Array.isArray(r.items)||!r.items.length||r.items.length>30||new Set(r.items.map(x=>x.checkIndex)).size!==r.items.length)throw new Error('Invalid future review scope audit');
+  if(!['0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion)||review.kind!=='review'||r.source!=='plugin-contract-scope'||integrityHash!==evidenceHash(body)||r.reviewAttemptId!==a.id||r.targetTaskId!==review.reviewOfTaskId||r.targetAttemptId!==dependency?.attemptId||r.contractRevision!==(dependency?.contractRevision??1)||r.reportHash!==evidenceHash(raw)||!Number.isFinite(Date.parse(r.at))||!Array.isArray(r.acceptanceCriteria)||!r.acceptanceCriteria.length||!Array.isArray(r.items)||!r.items.length||r.items.length>30||new Set(r.items.map(x=>x.checkIndex)).size!==r.items.length)throw new Error('Invalid future review scope audit');
   // Validate the historical dependency snapshot, rather than replacing it with
   // a subsequently amended downstream contract.
   for(const item of r.items){

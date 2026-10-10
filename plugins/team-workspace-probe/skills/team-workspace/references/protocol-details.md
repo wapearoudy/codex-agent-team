@@ -1,4 +1,4 @@
-# Team Workspace 0.31.0 协议细则
+# Team Workspace 0.32.0 协议细则
 
 当前主会话是 Leader，沿用当前项目、用户目标和已有授权。每个项目一个固定团队，岗位身份固定，同一时刻仅有一个当前执行会话。已结算任务的下一次派发使用独立原生会话，旧线程保留为只读历史；活动或未知轮次不能替换。插件保存业务协议并观察原生记录，不启动另一个协调模型。只查看时调用 open_team_workspace / read_team，不派发工作。
 
@@ -148,7 +148,7 @@ read_team_context(view=evidence) 的 section=delivery/commands/command/command-o
 
 成员常用参数形状已在 dispatch 中给出。源码 read_team_source 按行分页，默认4000/最大6000字符并校验 cursor；长测试/构建 prepare_team_command 只准备日志与1200 token 输出上限，再执行返回 nativeCommand，保留宿主真实退出码/会话，read_team_command_log 按需分页（默认2000/最大6000字符）。不回传整文件、全部历史或成功长日志；原生工具仍由宿主控制，直接使用也遵守预算。
 
-当前输入约90000 token 或50次命令后，成员可在明确阶段边界 report_member_team_task(handoff=true)，保存 summary/decisions/remainingWork/evidence/validation/verificationInputs，不含 delivery。将其 finalReceipt JSON 作为最终公开答复并结束。只有 exact completed + 检查点所有权 + 回执匹配，插件才置同 task waiting，新 generation 以 fork_turns=none 续接；未知、连接失败或中断不触发清空。每 task 最多3次，工作目标、独立审查与下游门禁保持，历史与失败额度保留。审核 task 不交接。续接先分页 read_team_context(view=evidence, section=checkpoint, attemptId=前阶段)，完整读取决策与剩余工作；所有原始记录可追溯。
+当前输入约60000 token 或30次命令后，成员可在明确阶段边界 report_member_team_task(handoff=true)，保存 summary/decisions/remainingWork/evidence/validation/verificationInputs，不含 delivery。将其 finalReceipt JSON 作为最终公开答复并结束。只有 exact completed + 检查点所有权 + 回执匹配，插件才置同 task waiting，新 generation 以 fork_turns=none 续接；未知、连接失败或中断不触发清空。每 task 最多3次，工作目标、独立审查与下游门禁保持，历史与失败额度保留。审核 task 不交接。续接先分页 read_team_context(view=evidence, section=checkpoint, attemptId=前阶段)，完整读取决策与剩余工作；所有原始记录可追溯。
 
 续接包列出当前可复用的 contract.verify 索引；仅成功宿主命令且声明输入内容指纹未变可复用，提交前再次核对。输入改变、缺失或新合同均不能沿用旧验证；交付指纹包含复用输入，以阻挡提交后变化。显式合同修订保留旧阶段审计、沿用新范围，不能把旧合同证据视作新合同 PASS。交接不是提交或验收，最终独立审查仍由插件门禁登记。源路径与指纹不能证明未声明输入/外部环境不变。
 
@@ -167,3 +167,10 @@ read_team_context(view=evidence) 的 section=delivery/commands/command/command-o
 验证命令按原生顺序使用最后一次匹配结果；后来的失败、执行中或未知退出码覆盖先前 PASS。不同目录或不同命令不互相覆盖；阶段复用记录位于当前命令之前。复审不对实施者的非合同辅助命令重复做一遍全命令审查，原命令和派生备注保留，合同验证和独立复审条件仍全部生效。
 
 批量推进逐项登记；`advancement.changes/errors/partial/fromRevision/toRevision` 表示真实部分结果，不宣称跨多次持久事务的原子性。有异常的本批不继续自动预留。无效 completed 交付保存 settlementException，原输入未变不反复接收；纠正后显式重试或新证据变化才再校验，旧失败观察保留在历史。取消、停止、预算、真实返工和范围修改继续按原门禁处理，不能为清状态自动派新会话。
+
+
+## 0.32.0 初始化链与旧准备记录恢复
+
+环境初始化不靠匹配命令子串。reconcile_team_verification 的 commands 每项可明确 contractCommand（当前 contract.verify 原文）和 initializationCommands（按顺序完整列出 source/.、字面量 export/赋值或 node/python 文件初始化调用）。只支持以 && 串联并以原合同命令结束；参数、真实工作目录及退出码必须匹配。完整初始化链必须已在原始 commandsRun 声明，插件按原生 commandId 和宿主终态核对，保存绑定哈希与版本保护。管道、||、分号后续命令、动态参数、不透明脚本仍不能从中抽取一次 PASS。
+
+旧 prepare_team_command 元数据若没有 inputSnapshot/nativeCommand，不得重新补造历史预执行指纹。改用原报告的文件哈希表，或已声明 path+SHA256 的 manifest。manifest 的 basePath 按原文件路径前缀填写，roots 选择原声明的源码/配置输入根，不使用项目根 '.' 扫描无关日志；全部 manifest 文件仍逐项校验，roots 内新增文件会阻止复用。提交候选原指纹、所有必验项和独立审查仍是门禁；声明输入不证明外部环境或未声明文件不变。先 dryRun，再使用同一稳定请求提交。保留原报告、未知退出码、中断与审查历史，补关联不启动模型或测试。

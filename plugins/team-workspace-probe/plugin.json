@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "team-workspace-probe",
-  "version": "0.31.1",
+  "version": "0.32.0",
   "description": "Conversation-scoped team execution with real attempt history, version-bound plan approval, independent review and an embedded team view.",
   "author": {
     "name": "Team Workspace"

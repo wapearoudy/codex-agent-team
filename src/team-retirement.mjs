@@ -17,7 +17,7 @@ export function assertArchivable(team){
 export function validateRetirement(team){
   if(team.state!=='archived'&&!team.archival)return;
   const a=team.archival;
-  if(!['0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion)||team.state!=='archived'||!team.dispatchPaused||a?.teamId!==team.id||a?.previousState!=='delivered'||!Number.isFinite(Date.parse(a.at))||!Array.isArray(a.members))throw new Error('团队归档记录无效；保留数据并升级插件');
+  if(!['0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion)||team.state!=='archived'||!team.dispatchPaused||a?.teamId!==team.id||a?.previousState!=='delivered'||!Number.isFinite(Date.parse(a.at))||!Array.isArray(a.members))throw new Error('团队归档记录无效；保留数据并升级插件');
   const request=archiveRequest({...team,archival:undefined},a);
   if(request.hash!==a.hash)throw new Error('团队归档记录校验失败');
   assertArchivable({...team,state:'delivered'});

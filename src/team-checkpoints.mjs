@@ -71,7 +71,7 @@ export function validateCheckpoints(team){
     if(requests.has(data.requestId)||JSON.stringify(data)!==JSON.stringify({taskId:c.taskId,attemptId:c.attemptId,requestId:c.requestId,summary:c.summary,decisions:c.decisions,remainingWork:c.remainingWork,validation:c.validation,evidence:c.evidence}))throw new Error('Invalid checkpoint normalized payload');
     const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.find(a=>a.id===c.attemptId);
     if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||!attemptTurnIds(attempt).includes(c.turnId)||(attempt.memberId??task.memberId)!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
-    if(attempt.turnId!==c.turnId&&!['0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Historical checkpoints require Team Workspace 0.21.0');
+    if(attempt.turnId!==c.turnId&&!['0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Historical checkpoints require Team Workspace 0.21.0');
     ids.add(c.id.toLowerCase());requests.add(data.requestId);
   }
 }

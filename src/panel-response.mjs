@@ -47,7 +47,7 @@ export function stateRuns(runs){const budget=previewBudget(24*1024);return runs.
 export function panelResponse(data,detailToken){
   const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0'].includes(data.team.requiresTeamWorkspaceVersion);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);

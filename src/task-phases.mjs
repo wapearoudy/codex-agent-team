@@ -57,7 +57,7 @@ export function validateTaskPhases(team){
     const h=a.phaseHandoff,c=a.phaseContinuation;
     if(a.state==='handed-off'&&h?.status!=='completed')throw new Error('Handed-off attempt has no completed phase evidence');
     if(!h&&!c&&!a.reusedVerificationCommands)continue;
-    if(!['0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task phase history requires Team Workspace 0.29.0');
+    if(!['0.29.0','0.30.0','0.31.0','0.32.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task phase history requires Team Workspace 0.29.0');
     if(h){const checkpoint=team.checkpoints?.find(x=>x.id===h.checkpointId);if(task.kind==='review'||h.source!=='authenticated-member-phase'||!['requested','completed'].includes(h.status)||!checkpoint||checkpoint.source!=='authenticated-member'||checkpoint.attemptId!==a.id||checkpoint.requestId!==h.requestId||!checkpoint.remainingWork.length||h.contractRevision!==(a.contractRevision??1)||!Array.isArray(h.verificationInputs)||h.verificationInputs.some(p=>!safeQualityPath(p)))throw new Error('Invalid phase checkpoint ownership');
       if(h.evidenceSnapshot?.fingerprint&&(!/^[a-f0-9]{64}$/.test(h.evidenceSnapshot.fingerprint)||h.evidenceSnapshot.source!=='plugin-declared-input-content-hash'||!Array.isArray(h.evidenceSnapshot.roots)||h.evidenceSnapshot.roots.some(p=>!safeQualityPath(p))))throw new Error('Invalid phase input fingerprint');
       if(h.status==='completed'){

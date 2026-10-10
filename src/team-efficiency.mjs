@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 
-export const OUTPUT_POLICY=Object.freeze({nativeMaxOutputTokens:1200,batchMaxChars:6000,sourcePageChars:4000,logPageChars:2000,phaseInputTokens:90000,phaseCommandCount:50,maxPhaseHandoffs:3});
+export const OUTPUT_POLICY=Object.freeze({nativeMaxOutputTokens:1200,batchMaxChars:6000,sourcePageChars:4000,logPageChars:2000,phaseInputTokens:60000,phaseCommandCount:30,maxPhaseHandoffs:3});
 const pick=(o,keys)=>Object.fromEntries(keys.filter(k=>o?.[k]!==undefined).map(k=>[k,o[k]]));
 export const peerReceipt=m=>pick(m,['id','taskId','attemptId','senderMemberId','toMemberId','recipientThreadId','recipientAttemptId','recipientTurnId','kind','status','createdAt']);
 export function efficiencyAdvice(run){
