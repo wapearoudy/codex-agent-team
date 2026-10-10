@@ -18,12 +18,13 @@ test('temporary read failure does not flicker to unknown; expiry explains delay 
     return new Promise(()=>{});
    }});await window.view.connect();
   });
+  const originalFreshUntil=await page.evaluate(()=>window.original.runs[0].statusEvidence.freshUntil);
   await expect(page.locator('#errorText')).toContainText('Controlled transport timeout');
   await expect(page.locator('#activeCount')).toContainText('1 人执行中');await expect(page.locator('#memberTree')).not.toContainText('状态未知');await expect(page.locator('#memberTree')).toContainText('连接暂不可用');
   await page.clock.runFor(4000);await expect(page.locator('#activeCount')).toContainText('1 项记录待更新');await expect(page.locator('#memberTree')).toContainText('执行记录待更新');await expect(page.locator('#teamControlStatus')).toContainText('执行记录待更新');
   await page.locator('[data-focus-key="history:dev"]').click();await page.locator('[data-focus-key="attempt:attempt"]').click();await expect(page.locator('#memberDetail')).toContainText('Evidence kept intact');
   await page.locator('#taskDetail summary').last().click();
-  const raw=await page.locator('#taskDetail pre').last().textContent();assert.match(raw,/"status": "inProgress"/);assert.match(raw,/"freshUntil": "2026-10-10T08:00:03/);assert.doesNotMatch(raw,/"status": "accepted"/);
+  const raw=await page.locator('#taskDetail pre').last().textContent();assert.match(raw,/"status": "inProgress"/);assert.equal(JSON.parse(raw).runs[0].statusEvidence.freshUntil,originalFreshUntil);assert.doesNotMatch(raw,/"status": "accepted"/);
   await page.screenshot({path:'evidence/unknown-state-stale-panel.png',fullPage:true});
   await page.evaluate(async()=>{
    const invalid=structuredClone(window.original);invalid.observedAt=new Date().toISOString();invalid.runs[0]={...invalid.runs[0],status:'unknown',connection:'unavailable',observedAt:invalid.observedAt,observationError:'Controlled identity mismatch',observationIssue:{kind:'verification-failed',at:invalid.observedAt}};await window.view.accept(invalid);

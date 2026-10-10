@@ -58,6 +58,17 @@ test('only a verified host cwd supplies an omitted literal cd; wrong, missing an
   }
 });
 
+test('recorded Windows drive and UNC directories retain their own path identity on every server OS',()=>{
+  const actual="/bin/sh -c 'npm test'",cwd=String.raw`C:\work\ui space`,required="cd 'C:/work/ui space' && npm test";
+  assert.equal(verificationCommandMatches(actual,required,{cwd}),true);
+  assert.equal(verificationCommandMatches("cd 'ui space' && npm test",required,{cwd:'C:/work'}),true);
+  for(const wrong of [undefined,'D:/work/ui space','/work/ui space','C:/work/other'])assert.equal(verificationCommandMatches(actual,required,{cwd:wrong}),false);
+  assert.equal(verificationCommandMatches("cd 'C:ui space' && npm test",required,{cwd:'C:/work'}),false);
+  const unc=String.raw`\\server\share\ui space`;
+  assert.equal(verificationCommandMatches(actual,"cd '"+unc+"' && npm test",{cwd:unc}),true);
+  assert.equal(verificationCommandMatches(actual,"cd '"+unc+"' && npm test",{cwd:String.raw`\\other\share\ui space`}),false);
+});
+
 test('latest matching native outcome overrides old PASS while unrelated commands and wrong directories do not',()=>{
   const good={command:'npm test',commandId:'first',cwd:'/project',status:'completed',exitCode:0};
   for(const bad of [{status:'failed',exitCode:1},{status:'inProgress',exitCode:null},{status:'completed',exitCode:null},{status:'unknown',exitCode:null}]){

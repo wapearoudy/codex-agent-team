@@ -49,7 +49,7 @@ test('bounded source pages reconstruct unicode, fence edits and reject escape/bi
  await assert.rejects(()=>readTeamSource(f.team,f.context,{taskId:'review',path:'src/a.txt'}),/Only current/);
  await writeFile(join(f.cwd,'huge-line'),'x'.repeat(7000));await assert.rejects(()=>readTeamSource(f.team,f.context,{taskId:'work',path:'huge-line'}),/budget/);
 });
-test('prepared commands do not execute, persist compound output, preserve exit and page exact unicode logs',async t=>{
+test('prepared commands do not execute, persist compound output, preserve exit and page exact unicode logs',{skip:process.platform==='win32'?'POSIX command preparation is explicitly unavailable on Windows':false},async t=>{
  const f=await fixture(t),input={taskId:'work',attemptId:f.c.dispatch.attemptId,requestId:randomUUID(),command:"printf 'first\\n'; node -e 'process.stdout.write(\"中文😀\".repeat(1000));process.exit(7)'"};
  const p=await prepareTeamCommand(join(f.root,"logs with ' quote"),f.team,f.context,input);assert.equal(p.startsCommand,false);assert.equal(p.max_output_tokens,1200);await assert.rejects(()=>readFile(p.logPath),/ENOENT/);assert.deepEqual(await prepareTeamCommand(join(f.root,"logs with ' quote"),f.team,f.context,input),p);
  await assert.rejects(()=>prepareTeamCommand(join(f.root,"logs with ' quote"),f.team,f.context,{...input,command:'true'}),/different contents/);
@@ -60,7 +60,7 @@ test('prepared commands do not execute, persist compound output, preserve exit a
  const quoted="'"+p.nativeCommand.replaceAll("'","'\\''")+"'";assert.equal(verificationCommandMatches('/bin/zsh -lc '+quoted,input.command),true,'Host-added literal shell wrappers preserve log verification identity');
  for(const bad of ["node --test | true > 'log' 2>&1","node --test; exit 0 > 'log' 2>&1",'node --test > "$(touch bad)" 2>&1',"echo 'node --test' > 'log' 2>&1"])assert.equal(verificationCommandMatches(bad,'node --test'),false,bad);
 });
-test('prepared request replay retains its pre-command source and fixture fingerprint after files change',async t=>{
+test('prepared request replay retains its pre-command source and fixture fingerprint after files change',{skip:process.platform==='win32'?'POSIX command preparation is explicitly unavailable on Windows':false},async t=>{
  const f=await fixture(t),input={taskId:'work',attemptId:f.c.dispatch.attemptId,requestId:randomUUID(),command:'node --test',verificationInputs:['checks.json']};
  const before=await prepareTeamCommand(f.engine.root,f.team,f.context,input);assert.equal(before.inputProof.reusable,true);assert.equal(before.inputProof.fileCount,2);
  const path=join(f.engine.root,'command-logs',f.team.id,input.attemptId,input.requestId+'.json'),bytes=await readFile(path);
@@ -68,6 +68,11 @@ test('prepared request replay retains its pre-command source and fixture fingerp
  assert.deepEqual(await prepareTeamCommand(f.engine.root,f.team,f.context,input),before);assert.ok((await readFile(path)).equals(bytes));
  await assert.rejects(()=>prepareTeamCommand(f.engine.root,f.team,f.context,{...input,verificationInputs:[]}),/different contents/);
  const fresh=await prepareTeamCommand(f.engine.root,f.team,f.context,{...input,requestId:randomUUID()});assert.notEqual(fresh.inputProof.fingerprint,before.inputProof.fingerprint);await assert.rejects(()=>readFile(before.logPath),/ENOENT/);
+});
+test('Windows command preparation rejects POSIX wrappers before writing records and directs native logging',{skip:process.platform!=='win32'?'Windows native logging fallback':false},async t=>{
+ const f=await fixture(t),input={taskId:'work',attemptId:f.c.dispatch.attemptId,requestId:randomUUID(),command:'node --test'};
+ await assert.rejects(()=>prepareTeamCommand(f.engine.root,f.team,f.context,input),/POSIX log preparation is unavailable; use native max_output_tokens=1200/);
+ await assert.rejects(()=>readFile(join(f.engine.root,'command-logs',f.team.id,input.attemptId,input.requestId+'.json')),/ENOENT/);
 });
 test('completed phase hands off the same task to a clean session, retaining all history and gates',async t=>{
  const f=await fixture(t),{result:r}=await handoff(f),task=r.team.tasks[0],a=task.attempts[0];assert.equal(task.status,'waiting');assert.equal(a.state,'handed-off');assert.equal(r.team.tasks[1].status,'waiting');assert.equal(consumedAttempts(task),0);validateTeam(r.team);
@@ -99,7 +104,7 @@ test('handoff does not reset a live/unknown attempt or accept an incorrect termi
  await assert.rejects(()=>f.engine.settle('owner',s.id,r.revision,'work',input.attemptId),/no confirmed terminal/);f.run.status='completed';f.run.outputs=[{text:'Different final receipt'}];await assert.rejects(()=>f.engine.settle('owner',s.id,r.revision,'work',input.attemptId),/exact completed/);assert.equal((await f.saved()).tasks[0].status,'running');assert.equal((await f.saved()).contextHistory,undefined);
 });
 test('semantic waits keep progress inside one call while actionable controls wake immediately',async t=>{
- const f=await fixture(t);let ready;const subscribed=new Promise(r=>ready=r);const waiting=waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:f.team.revision,timeoutMs:100,subscribe:async()=>{ready();return ()=>{};}});await subscribed;await new Promise(r=>setTimeout(r,15));
+ const f=await fixture(t);let ready;const subscribed=new Promise(r=>ready=r);const waiting=waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:f.team.revision,timeoutMs:5000,subscribe:async()=>{ready();return ()=>{};}});await subscribed;await new Promise(r=>setTimeout(r,15));
  const updated=await f.engine.store.update(f.team.id,'owner',f.team.revision,s=>{s.checkpoints=[];s.events.push({type:'progress-only',at:new Date().toISOString()});});const event=await waiting;assert.equal(event.status,'timeout');assert.equal(event.revision,updated.team.revision);assert.equal(event.readRequired,false);
  const next=waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:event.revision,timeoutMs:1000});await f.engine.stop('owner',f.team.id,event.revision,{requestId:randomUUID(),reason:'User stop'});assert.equal((await next).status,'changed');
 });

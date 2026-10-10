@@ -1,4 +1,8 @@
-import {isAbsolute,resolve,normalize} from 'node:path';
+import {posix,win32} from 'node:path';
+// Interpret recorded paths by their own syntax, never by the server OS. Native
+// Windows drive/UNC paths and POSIX paths must retain distinct identities.
+const directoryPath=value=>/^(?:[A-Za-z]:[\\/]|\\\\)/.test(value??'')?win32:posix;
+const absoluteDirectory=value=>typeof value==='string'&&directoryPath(value).isAbsolute(value);
 // Parse only literal argv. Expansion or extra shell operations make unwrapping
 // ambiguous, so leave those records to exact-text matching. Never execute input.
 function literalShellWords(input){
@@ -60,10 +64,12 @@ function locatedCommand(script,cwd){
   if(split<0)return {script,cwd};
   const words=literalShellWords(script.slice(0,split).trim());
   if(words?.length!==2||words[0]!=='cd'||!words[1]||words[1].startsWith('-'))return {script,cwd};
-  if(!isAbsolute(words[1])&&!(typeof cwd==='string'&&isAbsolute(cwd)))return {script,cwd};
-  return {script:script.slice(split+2).trim(),cwd:resolve(cwd??'/',words[1])};
+  if(/^[A-Za-z]:[^\\/]/.test(words[1]))return {script,cwd}; // drive-relative cwd is not known
+  if(!absoluteDirectory(words[1])&&!absoluteDirectory(cwd))return {script,cwd};
+  const paths=absoluteDirectory(words[1])?directoryPath(words[1]):directoryPath(cwd);
+  return {script:script.slice(split+2).trim(),cwd:paths.resolve(cwd??'/',words[1])};
 }
-const sameDirectory=(a,b)=>typeof a==='string'&&typeof b==='string'&&isAbsolute(a)&&isAbsolute(b)&&normalize(a)===normalize(b);
+const sameDirectory=(a,b)=>absoluteDirectory(a)&&absoluteDirectory(b)&&directoryPath(a)===directoryPath(b)&&directoryPath(a).normalize(a)===directoryPath(b).normalize(b);
 export function verificationCommandMatches(actual,required,{cwd,workspace}={}){
   if(typeof actual!=='string'||typeof required!=='string'||!actual.trim()||!required.trim())return false;
   const left=commandIdentity(actual),right=commandIdentity(required);

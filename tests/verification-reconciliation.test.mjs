@@ -17,7 +17,8 @@ async function fixture(t,{history=false,criterion='PASS',complex=false,prepared=
   await mkdir(join(cwd,'src'),{recursive:true});await writeFile(join(cwd,'src/a.mjs'),'candidate');await writeFile(join(cwd,'checks.json'),'fixture config');
   const runs=new Map(),observer={calls:0,async inspect(parent,project,thread,marker){this.calls++;assert.equal(parent,'leader');assert.equal(project,cwd);const run=runs.get(marker);assert.equal(run.threadId,thread);return structuredClone(run);}};
   const engine=new LeaderEngine({root:join(root,'records'),observer});t.after(async()=>{await engine.close();await rm(root,{recursive:true,force:true});});
-  const work={id:'work',memberId:'dev',kind:'work',title:'Deliver',goal:'Complete behavior',acceptance:'AC passes',acceptanceCriteria:[{id:'AC',description:'Required behavior'}],dependencies:[],contract:{stage:'implementation',inScope:['src'],outOfScope:[],verify:[`cd ${cwd} && npm test`],coverageOf:[]}};
+  const shellDirectory="'"+cwd.replaceAll('\\','/').replaceAll("'","'\\''")+"'";
+  const work={id:'work',memberId:'dev',kind:'work',title:'Deliver',goal:'Complete behavior',acceptance:'AC passes',acceptanceCriteria:[{id:'AC',description:'Required behavior'}],dependencies:[],contract:{stage:'implementation',inScope:['src'],outOfScope:[],verify:[`cd ${shellDirectory} && npm test`],coverageOf:[]}};
   const review={id:'review',memberId:'qa',kind:'review',title:'Review',goal:'Independent review',acceptance:'Proof',reviewOfTaskId:'work',dependencies:[{taskId:'work',when:'submitted'}]};
   const team=await engine.planOnce('owner',{threadId:'leader',cwd},{goal:'Reuse the unchanged candidate',execute:true,plan:{members:[{id:'dev',role:'Developer',responsibility:'Implement',reason:'Delivery',writeScopes:['src']},{id:'qa',role:'Reviewer',responsibility:'Independent review',reason:'Proof',writeScopes:[]}],tasks:[work,review,{...work,id:'next',dependencies:[{taskId:'work',when:'accepted'}],contract:undefined,acceptanceCriteria:undefined},{...review,id:'next-review',reviewOfTaskId:'next',dependencies:[{taskId:'next',when:'submitted'}]}]}});
   let s=await engine.claim('owner',team.id,team.revision,'work');const a=s.dispatch,thread=randomUUID(),oldId=randomUUID(),currentId=history?randomUUID():oldId,commandId='exec-'+randomUUID();
@@ -103,7 +104,7 @@ test('a recovered exit code never promotes an original BLOCKED criterion or extr
   assert.equal(r.commands[0].exitCode,0);assert.equal(r.verifiedChecks[0].observed,false);assert.deepEqual(r.nonPassCriteria,[{criterionId:'AC',status:'BLOCKED'}]);
   assert.equal(after.tasks[0].status,'submitted');assert.equal(after.tasks[1].status,'submitted');assert.throws(()=>assertContractPass(after.tasks[0]),/every criterion PASS/);assert.equal(after.tasks[0].evidence.at(-1).summary,f.raw);
 });
-test('prepared command fingerprints are stable on replay, reject changed inputs, and support a continued attempt',async t=>{
+test('prepared command fingerprints are stable on replay, reject changed inputs, and support a continued attempt',{skip:process.platform==='win32'?'POSIX command preparation is explicitly unavailable on Windows':false},async t=>{
   const f=await fixture(t,{history:true,prepared:true}),s=await f.saved();
   const prepPath=join(f.engine.root,'command-logs',s.id,f.input.attemptId,f.preparation.requestId+'.json'),bytes=await readFile(prepPath);
   const fixed=await f.engine.reconcileVerification('owner',s.id,s.revision,f.input);assert.equal(fixed.verifiedChecks[0].observed,true);assert.ok((await readFile(prepPath)).equals(bytes));
