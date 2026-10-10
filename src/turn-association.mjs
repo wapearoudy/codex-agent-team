@@ -31,13 +31,14 @@ export function associateTurn(team,task,run){
     attempt.turnAssociation={...structuredClone(run.turnAssociation),links:run.turnAssociation.links.map((link,i)=>links[i]??{...link,linkedAt:at})};
     for(const link of attempt.turnAssociation.links.slice(links.length))team.events.push({at,type:'native-task-turn-continued',taskId:task.id,attemptId:attempt.id,threadId:run.threadId,...link});
     requireTeamVersion(team,'0.17.0');
+    if(team.checkpoints?.some(c=>c.attemptId===attempt.id&&c.taskId===task.id&&c.turnId!==run.turnId))requireTeamVersion(team,'0.21.0');
   }
   attempt.turnId=run.turnId;attempt.observation=run;attempt.runtimeStatus=run.status;
 }
 export function validateTurnAssociations(team){
   for(const task of team.tasks)for(const attempt of task.attempts??[]){
     if(!attempt.turnHistory&&!attempt.turnAssociation)continue;
-    if(team.requiresTeamWorkspaceVersion!=='0.17.0')throw new Error('Continuation history requires Team Workspace 0.17.0');
+    if(!['0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Continuation history requires Team Workspace 0.17.0');
     assertChain({threadId:attempt.agentThreadId,turnId:attempt.turnId,turnHistory:attempt.turnHistory,turnAssociation:attempt.turnAssociation},attempt.marker,attempt.agentThreadId);
     if(attempt.turnAssociation.links.some(link=>!Number.isFinite(Date.parse(link.linkedAt))))throw new Error('Continuation link has no audit timestamp');
   }

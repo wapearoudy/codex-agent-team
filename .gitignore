@@ -24,3 +24,4 @@ scripts/*
 !scripts/stage-upgrade.py
 !scripts/verify-installed-current.mjs
 !scripts/install-plugin.mjs
+!scripts/register-native-work.mjs

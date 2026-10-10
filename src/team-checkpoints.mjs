@@ -1,4 +1,5 @@
 import {randomUUID} from 'node:crypto';
+import {attemptTurnIds,validateTurnAssociations} from './turn-association.mjs';
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const statuses=new Set(['PASS','FAIL','BLOCKED','NOT_RUN']);
@@ -39,8 +40,8 @@ export function recordCheckpoint(team,input,{source='leader-recorded'}={}){
   return structuredClone(checkpoint);
 }
 
-export function checkpointProjection(team){
-  return (team.checkpoints??[]).map(c=>{const task=team.tasks.find(t=>t.id===c.taskId);return {...structuredClone(c),stale:task?.attempts.at(-1)?.id!==c.attemptId||task?.memberId!==c.memberId||(c.contractRevision??1)!==(task?.contractRevision??1)};});
+export function checkpointProjection(team,runs=[]){
+  return (team.checkpoints??[]).map(c=>{const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.at(-1),run=runs.find(r=>r.taskId===c.taskId&&r.attemptId===c.attemptId&&r.connection!=='unavailable');return {...structuredClone(c),stale:attempt?.id!==c.attemptId||(run?.turnId??attempt?.turnId)!==c.turnId||task?.memberId!==c.memberId||(c.contractRevision??1)!==(task?.contractRevision??1)};});
 }
 
 export function buildHandoff(team,taskId){
@@ -60,13 +61,17 @@ export function validateCheckpoints(team){
   if(team.checkpoints===undefined)return;
   if(!Array.isArray(team.checkpoints))throw new Error('Invalid checkpoint history');
   if(team.mode!=='host-leader'&&team.checkpoints.length)throw new Error('Checkpoints require host-leader mode');
+  // Historical checkpoint ownership is proven by the immutable native chain,
+  // not by replacing the checkpoint's turn with the current continuation.
+  if(team.checkpoints.length)validateTurnAssociations(team);
   const ids=new Set(),requests=new Set();
   for(const c of team.checkpoints){
     if(!c||typeof c.id!=='string'||!UUID.test(c.id)||ids.has(c.id.toLowerCase())||!['leader-recorded','authenticated-member'].includes(c.source)||typeof c.createdAt!=='string'||!Number.isFinite(Date.parse(c.createdAt)))throw new Error('Invalid checkpoint record');
     const data=normalized(c);
     if(requests.has(data.requestId)||JSON.stringify(data)!==JSON.stringify({taskId:c.taskId,attemptId:c.attemptId,requestId:c.requestId,summary:c.summary,decisions:c.decisions,remainingWork:c.remainingWork,validation:c.validation,evidence:c.evidence}))throw new Error('Invalid checkpoint normalized payload');
     const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.find(a=>a.id===c.attemptId);
-    if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||attempt.turnId!==c.turnId||(attempt.memberId??task.memberId)!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
+    if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||!attemptTurnIds(attempt).includes(c.turnId)||(attempt.memberId??task.memberId)!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
+    if(attempt.turnId!==c.turnId&&!['0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Historical checkpoints require Team Workspace 0.21.0');
     ids.add(c.id.toLowerCase());requests.add(data.requestId);
   }
 }

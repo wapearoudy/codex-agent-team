@@ -1,5 +1,13 @@
+import {validateTaskPhases} from './task-phases.mjs';
+import {validateVerificationReconciliations} from './verification-reconciliation.mjs';
+import {validateReviewerAcceptance} from './reviewer-acceptance.mjs';
+import {validateSettlementExceptions} from './settlement-exception.mjs';
+import {recoverableReview} from './review-recovery.mjs';
+import {validateReviewReconciliations} from './review-reconciliation.mjs';
 import {validateRetirement} from './team-retirement.mjs';
+import {validateNativeRegistrations} from './native-registration.mjs';
 import {validateTurnAssociations} from './turn-association.mjs';
+import {validateDeferredReviews} from './quality-gates.mjs';
 import {validateMemberGoals} from './member-goals.mjs';
 import {validateTaskContexts} from './task-context.mjs';
 import {requireTeamVersion} from './team-version.mjs';
@@ -31,10 +39,10 @@ export function validateMembers(members){
   return memberIds;
 }
 
-export function validatePlan(plan) {
+export function validatePlan(plan,{allowEmpty=plan.taskPlanning==='leader'}={}) {
   const {members,tasks}=plan;
   if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
-  if(!Array.isArray(tasks)||tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
+  if(!Array.isArray(tasks)||!allowEmpty&&tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
   const memberIds=validateMembers(members);
   const taskIds=new Set();
   for(const t of tasks){
@@ -65,14 +73,15 @@ export function validatePlan(plan) {
   return true;
 }
 
-export function createTeam({projectId,projectPath,goal,plan,maxParallel=3}) {
-  validatePlan(plan);
+export function createTeam({projectId,projectPath,goal,plan,maxParallel=3,taskPlanning}) {
+  if(taskPlanning==='leader'&&plan.tasks.length)throw new Error('Confirm the team first; add concrete tasks after formation approval');
+  validatePlan(plan,{allowEmpty:taskPlanning==='leader'});
   if(typeof projectId!=='string'||!projectId||typeof projectPath!=='string'||!projectPath)throw new Error('A selected project is required');
   if(typeof goal!=='string'||goal.trim().length<8||goal.length>2000)throw new Error('Describe a specific team goal (8–2000 characters)');
   if(!Number.isInteger(maxParallel)||maxParallel<1||maxParallel>8)throw new Error('Parallel member limit must be 1–8');
   const time=now(),members=plan.members.map(m=>({...structuredClone(m),status:'planned',agentThreadId:null,lastActivityAt:time}));
   return {id:randomUUID(),projectId,projectPath,goal:goal.trim(),state:'planned',dispatchPaused:false,maxParallel,
-    ...(plan.goalCriteria||plan.tasks.some(t=>t.contract)?{requiresTeamWorkspaceVersion:'0.10.0'}:{}),
+    ...(taskPlanning==='leader'?{taskPlanning,requiresTeamWorkspaceVersion:'0.18.0'}:plan.goalCriteria||plan.tasks.some(t=>t.contract)?{requiresTeamWorkspaceVersion:'0.10.0'}:{}),
     ...(plan.goalCriteria?{goalCriteria:structuredClone(plan.goalCriteria)}:{}),createdAt:time,updatedAt:time,members,tasks:plan.tasks.map(t=>({...structuredClone(t),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:time,updatedAt:time})),events:[{at:time,type:'team-planned'}]};
 }
 
@@ -80,10 +89,11 @@ function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.ev
 function dependenciesReady(team,task){return task.dependencies.every(d=>{const pre=team.tasks.find(t=>t.id===d.taskId);return d.when==='submitted'?['submitted','accepted'].includes(pre.status):pre.status==='accepted';});}
 function conflict(a,b){const normalize=p=>p.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();const A=(a.writeScopes??[]).map(normalize),B=(b.writeScopes??[]).map(normalize);if(A.length&&B.length&&a.workspace?.mode==='git-worktree'&&b.workspace?.mode==='git-worktree'&&a.workspace.path!==b.workspace.path)return false;if(!A.length&&!B.length)return false;return !A.length||!B.length||A.some(x=>B.some(y=>x==='.'||y==='.'||x===y||x.startsWith(y+'/')||y.startsWith(x+'/')));}
 
-export function consumedAttempts(task){return task.attempts?.length?task.attempts.filter(a=>a.state!=='released').length:task.attempt??0;}
+export function consumedAttempts(task){return task.attempts?.length?task.attempts.filter(a=>a.state!=='released'&&!(a.state==='handed-off'&&a.phaseHandoff?.status==='completed')).length:task.attempt??0;}
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
+  if(task.status==='waiting'&&recoverableReview(team,task))add('saved-review','已有完成的独立审查被插件登记异常阻塞；先 reconcile_team_review 复用原证据，不要重复派发');
   if(requiredRosterMembers(team,[task.id]).some(m=>team.memberStartup==='on-demand'?m.agentThreadId&&!m.rosterVerified:!m.agentThreadId&&!m.contextGeneration||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
   if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')add('plan-approval','请先确认当前版本的团队计划');
   if(team.executionControl&&team.executionControl.status!=='active')add('halted','团队已停止或正在停止，请先核对并明确恢复');
@@ -144,7 +154,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}

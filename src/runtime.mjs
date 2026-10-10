@@ -37,17 +37,17 @@ export class AgentRpc extends EventEmitter {
   }
   call(method, params) {
     return new Promise((resolvePromise,reject) => {
-      if (!this.child || this.child.exitCode != null) return reject(new Error('Execution process is not connected'));
+      if (!this.child || this.child.exitCode != null) return reject(Object.assign(new Error('Execution process is not connected'),{code:'NATIVE_RPC_UNAVAILABLE'}));
       const id = this.next++;
-      const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`RPC timeout: ${method}; outcome unknown`)); }, 15000);
+      const timer = setTimeout(() => { this.pending.delete(id); reject(Object.assign(new Error(`RPC timeout: ${method}; outcome unknown`),{code:'NATIVE_RPC_UNAVAILABLE'})); }, 15000);
       this.pending.set(id,{resolve:resolvePromise,reject,timer,method});
       this.child.stdin.write(JSON.stringify({id,method,params})+'\n', err => {
-        if (err) { clearTimeout(timer); this.pending.delete(id); reject(new Error('Execution transport write failed')); }
+        if (err) { clearTimeout(timer); this.pending.delete(id); reject(Object.assign(new Error('Execution transport write failed'),{code:'NATIVE_RPC_UNAVAILABLE'})); }
       });
     });
   }
   fail(message) {
-    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new Error(message)); }
+    for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(Object.assign(new Error(message),{code:'NATIVE_RPC_UNAVAILABLE'})); }
     this.pending.clear(); this.emit('disconnected');
   }
   async close() {

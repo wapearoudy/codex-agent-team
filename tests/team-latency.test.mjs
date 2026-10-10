@@ -24,15 +24,28 @@ test('a control receipt does not wait for or reread an unrelated running member'
   const bound=await engine.bind('owner',team.id,claimed.team.revision,'a',claimed.dispatch.attemptId,'child-a');
   assert.equal(observer.calls.length,1,'bind must inspect its target once, not again for the receipt');
   let release,entered;const gate=new Promise(resolve=>{release=resolve;}),observation=new Promise(resolve=>{entered=resolve;});
-  observer.calls=[];observer.inspect=async()=>{observer.calls.push('unrelated-member');entered('waiting-for-peer');await gate;return {};};
+  observer.calls=[];observer.inspect=async(_leader,_cwd,thread,marker)=>{observer.calls.push(thread);if(thread==='child-a')return {threadId:thread,turnId:marker,status:'inProgress',outputs:[],commands:[],source:'test-native-snapshot'};entered('waiting-for-peer');await gate;return {};};
   const checkpoint=engine.checkpoint('owner',team.id,bound.team.revision,{taskId:'a',attemptId:claimed.dispatch.attemptId,requestId:'dc5c7144-29eb-43e3-aa61-68b5e92d9f9f',summary:'Read first source',decisions:[],remainingWork:['Read next source'],validation:[],evidence:[]});
   try{
     // Detect the unwanted observer call directly. Durable filesystem writes on
     // shared Windows runners can exceed 150 ms even when no observer is called.
     const outcome=await Promise.race([checkpoint.then(()=> 'returned'),observation]);
     assert.equal(outcome,'returned','a durable control update must not wait for an unrelated observation');
-    assert.deepEqual(observer.calls,[]);
+    assert.deepEqual(observer.calls,['child-a'],'only the checkpoint target needs native turn verification');
   }finally{release();await checkpoint.catch(()=>{});}
+});
+
+test('transient native reads keep the original evidence clock, while identity errors cannot use that fallback',async t=>{
+ const {engine,observer,team}=await fixture(t);
+ const claimed=await engine.claim('owner',team.id,team.revision,'a');
+ const at=new Date().toISOString(),freshUntil=new Date(Date.now()+60000).toISOString();
+ observer.inspect=async(_leader,_cwd,thread,marker)=>({threadId:thread,turnId:marker,status:'inProgress',connection:'snapshot',source:'native-thread-persisted-snapshot',observedAt:at,statusEvidence:{status:'inProgress',source:'persisted-native-activity',freshUntil},outputs:[],commands:[]});
+ const bound=await engine.bind('owner',team.id,claimed.team.revision,'a',claimed.dispatch.attemptId,'child-a'),before=await engine.store.get(team.id,'owner');
+ observer.inspect=async()=>{throw Object.assign(new Error('Execution connection closed'),{code:'NATIVE_RPC_UNAVAILABLE'});};
+ let runs=await engine.observations(before);assert.equal(runs[0].status,'inProgress');assert.equal(runs[0].observedAt,at);assert.equal(runs[0].statusEvidence.freshUntil,freshUntil);assert.equal(runs[0].observationIssue.kind,'transport-unavailable');
+ observer.inspect=async()=>{throw new Error('Member is not a native child of the current Leader');};
+ runs=await engine.observations(before);assert.equal(runs[0].status,'unknown');assert.equal(runs[0].observationIssue.kind,'verification-failed');
+ assert.deepEqual(await engine.store.get(team.id,'owner'),before,'display observations must not rewrite task or historical evidence');assert.equal(bound.team.tasks[0].status,'running');
 });
 
 test('batch reservation and binding preserve gates and commit each batch atomically',async t=>{

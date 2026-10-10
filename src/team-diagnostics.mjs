@@ -2,6 +2,14 @@ import {createHash} from 'node:crypto';
 import {qualityReport} from './team-quality.mjs';
 
 const elapsed=(a,b)=>{const n=Date.parse(b)-Date.parse(a);return Number.isFinite(n)&&n>=0?n:null;};
+const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
+function queryTask(task,number){
+  const a=task.attempts?.at(-1),exception=a?.acceptanceException;
+  return {...pick(task,['id','title','memberId','kind','status','reviewOfTaskId','dependencies','supersededBy','repairRootTaskId','repairRound','contractRevision','validationMode']),number,stage:task.contract?.stage,
+    ...(task.blockReason?{blockReason:task.blockReason.slice(0,512),blockReasonTruncated:task.blockReason.length>512}:{}),
+    attemptCount:task.attempts?.length??0,evidenceCount:task.evidence?.length??0,
+    attempt:a?{...pick(a,['id','number','state','agentThreadId','turnId','runtimeStatus','startedAt','endedAt']),...(exception?{acceptanceException:{requiresLeader:exception.requiresLeader,reason:exception.reason?.slice(0,512),reasonTruncated:(exception.reason?.length??0)>512}}:{})}:null};
+}
 export function taskQuery(team,{query='',status,memberId,offset=0,limit=50,cursor}={}) {
   const scope={teamId:team.id,revision:team.revision,query:query.trim().toLowerCase(),status:status??null,memberId:memberId??null};
   if(cursor){let page;try{page=JSON.parse(Buffer.from(cursor,'base64url').toString('utf8'));}catch{throw new Error('Invalid history cursor');}
@@ -9,9 +17,9 @@ export function taskQuery(team,{query='',status,memberId,offset=0,limit=50,curso
   }
   if(!Number.isInteger(offset)||offset<0||!Number.isInteger(limit)||limit<1||limit>200)throw new Error('Invalid history page');
   const needle=query.trim().toLowerCase();
-  const rows=team.tasks.map((t,index)=>({...t,number:t.number??index+1})).filter(t=>(!status||t.status===status)&&(!memberId||t.memberId===memberId)&&(!needle||[t.id,t.title,t.goal,'t'+t.number].some(v=>String(v??'').toLowerCase().includes(needle))));
+  const rows=team.tasks.map((task,index)=>({task,number:task.number??index+1})).filter(({task:t,number})=>(!status||t.status===status)&&(!memberId||t.memberId===memberId)&&(!needle||[t.id,t.title,t.goal,'t'+number].some(v=>String(v??'').toLowerCase().includes(needle))));
   const nextOffset=offset+limit<rows.length?offset+limit:null;
-  return {total:rows.length,offset,nextOffset,nextCursor:nextOffset===null?null:Buffer.from(JSON.stringify({...scope,offset:nextOffset})).toString('base64url'),tasks:rows.slice(offset,offset+limit)};
+  return {source:'task-metadata',total:rows.length,offset,nextOffset,nextCursor:nextOffset===null?null:Buffer.from(JSON.stringify({...scope,offset:nextOffset})).toString('base64url'),tasks:rows.slice(offset,offset+limit).map(({task,number})=>queryTask(task,number)),evidenceAccess:{tool:'read_team_context',arguments:{teamId:team.id,view:'evidence'},requiresTaskId:true,historyPreserved:true}};
 }
 export function diagnostics(team,runs=[]) {
   const stages=team.tasks.flatMap(t=>(t.attempts??[]).map(a=>{

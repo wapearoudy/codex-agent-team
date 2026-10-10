@@ -10,7 +10,7 @@ test('panel previews and state are bounded for multi-megabyte duplicated logs; f
   const data=largeDisplayFixture(),panel=teamResponse(data,'panel'),state=teamResponse(data,'state');
   assert.ok(Buffer.byteLength(JSON.stringify(panel))<=PANEL_MAX_BYTES);
   assert.ok(Buffer.byteLength(JSON.stringify(state))<45*1024);
-  assert.equal(panel.displayLimits.truncated,true);assert.equal(panel.evidenceAccess.arguments.view,'full');
+  assert.equal(panel.displayLimits.truncated,true);assert.equal(panel.evidenceAccess.arguments.view,'evidence');
   assert.equal(panel.team.tasks.length,6);assert.equal(panel.team.tasks[5].attempts.at(-1).id,'attempt5-2');
   assert.equal(panel.team.tasks[0].attempts[0].observation,undefined);
   assert.equal(state.runs.at(-1).activity.lastActivity,undefined);
@@ -30,7 +30,7 @@ test('lightweight responses retain identities and dispatch but full evidence rem
   const before=structuredClone(original),full=teamResponse(original,'full'),summary=teamResponse(original),state=teamResponse(original,'state'),receipt=teamResponse(original,'summary','team-update');
   assert.deepEqual(original,before);assert.deepEqual(full.team,original.team);assert.deepEqual(full.runs,original.runs);
   assert.deepEqual(receipt.dispatch,original.dispatch);assert.equal(receipt.observationMode,'saved');
-  assert.equal(summary.team.tasks[0].attempt.id,'now');assert.equal(summary.team.members[0].agentThreadId,'child');assert.equal(summary.evidenceAccess.arguments.view,'full');
+  assert.equal(summary.team.tasks[0].attempt.id,'now');assert.equal(summary.team.members[0].agentThreadId,'child');assert.equal(summary.evidenceAccess.arguments.view,'evidence');assert.deepEqual(summary.evidenceAccess.required,['taskId']);assert.equal(summary.evidenceAccess.fullHistory.view,'full');assert.equal(summary.evidenceAccess.fullHistory.explicitOnly,true);
   assert.equal(state.runs.length,1);assert.equal(state.runs[0].attemptId,'now');assert.ok(JSON.stringify(state).length<2000);assert.ok(JSON.stringify(summary).length<2500);
   assert.equal(state.detailToken,full.detailToken);
   const activity=structuredClone(original);activity.runs[1].status='completed';activity.runs[1].observedAt='2026-10-07T12:01:00Z';

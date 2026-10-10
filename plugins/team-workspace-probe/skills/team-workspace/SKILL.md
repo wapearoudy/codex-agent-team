@@ -3,79 +3,66 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.17.0
+# Team Workspace 0.31.0
 
-当前主会话是 Leader，沿用当前项目、用户目标和已有授权。每个项目一个固定团队，岗位身份固定，同一时刻仅有一个当前执行会话。已结算任务的下一次派发使用独立原生会话，旧线程保留为只读历史；活动或未知轮次不能替换。插件保存业务协议并观察原生记录，不启动另一个协调模型。只查看时调用 open_team_workspace / read_team，不派发工作。
+当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
 
-## 工具入口
+## 入口与确认
 
-模型常用入口为 open_team_workspace、get_current_project、read_team、team_command、team_leader 和 team_member。其他业务工具名保留兼容，但在模型工具目录中收敛为两个按角色使用的入口。
+模型入口为 open_team_workspace、get_current_project、read_team、team_command、team_leader、team_member。Leader/成员用对应 router 的 operation=<业务工具名>、arguments={...}。操作回执默认只含协调状态和受影响任务；需要显示预览才显式 responseView=summary，完整证据仍按任务读取。模型入口返回以 structuredContent 为正文，content 仅作回执；调用方输出 result.structuredContent ?? result.content 一次，不复制两份。参数未知才 describe(toolName)，同一 operation/pluginVersion 复用 schema；需核对缓存时带 schemaHash，相同指纹返回 unchanged。上下文已丢失则不带 hash 重新取 schema，不能假设缓存存在；directory 仅列目录。不调用开发 probe 或原型执行器。
 
-- Leader：team_leader(operation="describe", toolName="plan_team") 按需获取单个参数 schema；随后 team_leader(operation="plan_team", arguments={...}) 调用。同一方法适用于下文所有 Leader 业务工具名称。directory 返回操作目录，不要一次读取所有 schema。
-- 成员：team_member 按相同方法调用自身任务、检查点和队友通信操作。成员不能调用 Leader 操作、验收结果或扩大范围；运行时会校验原生身份。
-- 用户明确输入 `/agent-teams [--profile NAME] GOAL` 时可用 team_command 解析并读取现有团队/模板。该协议入口不是宿主已注册的斜杠菜单，不能宣称提供原生命令槽位。
-- 不为正常团队工作调用开发 probe、独立执行器或原型模型工具。
+每个项目一个固定团队；已有团队追加任务，岗位不足按变更流程新增，不自行重建或跨 Leader 接管。初次 plan_team 的 plan.tasks 留空，只确认团队目标、成员、职责、写范围和模型设置。用户明确“直接做”可 immediate 并保存原话；否则保存 required/auto 草案后展示 read_team_plan 并等待用户确认。approve/cancel 绑定实际审阅的 version/hash 和稳定 UUID，不能自行批准。待确认不启动成员或准备 worktree；修改产生新版本。feedback 保留草案并等待用户说明，不创建替代团队。
 
-## 规划与确认
+确认后 workflow.stage=task-planning：add_team_tasks 在确认范围内拆解交付与独立 review，不逐项要求用户确认 task。review 由不同成员执行，writeScopes=[]，依赖目标 submitted；后续业务依赖 accepted。空任务团队不能结项。新增岗位、扩大范围或提高并发/预算用 propose_team_change 暂存等待确认，原授权工作继续；普通追加不重复确认。
 
-先读取当前项目团队。已有团队用 add_team_tasks 追加范围内的工作；岗位不足用 add_team_members，不重建团队。仅用户明确要求重组时使用 rebuild_project_team，先停止并接收旧成员终态。跨 Leader 不修改 owner 冒充接管，使用 read_project_team_takeover 返回原 Leader 入口。
+## 派发与内部通信
 
-为每项交付配置一项由不同成员执行的独立 review，审查岗位 writeScopes=[]，review 依赖原交付 submitted，后续业务依赖独立验收 accepted。职责/写范围用于调度和冲突检查，不是操作系统沙箱。默认 on-demand：首个就绪任务直接创建对应岗位，后续按任务隔离执行上下文；不先创建整队空闲成员。
+claim_team_tasks 或 advance_team_workflow(dispatchReady=true) 批量预留。按返回的 action、taskName、prompt、spawnOptions 调用原生 spawn_agent/followup_task，保存 attemptId，拿到真实 ID/路径立即 bind_team_members；标题按 titleActions 设置。spawn 使用 fork_turns=none。已结算任务的下一任务使用独立上下文与新 generation，不能发给 contextHistory 退役线程；活动、未知或中断续跑保持原 attempt/会话。面板“执行记录待更新”仅表示公开记录延迟，不证明中断或空闲；核对现有原生成员，不重新派发。结果未知先核对，不重复启动，只有确认未启动才 release_team_reservation；批量部分成功只绑定成功部分。
 
-plan_team 保存完整目标、岗位、任务图、验收和预算。复杂新团队先确认具体计划；用户明确授权“直接做”可用 immediate 并记录原话。required 始终先审阅。read_team_plan 展示完整计划，revise_team_plan 修改草案并产生新版本；approve_team_plan / cancel_team_plan 必须绑定用户实际审阅的 version/hash 和稳定 UUID。初始待确认时不得初始化、领取、启动成员或准备 worktree。已有确认和普通任务授权不用重复询问。
+严格沿用已批准模型/档位及备用路由，不为省 token 自动降档或换模型。宿主能力以真实目录为准；写范围是调度约定，不是文件系统沙箱。worktree 包指定目录时所有写入/命令在该目录执行，不自行写回 Leader 项目。
 
-新增岗位、扩大范围或提高并发/预算用 propose_team_change 暂存，批准前不应用；原已授权工作继续。语义范围扩大由 Leader 识别，不可用普通追加绕过确认。面板批准后核对保存的版本，再继续，不要求再次批准。
+内部通信走原生 send_message、完成通知和 wait_team_event。成员 send_team_peer_message 仅对问题、阻塞和必要完成通知按 nativeAction 送达，记录真实回执；一般进度写检查点或 kind=progress，仅持久保存不触发投递。consume_team_inbox 一次读取并确认当前收件轮次的新消息，沿用 after/cursor；hasMore 时继续取页，不重复读取已确认历史。未知投递不自动重发。不得用 app.sendMessage、send_message_to_thread、thread/injectItems 或用户角色聊天条目协调；主窗口仅给用户必要进度、问题和结果。coordinate_team 的旧通知不授权推进，reserve 不返回聊天发送机会。
 
-收到 TEAM_WORKSPACE_PLAN_FEEDBACK 或 read_team_plan.review.feedback 时，保留当前待确认草案，结束当前规划，询问需要修改的内容并等待用户回复。不得自行批准、创建替代团队或继续扩写方案。取消草案后等待新的明确请求。
+## 推进与等待
 
-## 执行与自动推进
+完成通知后 advance_team_workflow 一次接收真实终态、校验审核、预留下一批。默认回执包含 advancement.changes、最新 revision、动作和完整 dispatches；成功后直接执行包/处理异常/等待，不重复读取团队或收件箱。普通审核 PASS 且插件校验通过，同一事务直接登记 target/review accepted 并解锁后续任务。Leader 只处理 review-exception 与团队最终结项，不重复审查或重跑相同测试。相同轮次的接收、已登记审核和最终结项可幂等重试；新增范围或有证据的返工才重执行。
 
-claim_team_tasks 批量预留当前就绪任务；使用返回的 prompt、taskName、spawnOptions 调用宿主原生 spawn_agent 或 followup_task。严格按照 action 和 taskName 执行：spawn-native-member 使用返回的唯一 taskName 与 fork_turns=none；followup-native-member 只用于该派发包指向的现有会话。contextIsolation.generation 标识同一岗位的会话代次，不得把新任务发给 contextHistory 中已退役线程。保存稳定 attemptId，返回真实 ID/路径后立即 bind_team_members；标题按 titleActions 设置。结果未知先核对，不重复启动；只有确认未启动才能 release_team_reservation。宿主批量调用部分成功时只绑定成功部分。
+成员工作期间保持 Leader 当前轮次，优先单独 wait_team_event(timeoutMs=55000)，同时等待人工控制、必要消息和原生终态，不交替 wait_agent + 零时探测。普通进度/用量保存合并在同一等待内，不唤醒模型；面板持续正常更新。插件没有唤醒已结束 Leader 轮次的内部接口，不能退回聊天桥或伪称已执行。
 
-模型与档位来自实际宿主目录。显式配置和宿主默认继承的 model/provider/effort 快照纳入计划；未知字段保留未知。spawnOptions 是本次真实创建参数，记录 provider 不等于宿主支持任意 provider 切换。备用模型只可使用计划中已批准的 fallbackRoute；本宿主不能原地修改已有会话的模型；任务隔离创建的新会话仍沿用已批准路由，不能借隔离绕过模型变更确认。
+- unchanged/timeout：沿用返回 revision，再次单独等待，不配套状态/收件箱查询或重复进度。
+- changed/member-terminal：回执内已含 coordination 与准确 attempt IDs，直接按动作处理；终态 advance_team_workflow，不再先 read_team。仅 inbox.readRequired=true 用 consume_team_inbox；stopping 优先处理。
+- 句柄失效：等待已登记原生终态，不重建；用户暂停/取消结束等待。无活动 Leader 的面板操作只保存为待处理。
 
-收到成员完成通知后，用 advance_team_workflow 一次接收观察到的终态；dispatchReady=true 可预留下一批。接续仍调用宿主原生工具。独立审查和最终验收必须由 Leader 明确判断，禁止自动接受。
+## 证据与恢复边界
 
-新版计划获批后默认启用面板 coordinate_team 通知桥，用户可关闭；旧团队保持原设置。收到 TEAM_WORKSPACE_WORKFLOW:<id> 时先 coordinate_team(operation="consume", notificationId=id) 核对；stale/replayed 不重复执行。有效时读取返回 revision，调用 advance_team_workflow，处理必要独立审查并派发就绪批次，随后使用宿主等待能力让出轮次。通知只代表需要协调，不代表完成或用户批准。不要忙轮询，不重复转述已交付结果。
+公开输出包含当前 TEAM_WORKSPACE_ATTEMPT 标记；report_member_team_task 是草稿/检查点，真实终态经 settle 才提交。审核返回 decision、逐项 checks 和 findings；不得通过 blocker/high、失败命令、缺失条件或过期证据。插件核对独立会话、当前目标 attempt/合同、宿主命令和声明输入指纹；失败保留 submitted 与具体异常。只为异常读取 read_team_context(view=evidence, taskId, attemptId, section)，分页 hasMore 时读取所需完整内容；不默认 read_team(full) 拉全队历史。
 
-通知桥依赖面板打开及宿主 ui/message；面板关闭继续依赖宿主成员通知。unknown 不自动重发；投递途中关闭面板留下的 reserved 超时后可核对状态，用户显式重试时使用原通知 ID，旧通知失效。consume 是收到通知的回执，不是业务执行成功；中断接续仍读取真实工作流。
+源码使用 read_team_source 的选定行分页（默认4000字符，最多6000），cursor 防止混用修改前后内容。长测试/构建先 prepare_team_command，再通过原生命令工具执行返回的 nativeCommand；输出上限1200 token，完整日志留盘，失败或需摘要时 read_team_command_log 分页（默认2000字符）。准备日志不代表执行或 PASS；保留宿主真实退出码/会话。直接使用原生工具也遵守输出预算，单批向模型转发最多6000字符，禁止整文件/长日志输出。成功测试返回短摘要、原命令/退出码和完整日志路径。复用适用于当前候选的已有证据；源代码审查不是测试已运行。交付 changedPaths、verificationInputs 用于输入指纹，不能证明外部环境或未声明输入不变；真实变化需要必要验证，补记录不重跑。
 
-## 审查、停止与恢复
+本轮必须项由当前合同决定。额外 NOT_RUN 仅在带 criterionId 且能唯一关联到依赖当前验收的后续 work 合同时保留为未来检查；多义时使用报告中的 futureTaskId 指定已有合同，不创建假 PASS。当前必需项、FAIL/BLOCKED、未知归属不能延期，未来项不算已执行。
 
-成员公开输出必须包含当前 TEAM_WORKSPACE_ATTEMPT 标记。report_member_team_task 只存草稿/检查点；Leader 核对宿主终态后 settle，交付才能 submitted。审查返回结构化 decision、checks、findings，所有条目有实际证据。存在 blocker/high、未覆盖目标或失败的验收命令时不能 accept。accept_team_review 保留明确判断，失败后返工保留全部尝试、用量和历史。autoRepair 只生成修复/复审任务，受轮次上限控制，不自动启动或验收。
+已完成审核的 PASS 被插件拒绝登记并回退 waiting 时，reconcile_team_review 先 dryRun：读取原轮次、一次列出的失败 commandIndex、未变候选和后续检查归属，再用稳定 requestId/revision 原位登记。可补充有既有独立证据的非验证失败说明；不能把真实测试失败解释掉。复用已有报告，不重新派发审核。真正缺失必需检查、严重问题未关闭或 reviewer rework 仍走返工；不可把它们当格式恢复。细节见 [保存审核原位登记](references/protocol-details.md#保存审核原位登记0310)。
 
-同一任务在原会话中断续跑时继续使用原 attemptId/标记，不新建任务或替换会话。插件仅在同标记轮次连续、所有前置均有持久化中断证据时建立 turnAssociation，并在 bind / settle / reconcile_team_stop 的 revision 事务中关联最新轮次；旧 turnHistory、逐轮命令和用量保留。read_team 只观察，不修改关联。多份已完成结果、缺失中断证据或夹入其他任务时保持歧义，不按最新轮次猜测。验收只核对完成轮次的命令，旧中断轮次的 PASS 不替代本轮验证；各轮完整证据按需 read_team(view=full)，不复制全历史到成员提示。
+advance 的 advancement.errors/partial 与 changes 一起核对：部分已提交不会因另一项失败回滚，不重复做成功部分。settlement-exception 保存原终态报告，输入未变不自动重试；按具体交付/合同异常处理后显式重试登记，不因面板未 accepted 重跑测试。停止期间仅收集已完成的真实终态，不能因登记恢复团队执行或派发；stopping/halted 的保存审核恢复先走原控制流程。
 
-合同修订必须带原因、稳定 UUID 和 patch，保存前后值及版本。运行中先停止并核实，已提交先返工；通过独立验收的合同冻结，扩大需求另建交付并确认范围。成员申报 changedPaths 不能代替 Leader 检查实际 diff。
+命令工作目录或中断历史验证缺少关联时，用 reconcile_team_verification 先预览，核对明确 commandId、真实 cwd/退出码和未变输入后补登记；操作细节按需读取 [历史验证关联](references/protocol-details.md#历史验证关联与结果复用)。不重跑已完成检查，不覆盖旧报告、null 退出码或审查结论。
 
-stop_team(reason,requestId) 先保存 stopping，随后 Leader 原生 interrupt 全部绑定成员，包括初始化。未知预留先核对，已启动先 bind，明确未启动才 release。reconcile_team_stop 独立核对最新轮次是否停止，空闲未知保持 stopping，全部核实才 halted。已明确关联且有效的 completed 交付保留 submitted，等待独立审查/Leader 判断，不改成 stopped 迫使重派；关联有歧义但宿主空闲已确认时可 halted，任务保留阻塞原因，不提交或验收。随后结束本轮工作。resume_team 必须记录明确恢复原因，retryTaskIds 仅重试选择的停止/失败任务，保留预算，不恢复取消任务。start 不能绕过停止。
+长任务达到约90000当前输入 token 或50次命令时，在有意义的阶段边界考虑交接，不在执行中强制重置。成员 report_member_team_task(handoff=true) 保存完整 decisions/remainingWork/evidence/validation 与 verificationInputs，不含最终 delivery；将返回 finalReceipt JSON 作为最终公开答复并结束轮次。Leader 仅在确切 completed + 检查点回执验证后，将同一 task 置 waiting，下一派发生成 fork_turns=none 的干净上下文并保留阶段链。续接前 read_team_context(view=evidence, section=checkpoint, attemptId=前阶段) 分页读取完整决策与剩余工作；阶段交接不是提交/验收，不解锁下游。每任务最多3次，不消耗失败重试额度；审核任务不使用阶段交接。仅成功宿主命令和声明输入内容指纹不变可复用；改变输入即失效，最终审查仍独立。连接失败/未知不能触发轮换。
 
-read_team_recovery 只读取恢复包。原生成员控制能力需用宿主真实工具验证，再 record_team_recovery_control；失去句柄时暂停派发。完整重启后的控制恢复、跨 Leader 转移、直接中断主会话受宿主公开接口限制；不另建执行器或伪造可控状态。
+中断续跑保持原 attempt/标记；仅连续且所有前序均有宿主持久中断证据时关联最新完成轮次，保留逐轮历史。多个完成结果或混入其他任务不能按“最新”猜测。合同修订、停止核对、source-only 延期说明、控制恢复需读取协议对应段落；不能通过扩大范围、放松条件或修改 owner 绕过门禁。
 
-## 组建后调整角色目标
+registrationGap 表示已验证原生会话缺少任务关联，不能推断任务没做。先 read_team_usage(view=full) 核对是否为本目标，属于当前目标才 register_team_native_attempts：dryRun 预览明确原任务、子会话、顺序 turnIds、逐轮审查目标，再稳定 requestId/revision 提交。不重跑、不重建已完成成员，不相关会话只记成本；用户已补齐的不重复登记。
 
-用户可通过成员卡片的铅笔图标或管理入口直接修改角色目标（responsibility）。聊天中明确要求修改时，先 manage_team(operation="member-goal", teamId, memberId) 读取完整当前目标与 goalRevision，再 update_team_member_goal 带 team revision、goalRevision、稳定 requestId 和用户修改说明保存。不得自行改写用户目标；目标调整不改岗位名称/身份、写范围、任务目标、验收条件或当前执行会话，不自动启动成员或发送通知。扩大任务范围仍使用原有范围变更协议。
+stop_team 先保存 stopping，再原生 interrupt 全部绑定成员并 reconcile_team_stop；未知预留先核对。宿主未核实空闲保持 stopping；有效完成保留 submitted 与历史，不能降为 stopped 强迫重派。halted 后明确恢复原因，resume_team 仅重试指定任务，保留预算与取消状态。
 
-新目标从后续派发生效；已有预留或执行中的 attempt 保留原目标快照。保存结果未知时用原 requestId 与相同内容核对重试；目标版本冲突先保留草稿并重新读取，不覆盖他人修改。查看目标仅返回该岗位的当前原文及最近 10 次修订，不批量读取所有岗位历史。首次调整后数据最低版本为 0.15.0。
+## 结项与管理
 
-## 记录、模板与面板
+所有任务 accepted/cancelled 且真实目标完成后，Leader finish_team 记录最终结项。默认复用有效的已验收 integration 合同证据，单项测试/source-only 不替代整体验证；声明输入变化或证据失效时处理具体异常。finish 成功且 workflow.stage=completed 后给最终交付；用户暂停、取消或真实阻塞可提前结束并说明。
 
-contextChars 限制完整派发提示，包含固定指令、目标、验收、合同与历史摘要；超限不会保存预留，不可手工截断要求后继续。历史依赖/检查点按引用读取，任务完成后输出最终交付并结束，不在旧上下文领取下一项工作。
+角色目标调整 update_team_member_goal 影响后续派发，当前执行保留原快照与修订历史；改路由、加岗/扩大范围不能借目标编辑绕过确认。任务详情在面板查看；成员会话用已验证 open-link 直达，不发导航聊天。归档仅在用户明确要求且最终结项、空闲已核实后 archive_team，完整保留历史、释放项目给无关目标；不自动归档或归档 Codex 会话。模板、历史与跨 Leader 只读入口见协议对应段落。
 
-read_team 默认有界摘要，面板使用 state/panel，完整交付和历史按任务 read_team_handoff/read_team_context 或显式 full。精简回执不是原始验收证据。保持任务、成员、轮次和阅读位置，不自动全量加载日志。query_team_tasks 使用版本绑定游标；manage_team 的 history 只读浏览同一项目和当前 Leader 的归档，不切换控制权。
+用量包含本团队期间 Leader 与经父级/项目验证的直接子会话，未登记会话只计成本。累计处理量含缓存输入，新增输入/缓存/输出不是账单或限额的直接计量；未知计数保留未知。已有预算在新派发前实时核对，耗尽只挡新任务。高思考档位按规划复杂度建议用户选择，不自动修改现有授权。回执 pluginVersion 与面板版本不符时重新加载插件连接，不强制重启正在工作的宿主。
 
-save_team_profile 支持 seed 固定任务图和 leader 岗位/约束动态规划。动态模板先返回规划请求，设计带独立审查的 DAG 再提交待审计划；constraints 随任务保留。模板使用不能替换已有固定团队。删除模板绑定已读取的 updatedAt，冲突先刷新。
+通过 functions.exec 调用55秒等待时，使用首行 `// @exec: {"yield_time_ms": 60000}`，避免30秒提前返回再加一轮模型往返。原生命令仍在执行时等待同一 session，沿用 prepare_team_command.waitOptions（55秒/1200 token），不做高频短轮询；取消/暂停优先处理。
 
-所有交付独立验收后运行本任务所需的整体验证，用 finish_team 记录真实 checks/证据。用户要求“最后统一验收”时，先完成实现和工程必要检查，将整体验收放到功能补齐后，不以未验证状态宣称完成。
-
-0.14.3 可核对标准 shell 包装的完整验证命令。已有 submitted 交付因旧版命令匹配被拒时，保留当前 attempt，在核对原独立审查后重试 accept_team_review；验收会重新检查该 attempt 保存的宿主命令，不需要重新 settle、返工或重派。仍缺少成功命令、独立审查或后续验证时保持待验收，不修改历史证据绕过门禁。
-
-仅在需要检查点字段、消息回执、worktree 集成、导航或旧数据迁移时读取 [详细协议](references/protocol-details.md) 的相关部分。外部消息授权仍限用户任务范围，禁止把团队内部协调扩展为给他人聊天或外部服务发消息。
-
-## 完成后的团队归档
-
-目标完成、全部交付独立验收并登记 Leader 最终验收后，用户可显式选择归档团队。不要按任务相关性自行判断并自动归档；有关联的后续任务继续复用当前团队。
-
-通过 `team_leader(operation=describe, toolName=archive_team)` 读取参数，再以 `team_leader(operation=archive_team, arguments=...)` 提交。必须绑定当前 teamId、revision、稳定 UUID requestId、归档说明及 source=leader-recorded-user-instruction；面板操作使用 panel-user-action。归档不调用模型、不停止或删除原生会话，也不清理 worktree。仍有待确认变更、预留或未结束成员时先处理原流程；不能用归档代替验收、停止或放弃目标。
-
-归档保留全部成员、执行、修订、证据与最终验收，团队只读，从当前项目位置移至历史。后续 `plan_team` 可创建新团队；旧 UUID 重试只核对原归档，不能改变新团队。保存结果未知时保持原参数和 UUID 重试。归档后的数据最低版本为 0.16.0，旧插件连接拒绝写入。
+交付格式：结构化报告包含当前 attemptMarker，可直接输出 JSON 或单个 JSON 代码块；第一行可重复该任务标记，但必须与 JSON 内标记和当前绑定一致。交付、审核、阶段交接使用同一规则。格式兼容不改变独立审查、命令、范围和证据门禁，原报告保留。

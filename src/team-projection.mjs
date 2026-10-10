@@ -8,14 +8,63 @@ export function runIsActive(run,nowMs=Date.now()){
   if(Number.isFinite(until))return nowMs<until;
   return run.source==='native-thread-persisted-snapshot'&&Number.isFinite(Date.parse(run.observedAt))&&nowMs-Date.parse(run.observedAt)<60000;
 }
+// Observation health is separate from execution state. A failed read cannot
+// renew the evidence clock or prove an interruption, completion or new turn.
+export function failedRunObservation(previous,error,{kind=error?.code==='NATIVE_RPC_UNAVAILABLE'?'transport-unavailable':'verification-failed',at=new Date().toISOString(),retainFresh=true}={}){
+  const fresh=retainFresh&&kind==='transport-unavailable'&&previous?.turnId&&previous.source==='native-thread-persisted-snapshot'&&runIsActive(previous,Date.parse(at));
+  return {...previous,status:fresh?previous.status:'unknown',connection:fresh?'snapshot':'unavailable',observedAt:fresh?previous.observedAt:at,observationError:error?.message??String(error),observationIssue:{kind,at}};
+}
+export function runDisplayState(run){
+  if(!run)return undefined;
+  if(['completed','failed','interrupted'].includes(run.status))return run.status;
+  if(run.observationIssue?.kind==='verification-failed')return 'unknown';
+  if(runIsActive(run))return 'inProgress';
+  if(run.status==='inProgress')return run.connection==='snapshot'?'observed':'unknown';
+  if(run.status==='unknown'&&(run.statusEvidence?.source==='persisted-native-activity-stale'||run.turnId&&run.observationIssue?.kind==='transport-unavailable'))return 'observed';
+  return run.status;
+}
+// Execution observations have their own clock. A newer business revision can
+// carry an older saved run; it must not roll back a live, verified terminal.
+export function mergeRunObservation(previous,incoming,{saved=false}={}){
+  if(!previous)return incoming;if(!incoming)return previous;
+  if(previous.taskId!==incoming.taskId||previous.attemptId!==incoming.attemptId)return incoming;
+  if(previous.threadId&&incoming.threadId&&previous.threadId!==incoming.threadId)return previous;
+  if(previous.turnId&&previous.turnId===incoming.turnId&&incoming.observationIssue?.kind==='transport-unavailable'&&runIsActive(previous)&&previous.source==='native-thread-persisted-snapshot'&&(Date.parse(incoming.observationIssue.at)||0)>=(Date.parse(previous.observedAt)||0))return failedRunObservation(previous,{message:incoming.observationError},{kind:incoming.observationIssue.kind,at:incoming.observationIssue.at});
+  const merged={...previous,...incoming,observationError:incoming.observationError??null,observationIssue:incoming.observationIssue??null};
+  if(!previous.turnId&&incoming.turnId)return merged;
+  if(previous.turnId&&incoming.turnId&&previous.turnId!==incoming.turnId){
+    const chain=incoming.continuation?.turns??incoming.turnHistory??[];
+    return chain.some(t=>t.turnId===previous.turnId)&&chain.some(t=>t.turnId===incoming.turnId)?{...merged,outputs:incoming.outputs??[],commands:incoming.commands??[]}:previous;
+  }
+  const oldTime=Date.parse(previous.observedAt)||0,newTime=Date.parse(incoming.observedAt)||0;
+  const terminal=['completed','failed','interrupted'].includes(previous.status);
+  const oldCursor=previous.activity?.cursor,newCursor=incoming.activity?.cursor;
+  if(!terminal&&previous.turnId===incoming.turnId&&incoming.observationIssue?.kind==='verification-failed'&&(Date.parse(incoming.observationIssue.at)||0)>=oldTime)return failedRunObservation(previous,{message:incoming.observationError},{kind:'verification-failed',at:incoming.observationIssue.at});
+  const cursorRegressed=Number.isFinite(oldCursor)&&Number.isFinite(newCursor)&&newCursor<oldCursor;
+  if(newTime&&oldTime&&newTime<oldTime||cursorRegressed&&newTime<=oldTime||terminal&&!['completed','failed','interrupted'].includes(incoming.status)){
+    // Preserve body fields from an incoming detail snapshot but retain the
+    // newer live fields/evidence (including a terminal result already shown).
+    if(saved)return {...merged,...previous};
+    const live=['turnId','status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','observationIssue','model','progress','activity','usage','continuation','turnHistory'];
+    return {...merged,...Object.fromEntries(live.filter(k=>previous[k]!==undefined).map(k=>[k,previous[k]]))};
+  }
+  if(terminal&&previous.status!==incoming.status)return previous;
+  // Public-log completeness and native lifecycle have independent clocks. A
+  // temporary log read failure must not hide a newer confirmed terminal.
+  if(cursorRegressed)return {...merged,activity:previous.activity,usage:incoming.usage??previous.usage};
+  return merged;
+}
 export function taskDisplayState(task,runs=[]){
   if(task.status!=='running')return task.status;
   const attempt=task.attempts.at(-1);
   if(attempt?.state==='reserved')return 'reserved';
   const run=runs.find(r=>r.attemptId===attempt?.id&&r.taskId===task.id);
-  if(runIsActive(run))return 'running';
-  if(run?.status==='inProgress'&&run?.statusEvidence?.freshUntil&&Date.parse(run.statusEvidence.freshUntil)<=Date.now())return 'unknown';
-  if(['completed','failed','interrupted'].includes(run?.status))return run.status;
+  const display=runDisplayState(run);
+  if(display==='inProgress')return 'running';
+  if(display==='observed')return 'observed';
+  if(display==='unknown')return 'unknown';
+  if(run?.status==='completed')return attempt?.settlementException?'blocked':'settling';
+  if(['failed','interrupted'].includes(run?.status))return run.status;
   if(run?.status==='starting'||attempt?.state==='linking')return run?.status==='unknown'?'unknown':'starting';
   if(run?.status==='unknown')return 'unknown';
   if(['completed','failed','interrupted'].includes(run?.status))return run.status;
@@ -26,7 +75,7 @@ export function memberExecutions(member,tasks,runs){
   return tasks.flatMap(task=>(task.attempts??[]).filter(a=>(a.memberId??task.memberId)===member.id).map(attempt=>{
     const run=runs.find(r=>r.attemptId===attempt.id&&r.taskId===task.id&&r.memberId===member.id);
     return {taskId:task.id,attemptId:attempt.id,number:attempt.number,threadId:run?.threadId??attempt.agentThreadId,
-      turnId:run?.turnId??attempt.turnId,contextGeneration:attempt.contextGeneration??1,model:run?.model??null,status:run?.status==='inProgress'&&run?.statusEvidence?.freshUntil&&Date.parse(run.statusEvidence.freshUntil)<=Date.now()?'unknown':run?.status??attempt.runtimeStatus??'unknown',
+      turnId:run?.turnId??attempt.turnId,contextGeneration:attempt.contextGeneration??1,model:run?.model??null,status:runDisplayState(run)??attempt.runtimeStatus??'unknown',
       connection:run?.connection??attempt.connection,active:task.memberId===member.id&&task.status==='running'&&runIsActive(run),current:task.memberId===member.id&&task.attempts.at(-1).id===attempt.id,startedAt:attempt.startedAt,endedAt:attempt.endedAt};
   }));
 }
@@ -39,6 +88,7 @@ export function memberState(member,tasks,runs){
     if(current.some(e=>e.active))return 'running';
     if(current.some(e=>e.status==='starting'))return 'starting';
     if(current.some(e=>e.status==='unknown'))return 'unknown';
+    if(current.some(e=>e.status==='observed'))return 'observed';
   }
   if(current.some(e=>e.connection==='snapshot'&&!['completed','failed','interrupted'].includes(e.status)))return 'observed';
   if(current.some(e=>e.status==='unknown'||(!['completed','failed','interrupted'].includes(e.status)&&e.connection!=='connected')))return 'unknown';

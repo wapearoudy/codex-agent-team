@@ -1,6 +1,8 @@
 import {createHash,randomUUID} from 'node:crypto';
 import {isAbsolute,win32,posix} from 'node:path';
-import {contractCommandEvidence} from './verification-command.mjs';
+import {contractCommandEvidence,verificationRecords} from './verification-command.mjs';
+import {resolutionEvidenceText} from './quality-gates.mjs';
+import {parseStructuredReport} from './report-format.mjs';
 
 const stages=new Set(['requirements','implementation','verification','review','repair','integration']);
 const nonempty=v=>typeof v==='string'&&v.trim().length>0;
@@ -38,13 +40,10 @@ export function qualityBlockers(team,task){
   if(!task.contract||task.contract.stage==='requirements'||task.kind==='review')return [];
   return team.tasks.filter(t=>t.contract?.stage==='requirements'&&t.status!=='accepted'&&!t.supersededBy).map(t=>({code:'requirements-gate',taskId:t.id,message:`等待需求任务 ${t.id} 独立验收`}));
 }
-export function parseDelivery(text){
-  try{const value=JSON.parse(text.trim().replace(/^```(?:json)?\s*\n([\s\S]*?)\n```$/i,'$1'));if(value&&typeof value==='object'&&!Array.isArray(value))return value;}catch{}
-  throw new Error('Contract task must return a structured JSON delivery');
-}
+export function parseDelivery(text,expectedMarker){return parseStructuredReport(text,{expectedMarker,errorMessage:'Contract task must return a structured JSON delivery'});}
 export function assertContractDelivery(task,member,output,commands=[]){
   if(!task.contract||task.kind==='review')return null;
-  const delivery=parseDelivery(output);
+  const delivery=parseDelivery(output,task.attempts?.at(-1)?.marker);
   if(!nonempty(delivery.summary)||!Array.isArray(delivery.acceptanceResults)||delivery.acceptanceResults.some(c=>!c||!nonempty(c.criterionId)||!['PASS','FAIL','BLOCKED','NOT_RUN'].includes(c.status)||!nonempty(c.evidence))||new Set(delivery.acceptanceResults.map(c=>c.criterionId)).size!==delivery.acceptanceResults.length||task.acceptanceCriteria.some(c=>!delivery.acceptanceResults.some(r=>r.criterionId===c.id)))throw new Error('Contract delivery must report every acceptance criterion with evidence');
   if(!Array.isArray(delivery.changedPaths)||delivery.changedPaths.length>1000||delivery.changedPaths.some(p=>!safeQualityPath(p)))throw new Error('Contract delivery needs safe project-relative changedPaths');
   for(const path of delivery.changedPaths){
@@ -59,8 +58,11 @@ export function assertContractPass(task){
   const attempt=task.attempts.at(-1),delivery=attempt?.delivery;
   // Recompute from this exact attempt's saved host observation. Old releases
   // cached false negatives for wrapped commands; cached flags are not evidence.
-  const verifiedCommands=contractCommandEvidence(task.contract.verify??[],attempt?.observation?.commands??[]);
-  if(!delivery||delivery.acceptanceResults.some(c=>c.status!=='PASS')||verifiedCommands.some(c=>!c.observed))throw new Error('Contract acceptance requires every criterion PASS and successful host-observed verification commands');
+  const verifiedCommands=contractCommandEvidence(task.contract.verify??[],verificationRecords(attempt),{workspace:attempt?.evidenceSnapshot?.workspace});
+  const required=new Set(task.acceptanceCriteria.map(c=>c.id));
+  // Preserve explicit future NOT_RUN notes without making them criteria of this
+  // contract. They never count as PASS or satisfy another task/final closure.
+  if(!delivery||(attempt.contractRevision??1)!==(task.contractRevision??1)||task.acceptanceCriteria.some(c=>!delivery.acceptanceResults.some(r=>r.criterionId===c.id&&r.status==='PASS'))||delivery.acceptanceResults.some(c=>c.status!=='PASS'&&(required.has(c.criterionId)||c.status!=='NOT_RUN'))||verifiedCommands.some(c=>!c.observed))throw new Error('Contract acceptance requires every criterion PASS and successful host-observed verification commands');
   return {verifiedCommands,commandVerificationVersion:1};
 }
 export const qualityRoot=task=>task.repairRootTaskId??task.id;
@@ -68,7 +70,7 @@ export function openFindings(team,task){return (team.findings??[]).filter(f=>f.r
 export function recordFindings(team,review,target,verdict,{accept=false}={}){
   if(!Array.isArray(verdict.findings)||verdict.findings.length>100||verdict.findings.some(f=>!f||!['blocker','high','medium','low'].includes(f.severity)||!['open','resolved'].includes(f.status)||!nonempty(f.description)||f.description.length>4000||f.id!==undefined&&(!/^[a-zA-Z0-9_-]{1,64}$/.test(f.id))))throw new Error('Structured review needs valid findings with stable IDs');
   const rootTaskId=qualityRoot(target),attemptId=review.attempts.at(-1).id;
-  const incoming=verdict.findings.map(f=>({...f,id:f.id??'finding-'+createHash('sha256').update(JSON.stringify([rootTaskId,f.severity,f.description])).digest('hex').slice(0,24)}));
+  const incoming=verdict.findings.map(f=>({...f,...(f.status==='resolved'?{resolutionEvidence:resolutionEvidenceText(f.resolutionEvidence)}:{}),id:f.id??'finding-'+createHash('sha256').update(JSON.stringify([rootTaskId,f.severity,f.description])).digest('hex').slice(0,24)}));
   if(new Set(incoming.map(f=>f.id)).size!==incoming.length)throw new Error('Duplicate finding IDs');
   for(const f of incoming){
     const prior=team.findings?.find(x=>x.id===f.id);

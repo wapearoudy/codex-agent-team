@@ -81,6 +81,9 @@ test('upgrading revalidates settled shell-wrapped commands during explicit accep
   await f.engine.store.update(old.id,'owner',old.revision,t=>{
     const a=t.tasks.find(t=>t.id==='work').attempts.at(-1);
     a.delivery.verifiedCommands=[{command:'node --test',observed:false}];delete a.delivery.commandVerificationVersion;
+    // Simulate a pre-0.24 submitted review, rather than undoing a new acceptance cache.
+    delete a.acceptance;delete a.evidenceSnapshot;t.tasks.find(t=>t.id==='work').status='submitted';
+    const review=t.tasks.find(t=>t.id==='review');delete review.attempts.at(-1).acceptance;review.status='submitted';t.state='active';
   });
   const before=await f.saved(),engine=new LeaderEngine({root:f.engine.root,observer:f.observer});
   const accepted=await engine.acceptReview('owner',before.id,before.revision,'review',before.tasks.find(t=>t.id==='review').attempts.at(-1).id,'accept','Existing independent review and original host evidence checked');

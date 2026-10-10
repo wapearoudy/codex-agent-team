@@ -75,6 +75,16 @@ test('actual Desktop public completed items renew freshness with exact child and
   }
 });
 
+test('tool and context-compaction completions prove host activity without exposing their bodies',async()=>{
+ for(const type of ['McpToolCall','ContextCompaction']){
+  const fixture=await activityFixture([event('task_started',-180000),event('item_completed',-1000,'turn',{thread_id:'child',item:{type,result:'PRIVATE TOOL RESULT',summary:'PRIVATE COMPACTION SUMMARY'}})]);
+  const actual=await persistedActivity(fixture.thread,'turn',fixture.options);
+  assert.equal(actual.status,'inProgress');assert.equal(actual.at,timestamp(-1000));assert.doesNotMatch(JSON.stringify(actual),/PRIVATE|summary|result/);
+  const wrong=await activityFixture([event('task_started',-180000),event('item_completed',0,'other-turn',{thread_id:'child',item:{type}}),event('item_completed',0,'turn',{thread_id:'parent',item:{type}})]);
+  assert.equal((await persistedActivity(wrong.thread,'turn',wrong.options)).status,'unknown');
+ }
+});
+
 test('completed items for wrong child or turn, reasoning and subagent activity cannot renew freshness',async()=>{
   const fixture=await activityFixture([
     event('task_started',-90000),

@@ -97,8 +97,8 @@ test('peer mailbox enforces source attempt and recipient identity, deduplicates 
   recordPeerDelivery(t,{messageId:m.id,status:'host-accepted',note:'actual native receipt'});assert.equal(m.status,'host-accepted');acknowledgePeerMessage(t,{messageId:m.id,threadId:'child-qa',turnId:'qa-turn'});assert.equal(m.status,'acknowledged');
   t.tasks[0].status='submitted';assert.equal(queuePeerMessage(t,args).id,m.id);assert.throws(()=>queuePeerMessage(t,{...args,requestId:randomUUID()}),/authenticated/);
 });
-test('workflow is bounded, reserves only conflict-free lanes and cannot accept review autonomously',()=>{
-  const t=fixture();t.mode='host-leader';const w=workflowActions(t,[]);assert.equal(w.automaticAcceptance,false);assert.deepEqual(w.actions.find(a=>a.type==='claim-batch').taskIds,['work']);
+test('workflow is bounded, reserves conflict-free lanes and delegates acceptance to plugin gates',()=>{
+  const t=fixture();t.mode='host-leader';const w=workflowActions(t,[]);assert.equal(w.automaticAcceptance,true);assert.deepEqual(w.actions.find(a=>a.type==='claim-batch').taskIds,['work']);
   t.tasks[0].status='running';t.tasks[0].attempts=[{id:'a',state:'running'}];assert.equal(workflowActions(t,[{attemptId:'a',status:'completed'}]).actions[0].type,'settle');
   t.policy={maxAttempts:1};t.tasks[0].status='waiting';assert.ok(dispatchBlockers(t,t.tasks[0]).some(b=>b.code==='attempt-limit'));
   const many=fixture();many.tasks=Array.from({length:30},(_,i)=>({...many.tasks[1],id:'review'+i,status:'submitted',evidence:[],attempts:[]}));const bounded=workflowActions(many);assert.equal(bounded.actions.length,bounded.maxActions);assert.equal(bounded.hasMore,true);
@@ -112,6 +112,13 @@ test('history query keeps stable registration numbers and export includes full c
   const t=fixture(),q=taskQuery(t,{query:'t2',limit:1});assert.equal(q.tasks[0].id,'review');assert.equal(q.tasks[0].number,2);assert.equal(taskQuery(t,{status:'accepted'}).total,0);
   assert.match(exportTeam(t).text,/AC1：Keep full acceptance/);assert.equal(JSON.parse(exportTeam(t,{format:'json'}).text).team.id,t.id);
   t.revision=1;const page=taskQuery(t,{limit:1});assert.equal(taskQuery(t,{limit:1,cursor:page.nextCursor}).tasks[0].id,'review');t.revision=2;assert.throws(()=>taskQuery(t,{limit:1,cursor:page.nextCursor}),/snapshot/);
+});
+test('task status queries exclude historical prompts and logs while preserving filters, pagination and selected evidence access',()=>{
+  const t=fixture();t.revision=7;
+  const task=t.tasks[0];task.goal='specific delivery';task.status='submitted';task.blockReason='reason '.repeat(300);task.evidence=[{summary:'original retained'}];task.attempts=[{id:'a',number:1,state:'submitted',agentThreadId:'child',turnId:'turn',acceptanceException:{reason:'proof '.repeat(300),requiresLeader:true}}];
+  for(const key of ['prompt','observation','delivery'])Object.defineProperty(task.attempts[0],key,{enumerable:true,get(){throw new Error('Status query accessed full evidence');}});
+  const page=taskQuery(t,{query:'specific',memberId:task.memberId,status:'submitted',limit:1});assert.equal(page.total,1);assert.equal(page.tasks[0].attempt.id,'a');assert.equal(page.tasks[0].attemptCount,1);assert.equal(page.tasks[0].evidenceCount,1);assert.equal(page.tasks[0].evidence,undefined);assert.equal(page.tasks[0].attempts,undefined);assert.equal(page.tasks[0].attempt.observation,undefined);assert.equal(page.tasks[0].blockReasonTruncated,true);assert.equal(page.tasks[0].attempt.acceptanceException.reasonTruncated,true);assert.ok(Buffer.byteLength(JSON.stringify(page))<2500);assert.deepEqual(page.evidenceAccess.arguments,{teamId:t.id,view:'evidence'});assert.deepEqual(task.evidence,[{summary:'original retained'}]);
+  const first=taskQuery(t,{limit:1});assert.equal(taskQuery(t,{limit:1,cursor:first.nextCursor}).tasks[0].number,2);assert.throws(()=>taskQuery(t,{query:'changed',cursor:first.nextCursor}),/filters changed/);
 });
 test('real Git worktree candidate integration stays staged and dirty source is rejected',async()=>{
   const root=await temp(),repo=join(root,'repo');await mkdir(repo);const exec=promisify(execFile),git=async(cwd,args)=>(await exec('git',args,{cwd,windowsHide:true})).stdout;

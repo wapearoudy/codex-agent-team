@@ -29,7 +29,7 @@ export async function persistedTerminal(thread,turnId,{sessionsRoot=join(process
 // Only timestamped, explicitly turn-bound public events can renew activity.
 // In particular, reasoning and unbound transcript rows cannot prove progress.
 const publicActivityTypes=new Set(['agent_message','exec_command_begin','exec_command_end','exec_command_output_delta']);
-const publicCompletedItemTypes=new Set(['AgentMessage','CommandExecution','FileChange']);
+const publicCompletedItemTypes=new Set(['AgentMessage','CommandExecution','FileChange','McpToolCall','ContextCompaction']);
 export async function persistedActivity(thread,turnId,{sessionsRoot=join(process.env.CODEX_HOME??join(homedir(),'.codex'),'sessions'),nowMs=Date.now(),freshnessMs=60000}={}){
   if(!thread.path)return null;
   if(!Number.isFinite(nowMs)||!Number.isFinite(freshnessMs)||freshnessMs<=0)throw new Error('Native activity clock and freshness must be valid');

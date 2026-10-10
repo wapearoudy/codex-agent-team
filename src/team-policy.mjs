@@ -12,7 +12,7 @@ export function normalizePolicy(input={}) {
   return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds};
 }
 export function nativeRoute(member){const route=member.activeRoute??(member.route?.model?member.route:member.routeSnapshot)??{};return {fork_turns:'none',...(route.model?{model:route.model}:{}),...(route.reasoningEffort?{reasoning_effort:route.reasoningEffort}:{})};}
-export function usageReport(team,runs=[]) {
+export function usageReport(team,runs=[],accounting) {
   const members=team.members.map(m=>({memberId:m.id,totalTokens:0,knownAttempts:0,unknownAttempts:0})),tasks=[];
   for(const task of team.tasks) {
     const row={taskId:task.id,memberId:task.memberId,totalTokens:0,knownAttempts:0,unknownAttempts:0};
@@ -24,13 +24,20 @@ export function usageReport(team,runs=[]) {
     }
     tasks.push(row);
   }
-  const totalTokens=tasks.reduce((s,t)=>s+t.totalTokens,0),unknownAttempts=tasks.reduce((s,t)=>s+t.unknownAttempts,0),knownAttempts=tasks.reduce((s,t)=>s+t.knownAttempts,0),policy=normalizePolicy(team.policy);
-  return {source:'host-observed-attempts',totalTokens,knownAttempts,unknownAttempts,complete:unknownAttempts===0,members,tasks,limit:policy.tokenLimit,
-    exhausted:policy.tokenLimit!==null&&totalTokens>=policy.tokenLimit,unverifiable:policy.tokenLimit!==null&&policy.requireKnownUsage&&unknownAttempts>0,
+  const attributedTokens=tasks.reduce((s,t)=>s+t.totalTokens,0),knownAttempts=tasks.reduce((s,t)=>s+t.knownAttempts,0),policy=normalizePolicy(team.policy);
+  const contexts=accounting?.contexts??[],knownContexts=contexts.filter(c=>Number.isSafeInteger(c.usage?.totalTokens)),unknownContexts=contexts.filter(c=>!c.complete).length+(accounting?.discoveryComplete===false?1:0)+(accounting===null?1:0);
+  const totalTokens=accounting?knownContexts.reduce((s,c)=>s+c.usage.totalTokens,0):attributedTokens,unknownAttempts=accounting?unknownContexts:tasks.reduce((s,t)=>s+t.unknownAttempts,0)+unknownContexts;
+  const sum=kind=>knownContexts.filter(c=>c.kind===kind).reduce((s,c)=>s+c.usage.totalTokens,0);
+  const categories=accounting?Object.fromEntries(['inputTokens','cachedInputTokens','outputTokens'].map(k=>[k,knownContexts.some(c=>c.usage[k]==null)?null:knownContexts.reduce((s,c)=>s+c.usage[k],0)])):{};
+  const cacheKnown=accounting?.complete===true&&contexts.length>0&&contexts.every(c=>c.complete&&Number.isSafeInteger(c.usage?.inputTokens)&&Number.isSafeInteger(c.usage?.cachedInputTokens)&&c.usage.cachedInputTokens>=0&&c.usage.cachedInputTokens<=c.usage.inputTokens)&&accounting.discoveryComplete!==false;
+  const cacheMetrics=accounting?{uncachedInputTokens:cacheKnown?categories.inputTokens-categories.cachedInputTokens:null,cacheRatio:cacheKnown&&categories.inputTokens>0?categories.cachedInputTokens/categories.inputTokens:null}:{};
+  return {source:accounting?.source??'host-observed-attempts',totalTokens,knownAttempts,unknownAttempts,complete:accounting?accounting.complete:unknownAttempts===0,members,tasks,limit:policy.tokenLimit,
+    ...(accounting!==undefined?{scope:accounting?'current-team-time-window':'registered-attempts-only',leaderTokens:accounting?sum('leader'):null,memberTokens:accounting?sum('member'):null,unregisteredNativeTokens:accounting?sum('unregistered-native'):null,unregisteredNativeCount:contexts.filter(c=>c.kind==='unregistered-native').length,attributedTokens,unknownContexts,knownContexts:knownContexts.length,...categories,observedAt:accounting?.observedAt??null,window:accounting?.window??null,accountingComplete:accounting?.complete??false,contexts:contexts.map(c=>({threadId:c.threadId,kind:c.kind,totalTokens:c.usage?.totalTokens??null,complete:c.complete})),inferredContextsAreExecutionAuthority:false}:{}),
+    ...cacheMetrics,exhausted:policy.tokenLimit!==null&&totalTokens>=policy.tokenLimit,unverifiable:policy.tokenLimit!==null&&policy.requireKnownUsage&&unknownAttempts>0,
     remaining:policy.tokenLimit===null||unknownAttempts?null:Math.max(0,policy.tokenLimit-totalTokens),cost:null,costReason:'Account usage is not a per-token invoice; no price is inferred.'};
 }
-export function assertBudget(team,runs) {
-  const report=usageReport(team,runs);
+export function assertBudget(team,runs,accounting) {
+  const report=usageReport(team,runs,accounting);
   if(report.exhausted)throw new Error('Observed token budget exhausted; running work is retained and new dispatch is blocked');
   if(report.unverifiable)throw new Error('Token budget cannot be verified because host usage is unavailable');
   return report;

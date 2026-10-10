@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PrototypeRuntime } from '../src/runtime.mjs';
+import { PrototypeRuntime,AgentRpc } from '../src/runtime.mjs';
 
 // Unit tests use explicit synthetic events. These are not host/Agent evidence.
 function fixture() {
@@ -9,6 +9,13 @@ function fixture() {
     connection:'connected',stopState:'not-requested',startedTurnId:'new',retiredTurns:['old'],events:[],outputs:[],turnCount:1};
   rt.records.set('r',r);return {rt,r};
 }
+
+test('read transport failures have a stable code distinct from native verification failures',async()=>{
+ const rpc=new AgentRpc(undefined,{snapshotOnly:true});
+ await assert.rejects(rpc.call('thread/read',{threadId:'child'}),error=>error.code==='NATIVE_RPC_UNAVAILABLE');
+ let failure;rpc.pending.set(1,{reject:error=>{failure=error;}});rpc.fail('Execution connection closed');
+ assert.equal(failure.code,'NATIVE_RPC_UNAVAILABLE');assert.equal(rpc.pending.size,0);
+});
 
 test('member messages retain attempt identity and never fabricate a read receipt',async()=>{
   const {rt,r}=fixture();r.teamId='team';r.attemptId='attempt';let calls=0;

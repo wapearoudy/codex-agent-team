@@ -65,15 +65,15 @@ test('duplicate completions, failed predecessors, missing interruption proof, sk
   f.threads.get('dev').parentThreadId='another-leader';await assert.rejects(inspect,/native child/);await f.engine.close();
 });
 
-test('stop preserves the resumed review as submitted; explicit acceptance, final validation and archive succeed after restart',async()=>{
+test('stop preserves and registers the resumed review; final acceptance, final validation and archive succeed after restart',async()=>{
   const f=await fixture();await f.work();const c=await f.claim('review'),marker=c.dispatch.marker;f.set('qa',[turn('interrupted-review',marker,'inProgress',null,[command('original review evidence')])]);await f.bind(c,'qa');
   const old=turn('interrupted-review',marker,'interrupted',null,[command('original review evidence')]);f.aborted(old.id);f.set('qa',[old,turn('completed-review',marker,'completed',verdict,[command('review current checks')])]);
   let t=await f.saved();const stop=await f.engine.stop('owner',t.id,t.revision,{requestId:randomUUID(),reason:'用户要求停止后归档'});const halted=await f.engine.reconcileStop('owner',t.id,stop.team.revision);
-  assert.equal(halted.team.state,'halted');assert.deepEqual(halted.team.executionControl.pending,[]);assert.equal(halted.team.tasks[1].status,'submitted');assert.equal(halted.team.tasks[1].attempts[0].turnId,'completed-review');assert.equal(halted.team.tasks[1].evidence.length,1);assert.equal(halted.team.tasks[1].attempts[0].stopEvidence.quiescence.turnId,'completed-review');
+  assert.equal(halted.team.state,'halted');assert.deepEqual(halted.team.executionControl.pending,[]);assert.equal(halted.team.tasks[1].status,'accepted');assert.equal(halted.team.tasks[1].attempts[0].turnId,'completed-review');assert.equal(halted.team.tasks[1].evidence.length,1);assert.equal(halted.team.tasks[1].attempts[0].stopEvidence.quiescence.turnId,'completed-review');
   const cold=new LeaderEngine({root:f.engine.root,observer:f.observer});t=(await cold.resume('owner',t.id,halted.team.revision,{requestId:randomUUID(),reason:'继续核对已有交付，无需重新执行',retryTaskIds:[]})).team;
   const accepted=await cold.acceptReview('owner',t.id,t.revision,'review',c.dispatch.attemptId,'accept','Leader核对完整原始独立审查');assert.ok(accepted.team.tasks.every(t=>t.status==='accepted'));
   const done=await cold.finish('owner',t.id,accepted.team.revision,'明确最终验收',[{name:'full tests',status:'PASS',evidence:'controlled 411/411 fixture'}]);const archived=await new ProjectTeams(cold).archive('owner',f.context,{teamId:t.id,revision:done.team.revision,requestId:randomUUID(),source:'leader-recorded-user-instruction',reason:'目标完成；无关工作另建团队'});
-  const saved=await cold.native('owner',t.id);assert.equal(saved.state,'archived');assert.equal(saved.requiresTeamWorkspaceVersion,'0.17.0');assert.equal(saved.tasks[1].attempts[0].turnHistory.length,2);assert.equal(saved.archival.members.find(m=>m.memberId==='qa').turnId,'completed-review');assert.equal(archived.replayed,false);
+  const saved=await cold.native('owner',t.id);assert.equal(saved.state,'archived');assert.equal(saved.requiresTeamWorkspaceVersion,'0.24.0');assert.equal(saved.tasks[1].attempts[0].turnHistory.length,2);assert.equal(saved.archival.members.find(m=>m.memberId==='qa').turnId,'completed-review');assert.equal(archived.replayed,false);
   await assert.rejects(async()=>new PreviousArchive(cold.store.archive.root).hydrate(await cold.store.document(t.id).read()),/Unsupported archive/);
   await cold.close();
 });
@@ -112,4 +112,59 @@ test('continuation records fence old versions, reject broken links and preserve 
   const f=await fixture(),c=await f.claim('work'),marker=c.dispatch.marker;f.set('dev',[turn('old',marker,'inProgress',null)]);const b=await f.bind(c,'dev');f.aborted('old');f.set('dev',[turn('old',marker,'interrupted',null),turn('new',marker)]);
   await assert.rejects(()=>f.engine.settle('owner',f.team.id,b.team.revision-1,'work',c.dispatch.attemptId),/changed/);assert.equal((await f.saved()).tasks[0].attempts[0].turnId,'old');
   const settled=await f.engine.settle('owner',f.team.id,b.team.revision,'work',c.dispatch.attemptId);const invalid=structuredClone(settled.team);invalid.requiresTeamWorkspaceVersion='0.16.0';assert.throws(()=>validateTeam(invalid),/requires Team Workspace/);invalid.requiresTeamWorkspaceVersion='0.17.0';invalid.tasks[0].attempts[0].turnAssociation.links[0].fromTurnId='foreign';assert.throws(()=>validateTeam(invalid),/continuation link/);await f.engine.close();
+});
+
+test('old-turn checkpoints survive verified continuation and cannot block settlement, acceptance or archive',async()=>{
+ const f=await fixture();await f.work();const c=await f.claim('review'),marker=c.dispatch.marker;f.set('qa',[turn('old',marker,'inProgress',null)]);await f.bind(c,'qa');let t=await f.saved();
+ const input={taskId:'review',attemptId:c.dispatch.attemptId,requestId:randomUUID(),summary:'Old interrupted review progress',validation:[{name:'old check',status:'PASS',evidence:'Historical only'}]};
+ const cp=await f.engine.checkpoint('owner',t.id,t.revision,input);const original=structuredClone(cp.team.checkpoints[0]);
+ f.aborted('old');f.set('qa',[turn('old',marker,'interrupted',null,[command('old check')]),turn('new',marker,'completed',verdict,[command('current check')])]);
+ t=await f.saved();assert.equal((await f.engine.read('owner',t.id)).checkpoints[0].stale,true);assert.deepEqual(await f.saved(),t);const settled=await f.engine.settle('owner',t.id,t.revision,'review',c.dispatch.attemptId);assert.equal(settled.team.tasks[1].status,'accepted');assert.equal(settled.team.tasks[1].attempts[0].turnId,'new');assert.equal(settled.team.requiresTeamWorkspaceVersion,'0.24.0');assert.deepEqual(settled.team.checkpoints[0],original);assert.equal(settled.checkpoints[0].stale,true);validateTeam(settled.team);
+ const accepted=await f.engine.acceptReview('owner',t.id,settled.team.revision,'review',c.dispatch.attemptId,'accept','Current turn independently verified');assert.ok(accepted.team.tasks.every(t=>t.status==='accepted'));
+ const done=await f.engine.finish('owner',t.id,accepted.team.revision,'Final validation',[{name:'checks',status:'PASS',evidence:'Current integrated evidence'}]);const archived=await f.projects.archive('owner',f.context,{teamId:t.id,revision:done.team.revision,requestId:randomUUID(),source:'leader-recorded-user-instruction',reason:'Completed'});assert.equal(archived.kind,'team-archive');assert.equal((await f.saved()).state,'archived');const cold=new LeaderEngine({root:f.engine.root,observer:f.observer});validateTeam(await cold.native('owner',t.id));await f.engine.close();
+});
+
+test('new Leader and member checkpoints bind the verified continuation before recording progress',async()=>{
+ const f=await fixture(),c=await f.claim('work'),marker=c.dispatch.marker;f.set('dev',[turn('old',marker,'inProgress',null)]);await f.bind(c,'dev');f.aborted('old');f.set('dev',[turn('old',marker,'interrupted',null),turn('new',marker,'inProgress',null)]);let t=await f.saved();
+ const input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),summary:'Current resumed progress'};const saved=await f.engine.checkpoint('owner',t.id,t.revision,input);assert.equal(saved.checkpoints[0].turnId,'new');assert.equal(saved.team.tasks[0].attempts[0].turnId,'new');
+ const report={...input,requestId:randomUUID(),summary:'Authenticated current progress'};const result=await f.engine.memberReport('owner',t.id,saved.team.revision,{threadId:'dev',parentThreadId:'leader',cwd:f.cwd},report);assert.equal(result.checkpoint.turnId,'new');validateTeam(await f.saved());await f.engine.close();
+});
+
+test('authenticated resumed member reports advance the turn atomically and old checkpoint replays retain their identity',async()=>{
+ const f=await fixture(),c=await f.claim('work'),marker=c.dispatch.marker,ctx={threadId:'dev',parentThreadId:'leader',cwd:f.cwd};
+ f.set('dev',[turn('old',marker,'inProgress',null)]);await f.bind(c,'dev');let t=await f.saved();
+ const input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),summary:'Original progress'};
+ const old=await f.engine.memberReport('owner',t.id,t.revision,ctx,input),original=structuredClone((await f.saved()).checkpoints[0]);
+ f.aborted('old');f.set('dev',[turn('old',marker,'interrupted',null),turn('new',marker,'inProgress',null)]);
+ const report=await f.engine.memberReport('owner',t.id,old.revision,ctx,{...input,requestId:randomUUID(),summary:'Resumed progress',delivery:marker+'\nCurrent candidate'});
+ t=await f.saved();assert.equal(report.checkpoint.turnId,'new');assert.equal(t.tasks[0].attempts[0].turnId,'new');assert.equal(t.requiresTeamWorkspaceVersion,'0.21.0');assert.deepEqual(t.checkpoints[0],original);assert.equal(t.tasks[0].status,'running');assert.equal(t.tasks[1].status,'waiting');
+ const calls=f.calls.length,replay=await f.engine.memberReport('owner',t.id,t.revision,ctx,input);assert.equal(replay.checkpoint.turnId,'old');assert.equal(f.calls.length,calls);assert.deepEqual((await f.saved()).checkpoints[0],original);
+ for(const mutate of [x=>x.checkpoints[0].turnId='foreign',x=>x.tasks[0].attempts[0].turnHistory[0].statusEvidence.source='unverified',x=>x.requiresTeamWorkspaceVersion='0.18.0']){const invalid=structuredClone(t);mutate(invalid);assert.throws(()=>validateTeam(invalid),/identity|interruption|Historical checkpoints/);}
+ await f.engine.close();
+});
+
+test('new reports reject interrupted or unacknowledged current turns and authenticate before reading native history',async()=>{
+ const f=await fixture(),c=await f.claim('work'),marker=c.dispatch.marker,ctx={threadId:'dev',parentThreadId:'leader',cwd:f.cwd};
+ f.set('dev',[turn('old',marker,'inProgress',null)]);await f.bind(c,'dev');const t=await f.saved(),input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),summary:'Current progress'};
+ const before=f.calls.length;await assert.rejects(()=>f.engine.memberReport('owner',t.id,t.revision,{...ctx,parentThreadId:'foreign'},input),/authenticated/);assert.equal(f.calls.length,before);
+ f.aborted('old');f.set('dev',[turn('old',marker,'interrupted',null)]);
+ await assert.rejects(()=>f.engine.checkpoint('owner',t.id,t.revision,input),/turn is not verified/);
+ f.set('dev',[turn('old',marker,'interrupted',null),turn('new','opaque collaboration prompt','inProgress',null)]);
+ await assert.rejects(()=>f.engine.memberReport('owner',t.id,t.revision,ctx,input),/turn is not verified/);assert.deepEqual(await f.saved(),t);
+ f.set('dev',[turn('old',marker,'interrupted',null),turn('new',marker,'inProgress',null)]);
+ const result=await f.engine.memberReport('owner',t.id,t.revision,ctx,input);assert.equal(result.checkpoint.turnId,'new');await f.engine.close();
+});
+
+test('phase acceptance retains deferred NOT_RUN evidence, records Leader reasons and cannot relax final acceptance',async()=>{
+ const f=await fixture();let t=await f.saved();await f.engine.store.update(t.id,'owner',t.revision,t=>{t.tasks[0].validationMode='source-only';t.tasks[0].acceptanceCriteria=[{id:'spec',description:'Executable specification reviewed'}];});await f.work();
+ const c=await f.claim('review'),v=JSON.parse(verdict);v.checks[0].criterionId='spec';v.checks.push({name:'Future implementation checks',criterionId:'spec',status:'NOT_RUN',evidence:'Deferred by specification phase scope'});
+ f.set('qa',[turn('review',c.dispatch.marker,'completed',JSON.stringify(v))]);const b=await f.bind(c,'qa'),submitted=await f.engine.settle('owner',t.id,b.team.revision,'review',c.dispatch.attemptId);
+ await assert.rejects(()=>f.engine.acceptReview('owner',t.id,submitted.team.revision,'review',c.dispatch.attemptId,'accept','Scoped review'),/unverified/);
+ const reasons=[{checkIndex:1,reason:'The confirmed current task reviews specifications only; implementation validation is a later phase'}];
+ const accepted=await f.engine.acceptReview('owner',t.id,submitted.team.revision,'review',c.dispatch.attemptId,'accept','Scoped review',[],reasons),a=accepted.team.tasks[1].attempts[0];
+ assert.equal(a.deferredCheckExplanations.source,'main-conversation-leader');assert.deepEqual(a.deferredCheckExplanations.items,reasons);assert.deepEqual(JSON.parse(accepted.team.tasks[1].evidence.at(-1).summary),v);assert.equal(accepted.team.requiresTeamWorkspaceVersion,'0.31.0');validateTeam(accepted.team);
+ const replay=await f.engine.acceptReview('owner',t.id,submitted.team.revision,'review',c.dispatch.attemptId,'accept','Scoped review',[],reasons);assert.equal(replay.team.revision,accepted.team.revision);
+ await assert.rejects(()=>f.engine.finish('owner',t.id,accepted.team.revision,'Final validation',[{name:'future tests',status:'NOT_RUN',evidence:'Still not executed'}]),/missing checks/);
+ for(const mutate of [x=>x.requiresTeamWorkspaceVersion='0.18.0',x=>x.tasks[1].attempts[0].deferredCheckExplanations.items[0].checkIndex=0,x=>x.tasks[1].attempts[0].deferredCheckExplanations.targetAttemptId='foreign']){const invalid=structuredClone(accepted.team);mutate(invalid);assert.throws(()=>validateTeam(invalid),/Deferred|deferred/);}
+ await f.engine.close();
 });

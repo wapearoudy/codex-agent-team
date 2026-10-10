@@ -154,7 +154,7 @@ test('panel separates reservation, persisted activity and completed execution fr
   task.attempts[0].state='running';
   const runs=[{taskId:task.id,memberId:member.id,attemptId:task.attempts[0].id,status:'inProgress',connection:'snapshot'}];
   assert.equal(taskDisplayState(task,runs),'observed');assert.equal(memberState(member,c.team.tasks,runs),'observed');
-  runs[0].status='completed';assert.equal(taskDisplayState(task,runs),'completed');assert.equal(memberState(member,c.team.tasks,runs),'completed');
+  runs[0].status='completed';assert.equal(taskDisplayState(task,runs),'settling');assert.equal(memberState(member,c.team.tasks,runs),'completed');
   runs[0].status='failed';assert.equal(taskDisplayState(task,runs),'failed');assert.equal(memberState(member,c.team.tasks,runs),'failed');
 });
 
@@ -208,7 +208,7 @@ test('an early message with an unknown turn cannot block review settlement or in
   const run=seed(f,c.dispatch,'child-qa',JSON.stringify({summary:'independent review',decision:'accept',reason:'Conditions verified',checks:[{name:'actual check',status:'PASS',evidence:'Original fixture check evidence'}],findings:[]}));
   const restarted=new LeaderEngine({root:f.engine.root,observer:f.observer});
   const settled=await restarted.settle('owner',f.team.id,reported.team.revision,'review',c.dispatch.attemptId);
-  assert.equal(settled.team.tasks[1].status,'submitted');assert.equal(settled.team.tasks[1].attempts.at(-1).turnId,c.dispatch.attemptId);
+  assert.equal(settled.team.tasks[1].status,'accepted');assert.equal(settled.team.tasks[1].attempts.at(-1).turnId,c.dispatch.attemptId);
   assert.equal(settled.messages[0].status,'host-accepted');assert.equal(settled.messages[0].turnId,null,'settlement is not a message receipt');
   const before=await restarted.store.get(f.team.id,'owner');
   await assert.rejects(()=>restarted.reconcileMessage('owner',f.team.id,before.revision,queued.messages[0].id),/No exact/);
@@ -235,4 +235,15 @@ test('rebinding a pending native turn preserves an early message without pretend
   assert.equal(bound.team.tasks[0].attempts.at(-1).state,'running');assert.equal(bound.messages[0].status,'queued');assert.equal(bound.messages[0].turnId,null);
   assert.deepEqual(bound.messages[0],queued.messages[0]);assert.equal(bound.team.totalDispatches,1);
   await f.engine.close();
+});
+
+test('terminal receipts are replayable without repeat verification or renewed final-validation actions',async()=>{
+  const f=await fixture(),c=await claim(f,'work'),submitted=await bindSettle(f,c,'child-dev','Source updated'),calls=f.observer.calls;
+  const replay=await f.engine.settle('owner',f.team.id,c.team.revision,'work',c.dispatch.attemptId);assert.equal(replay.team.revision,submitted.team.revision);assert.equal(f.observer.calls,calls);
+  const r=await claim(f,'review'),reviewed=await bindSettle(f,r,'child-qa',JSON.stringify({summary:'checked',decision:'accept',reason:'Verified',checks:[{name:'actual test',status:'PASS',evidence:'test passed'}],findings:[]}));
+  const accepted=await f.engine.acceptReview('owner',f.team.id,reviewed.team.revision,'review',r.dispatch.attemptId,'accept','Reviewed actual evidence');
+  const repeated=await f.engine.acceptReview('owner',f.team.id,reviewed.team.revision,'review',r.dispatch.attemptId,'accept','Reviewed actual evidence');assert.equal(repeated.team.revision,accepted.team.revision);
+  const checks=[{name:'integration',status:'PASS',evidence:'Leader observed integrated check'}],done=await f.engine.finish('owner',f.team.id,accepted.team.revision,'Final checks verified',checks);
+  assert.deepEqual(done.workflow.actions,[]);assert.equal(done.workflow.stage,'completed');const finalReplay=await f.engine.finish('owner',f.team.id,accepted.team.revision,'Final checks verified',checks);assert.deepEqual(finalReplay.team.finalAcceptance,done.team.finalAcceptance);assert.equal(finalReplay.team.revision,done.team.revision);
+  await assert.rejects(()=>f.engine.finish('owner',f.team.id,done.team.revision,'Replace prior decision',checks),/already recorded/);
 });

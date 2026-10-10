@@ -1,6 +1,7 @@
 import {App,applyHostStyleVariables,applyDocumentTheme} from '@modelcontextprotocol/ext-apps';
 import {setupTeamView} from './team-view.mjs';
-const app=new App({name:'Team Workspace',version:'0.17.0'},{});
+import packageInfo from '../package.json' with {type:'json'};
+const app=new App({name:'Team Workspace',version:packageInfo.version},{});
 const team=setupTeamView(app);
 app.ontoolresult=r=>{if(r.structuredContent)void team.accept(r.structuredContent);};
 let lastHostLocale;

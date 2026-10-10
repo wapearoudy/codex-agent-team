@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {assertContractDelivery} from '../src/team-quality.mjs';
+import {verificationCommandMatches,contractCommandEvidence} from '../src/verification-command.mjs';
 
 const observed=(command,expected='npm run typecheck',record={})=>assertContractDelivery(
   {kind:'work',acceptanceCriteria:[{id:'check'}],contract:{verify:[expected]}},
@@ -42,4 +43,26 @@ test('quotes and expansions inside the literal required script stay exact, while
   assert.equal(observed('/bin/zsh -c "printf \\"\\$VALUE\\""','printf "$VALUE"'),true);
   assert.equal(observed('/bin/zsh -c "echo a\\nb"','echo a\\nb'),true);
   assert.equal(observed("/bin/zsh -c 'npm run typecheck'",'npm run typecheck || true'),false);
+});
+test('only a verified host cwd supplies an omitted literal cd; wrong, missing and dynamic directories fail',()=>{
+  const required="cd '/project/ui space' && npm run check",actual="/bin/zsh -lc 'npm run check > ../check.log 2>&1'";
+  assert.equal(verificationCommandMatches(actual,required,{cwd:'/project/ui space'}),true);
+  for(const cwd of [undefined,'relative','/project/other'])assert.equal(verificationCommandMatches(actual,required,{cwd}),false);
+  assert.equal(verificationCommandMatches("cd ui && npm run check",required,{cwd:'/project',workspace:'/project'}),false);
+  assert.equal(verificationCommandMatches("cd 'ui space' && npm run check",required,{cwd:'/project'}),true);
+  assert.equal(verificationCommandMatches('npm test','npm test',{cwd:'/other',workspace:'/project'}),false);
+  assert.equal(verificationCommandMatches('npm test','npm test',{workspace:'/project'}),true); // old exact records
+  assert.equal(contractCommandEvidence([required],[{command:actual,cwd:'/project/ui space',commandId:'exec-id',turnId:'turn',status:'completed',exitCode:0}])[0].match,'host-working-directory');
+  for(const command of ["cd $ROOT && npm run check",'cd /project/ui && false; npm run check',"source setup.env; cd '/project/ui space' && npm run check","cd '/project/ui space' && npm run check || true","/bin/zsh -lc 'npm run check > \"$LOG\" 2>&1'"]){
+    assert.equal(verificationCommandMatches(command,required,{cwd:'/project/ui space'}),false,command);
+  }
+});
+
+test('latest matching native outcome overrides old PASS while unrelated commands and wrong directories do not',()=>{
+  const good={command:'npm test',commandId:'first',cwd:'/project',status:'completed',exitCode:0};
+  for(const bad of [{status:'failed',exitCode:1},{status:'inProgress',exitCode:null},{status:'completed',exitCode:null},{status:'unknown',exitCode:null}]){
+    const rows=[good,{...good,commandId:'later',...bad}];assert.equal(contractCommandEvidence(['npm test'],rows,{workspace:'/project'})[0].observed,false);
+    assert.equal(contractCommandEvidence(['npm test'],[...rows,{...good,commandId:'recovered'}],{workspace:'/project'})[0].observed,true);
+  }
+  for(const extra of [{...good,command:'npm lint',exitCode:1},{...good,cwd:'/other',exitCode:1}])assert.equal(contractCommandEvidence(['npm test'],[good,extra],{workspace:'/project'})[0].observed,true);
 });
