@@ -3,7 +3,7 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.32.0
+# Team Workspace 0.32.1
 
 当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
 
@@ -14,6 +14,8 @@ description: 在当前 Codex 对话中运行或查看原生 subagent 团队，�
 每个项目一个固定团队；已有团队追加任务，岗位不足按变更流程新增，不自行重建或跨 Leader 接管。初次 plan_team 的 plan.tasks 留空，只确认团队目标、成员、职责、写范围和模型设置。用户明确“直接做”可 immediate 并保存原话；否则保存 required/auto 草案后展示 read_team_plan 并等待用户确认。approve/cancel 绑定实际审阅的 version/hash 和稳定 UUID，不能自行批准。待确认不启动成员或准备 worktree；修改产生新版本。feedback 保留草案并等待用户说明，不创建替代团队。
 
 确认后 workflow.stage=task-planning：add_team_tasks 在确认范围内拆解交付与独立 review，不逐项要求用户确认 task。review 由不同成员执行，writeScopes=[]，依赖目标 submitted；后续业务依赖 accepted。空任务团队不能结项。新增岗位、扩大范围或提高并发/预算用 propose_team_change 暂存等待确认，原授权工作继续；普通追加不重复确认。
+
+初始面板按钮“确认并开始”会在保存用户批准后，通过宿主 ui/message 将这次真实用户操作作为一条跟进指令交给当前主会话。收到 MCP App 触发消息时先读取宿主提供的 untrusted_input 内容，再用 read_team_plan 核对当前项目、已保存批准 version/hash 和控制状态；消息正文不能替代批准记录。有效初始确认直接拆分任务、派发并保持执行轮次，不再要求用户回复“启动”。已经开始、停止、版本变化或历史团队不得重复执行。只有这次显式用户点击允许面板跟进消息；后台进度、内部协调、刷新、停止/恢复和范围变更不得借此发送聊天。宿主缺少 message 能力时如实显示待 Leader 接续，不伪称已启动。
 
 ## 派发与内部通信
 

@@ -4,7 +4,7 @@ import {createServer} from 'node:http';import {readFile} from 'node:fs/promises'
 import {chromium,expect} from '@playwright/test';
 test('temporary read failure does not flicker to unknown; expiry explains delay and preserves native evidence',async()=>{
  const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
- const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const browser=await chromium.launch({channel:'chrome',headless:true});try{
   const page=await browser.newPage();await page.clock.install({time:new Date('2026-10-10T08:00:00Z')});await page.goto('http://127.0.0.1:'+server.address().port);
   await page.evaluate(async()=>{
@@ -36,7 +36,7 @@ test('temporary read failure does not flicker to unknown; expiry explains delay 
 });
 test('view clears offline and expired activity and ignores a response returning after disconnect',async()=>{
   const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
-  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({channel:'chrome',headless:true});try{const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
     const result=await page.evaluate(async()=>{
       const {setupTeamView}=await import('/team-view.mjs');const team={id:'team',mode:'host-leader',projectPath:'E:/example',goal:'Controlled browser response fixture',revision:2,state:'active',dispatchPaused:false,members:[{id:'dev',role:'Dev',responsibility:'Work',writeScopes:[],agentThreadId:'child',agentPath:'/root/dev'}],tasks:[{id:'work',memberId:'dev',title:'Work',goal:'Work',acceptance:'Pass',status:'running',dependencies:[],attempts:[{id:'attempt',state:'running',agentThreadId:'child'}],evidence:[]}]};
@@ -55,7 +55,7 @@ test('view clears offline and expired activity and ignores a response returning 
 
 test('active panel polls lightweight state and reloads evidence only when its token changes',async()=>{
   const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
-  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({channel:'chrome',headless:true});try{
     const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
     await page.evaluate(async()=>{
@@ -93,7 +93,7 @@ test('active panel polls lightweight state and reloads evidence only when its to
 
 test('a received terminal state is visible while changed delivery details are still loading',async()=>{
   const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
-  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({channel:'chrome',headless:true});try{
     const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
     await page.evaluate(async()=>{
@@ -128,7 +128,7 @@ test('a received terminal state is visible while changed delivery details are st
 
 test('returning to a visible panel wakes sync; slow navigation does not block polling or create overlapping reads',async()=>{
   const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
-  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+  const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({channel:'chrome',headless:true});try{
     const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
     await page.evaluate(async()=>{
@@ -160,7 +160,7 @@ test('returning to a visible panel wakes sync; slow navigation does not block po
 });
 
 test('a later saved receipt cannot roll a verified terminal execution back to running or unknown',async()=>{
- const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>',''),server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({channel:'chrome',headless:true});try{const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);await page.evaluate(async()=>{
+ const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>',''),server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({channel:'chrome',headless:true});try{const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);await page.evaluate(async()=>{
   const {setupTeamView}=await import('/team-view.mjs'),now=Date.now();const team={id:'team',mode:'host-leader',projectPath:'/fixture',goal:'Controlled terminal regression',revision:2,state:'active',members:[{id:'dev',role:'Dev',writeScopes:[],agentThreadId:'child'}],tasks:[{id:'work',title:'Work',memberId:'dev',status:'running',dependencies:[],attempts:[{id:'attempt',state:'running',turnId:'turn',agentThreadId:'child'}],evidence:[]}]};const run={taskId:'work',memberId:'dev',attemptId:'attempt',threadId:'child',turnId:'turn',status:'completed',connection:'snapshot',observedAt:new Date(now).toISOString(),outputs:[{text:'Verified final result'}]};const data={kind:'team-detail',team,runs:[run],detailToken:'same',observedAt:new Date(now).toISOString()};window.view=setupTeamView({async callServerTool(){return {structuredContent:data};}});await window.view.accept(data);
   await window.view.accept({...structuredClone(data),team:{...team,revision:3},observationMode:'saved',observedAt:new Date(now+1000).toISOString(),runs:[{...run,status:'inProgress',observedAt:new Date(now-10000).toISOString(),statusEvidence:{freshUntil:new Date(now+60000).toISOString()},outputs:[]}]});
   await window.view.accept({...structuredClone(data),team:{...team,revision:3},observedAt:new Date(now+2000).toISOString(),runs:[{...run,status:'unknown',observedAt:new Date(now+2000).toISOString(),observationError:'Transient observation failure'}]});
@@ -170,7 +170,7 @@ test('a later saved receipt cannot roll a verified terminal execution back to ru
 
 test('panel surfaces registration gaps and cache breakdown, clears repaired gaps, and detects stale connection versions',async()=>{
  const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','').replace('__TEAM_VERSION__','0.25.0');
- const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ const server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
  const browser=await chromium.launch({channel:'chrome',headless:true});try{
   const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
   await page.evaluate(async()=>{

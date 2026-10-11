@@ -17,7 +17,7 @@ function fixture(){return {kind:'team-detail',observedAt:new Date().toISOString(
  runs:[{taskId:'t1',memberId:'dev',attemptId:'old-attempt',threadId:'dev-thread',status:'completed',connection:'snapshot',outputs:[{text:'第一轮公开结果'}],commands:[{command:'node old-test.mjs',status:'completed',exitCode:0}]},
  {taskId:'t1',memberId:'dev',attemptId:'new-attempt',threadId:'dev-thread',status:'completed',connection:'snapshot',outputs:[{text:'第二轮公开结果'}],commands:[]}],readiness:[{taskId:'t2',ready:true,blockers:[]},{taskId:'t3',ready:false,blockers:[{message:'等待 t2 验收'}]}]};}
 before(async()=>{const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
- server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}
+ server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}
  res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});
  await new Promise(r=>server.listen(0,'127.0.0.1',r));url='http://127.0.0.1:'+server.address().port;
  browser=await chromium.launch({channel:'chrome',headless:true});await mkdir(dir,{recursive:true});});

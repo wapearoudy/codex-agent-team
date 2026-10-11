@@ -15,6 +15,8 @@ npm run package
 
 ## 本地安装
 
+0.32.1 的初始“确认并开始”是用户主动发起的 HITL 操作，使用标准 `ui/message` 接续同一主会话；不得从轮询、渲染、后台或内部协调调用。`plan-start-requests.json` 独立保存发送回执，不迁移或重写团队历史。成功接收和实际启动分开；reserved/unknown 不自动重发，failed 仅允许显式点击重试。App-only 启动请求/回执工具不进入 Leader/成员 router。
+
 构建产物为 `plugins/team-workspace-probe`，包括标准清单、技能和自包含服务/视图。使用本机 Codex 支持的本地 marketplace 来源安装。
 
 运行 `node scripts/install-plugin.mjs`。脚本保留其他目录条目，核对来源身份，备份已有插件来源，再通过官方 `plugin marketplace add` / `plugin add` 安装。来源冲突时拒绝覆盖；备份保留在来源目录旁。安装结果与当前驻留连接版本是两项证据，安装成功不会证明旧连接已重新加载。

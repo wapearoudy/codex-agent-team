@@ -10,7 +10,7 @@ test('large-log previews survive repeated refresh and history selection without 
   const original=largeDisplayFixture(),panel=teamResponse(original,'panel'),state=teamResponse(original,'state');
   const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
   const server=createServer(async(req,res)=>{
-    if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}
+    if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}
     res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));
   });await new Promise(r=>server.listen(0,'127.0.0.1',r));
   const browser=await chromium.launch({channel:'chrome',headless:true});

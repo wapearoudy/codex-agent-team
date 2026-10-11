@@ -1,5 +1,6 @@
 import {memberExecutions,orderedMembers,memberHasWork,memberWorkSummary,taskRelationships,dependencyFamily,taskDisplayState,runIsActive,runDisplayState,mergeRunObservation,failedRunObservation} from './team-projection.mjs';
 import {memberName} from './team-naming.mjs';
+import {sendPanelPlanStart} from './panel-plan-start.mjs';
 
 const labels={settling:'待 Leader 接收',archived:'已归档',delivered:'已完成',superseded:'已替换',removed:'岗位已移除',reserved:'待 Leader 派发',observed:'执行记录待更新',waiting:'待执行',running:'工作中',submitted:'待审查',accepted:'已验收',blocked:'阻塞',cancelled:'已取消',planned:'待创建',starting:'关联中',idle:'待命',unknown:'状态未知',completed:'执行已结束',inProgress:'执行中',failed:'执行失败',interrupted:'已中断'};
 const storagePrefix='team-workspace:interaction:v1:';
@@ -10,6 +11,7 @@ export function setupTeamView(app){
   let ui={},storageKey='',navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
   let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',modelCatalogLoaded=false,modelCatalogRefresh=null,controlBusy=false,controlTeamId=null,controlStatus=null,controlFeedback='',controlNotice=null;
   let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='',planExpanded=false;
+  let planStartRetry=null;
   const language=setupTeamLanguage();
   const actionTooltips=setupActionTooltips();
   const label=s=>language.text(labels[s]??s);
@@ -85,11 +87,13 @@ export function setupTeamView(app){
     $('planReviewNotice').textContent=review.scope==='expansion'?language.text('确认前保留原团队执行；变更确认只授权新范围，不代表任务验收。'):pending?language.text(review.confirmation==='team'?'这里只确认团队成员、职责和目标。具体任务在确认后由 Leader 拆分，无需逐项确认。':'确认前不会初始化成员或派发任务。确认后仍须独立审查与验收。'):language.text('计划授权与任务验收分别记录。');
     const actions=$('planReviewActions');actions.replaceChildren();
     if(pending){
-      const approve=button(language.text('确认并继续'),()=>void decidePlan('approve'),'primary','plan-approve');approve.id='planApprove';approve.disabled=planBusy||planDirty||!planDocument;
+      const approve=button(language.text(review.scope==='initial'?'确认并开始':'确认并继续'),()=>void decidePlan('approve'),'primary','plan-approve');approve.id='planApprove';approve.disabled=planBusy||planDirty||!planDocument;
       const save=button(language.text('保存修改'),()=>void savePlan(),'subtle-button','plan-save');save.id='planSave';save.disabled=planBusy||!planDirty||!planDocument;
       const cancel=button(review.scope==='expansion'?language.text('取消本次变更'):language.text('取消计划'),()=>void decidePlan('cancel'),'subtle-button','plan-cancel');cancel.id='planCancel';cancel.disabled=planBusy;
       const feedback=button(language.text('请求修改'),()=>void requestPlanFeedback(),'subtle-button','plan-feedback');feedback.id='planReturnToChat';feedback.disabled=planBusy;actions.append(approve,save,feedback,cancel);
     }
+    $('planStartRetry')?.remove();
+    if(!pending&&review.scope==='initial'&&review.status==='approved'&&planStartRetry?.teamId===current.team.id&&planStartRetry.planHash===review.hash){const retry=button(language.text('重试启动请求'),()=>void retryPlanStart(),'subtle-button','plan-start-retry');retry.id='planStartRetry';retry.disabled=planBusy;$('planReviewFeedback').after(retry);}
     const reload=button(planDocument?language.text('重新读取计划'):language.text('查看计划详情'),()=>void loadPlan(),'subtle-button','plan-reload');reload.id='planReload';reload.disabled=planBusy;actions.append(reload);
     $('planReviewFeedback').textContent=language.text(planFeedback);
     if(pending&&!planBusy&&!planDocument&&!planLoading)void loadPlan();
@@ -99,7 +103,7 @@ export function setupTeamView(app){
     if(planLoading?.failed)planLoading=null;const request={key};planLoading=request;
     try{const data=await call('read_team_plan',{teamId});if(key!==planKey||generation!==connectionGeneration||teamId!==current?.team.id)return;
       if(data.review.hash!==current.team.planReview.hash||data.review.version!==current.team.planReview.version)throw new Error(language.text('计划已变化，请等待面板同步后重新读取。'));
-      planDocument=data;planDirty=false;renderPlanDocument();if(data.review.status==='pending'&&!modelCatalogLoaded&&!modelCatalogLoading&&!modelCatalogError)void loadModelCatalog();planStatus(language.text(data.review.status==='pending'?'已读取完整计划。修改后请先保存，再确认新版本。':'已读取确认记录。'));
+      planDocument=data;planDirty=false;if(data.startRequest?.status==='failed')planStartRetry={teamId,planVersion:data.review.version,planHash:data.review.hash,retryOf:data.startRequest.requestId};renderPlanDocument();if(data.review.status==='pending'&&!modelCatalogLoaded&&!modelCatalogLoading&&!modelCatalogError)void loadModelCatalog();planStatus(language.text(data.review.status==='pending'?'已读取完整计划。修改后请先保存，再确认新版本。':'已读取确认记录。'));
     }catch(e){if(key===planKey)planStatus(e.message);}finally{if(planLoading===request)planLoading=planDocument?null:{failed:true};if(key===planKey)renderPlanReview();}
   }
   function renderPlanDocument(){
@@ -198,11 +202,22 @@ export function setupTeamView(app){
     if(planBusy||action==='approve'&&(!planDocument||planDirty))return;
     const key=planKey,generation=connectionGeneration,teamId=current.team.id,p=current.team.planReview,requestId=crypto.randomUUID();planBusy=true;renderPlanReview();
     try{const decisionResult=await call(action==='approve'?'approve_team_plan':'cancel_team_plan',{teamId,revision:current.team.revision,planVersion:p.version,planHash:p.hash,requestId,note:action==='approve'?language.text('用户在面板确认此版本计划'):language.text('用户在面板取消此版本计划'),source:'panel-user-action'});
-      if(key!==planKey||generation!==connectionGeneration||teamId!==current?.team.id)return;
-      if(action==='approve')planStatus(language.text('计划已确认，等待 Leader 通过内部协作继续。'));
+      if(generation!==connectionGeneration||teamId!==current?.team.id||p.hash!==current.team.planReview?.hash||p.version!==current.team.planReview?.version)return;
+      if(action==='approve'&&p.scope==='initial')await startApprovedPlan({teamId,planVersion:p.version,planHash:p.hash,requestId},()=>generation===connectionGeneration&&teamId===current?.team.id&&current.team.planReview?.hash===p.hash);
+      else if(action==='approve')planStatus(language.text('计划已确认，等待 Leader 通过内部协作继续。'));
       else planStatus(language.text('已取消本次')+(p.scope==='expansion'?language.text('变更；原团队继续沿用已有授权。'):language.text('计划，未启动成员。')));
       if(teamId===current?.team.id&&generation===connectionGeneration)await accept(await call('read_team',{teamId,view:'state'}));
-    }catch(e){if(key===planKey)planStatus(language.text('操作未确认成功：')+e.message+language.text('。请重新读取当前计划；不要重复启动成员。'));}finally{planBusy=false;renderPlanReview();}
+    }catch(e){if(generation===connectionGeneration&&teamId===current?.team.id&&p.hash===current.team.planReview?.hash)planStatus(language.text('操作未确认成功：')+e.message+language.text('。请重新读取当前计划；不要重复启动成员。'));}finally{planBusy=false;renderPlanReview();}
+  }
+  async function startApprovedPlan(args,isCurrent){
+    let r;try{r=await sendPanelPlanStart(app,call,args,{isCurrent});}catch(error){if(isCurrent())planStatus(language.text('计划已确认，启动请求未能提交：')+error.message);return;}if(!isCurrent())return;
+    planStartRetry=r.status==='failed'?{teamId:args.teamId,planVersion:args.planVersion,planHash:args.planHash,retryOf:r.requestId}:null;
+    planStatus(language.text(r.status==='host-accepted'?'计划已确认，启动请求已交给当前会话；实际派发进度将在面板显示。':r.status==='failed'?'计划已确认，但宿主拒绝了启动请求。可点击重试，不需要重新组建团队。':r.status==='unsupported'?'计划已确认，等待 Leader 通过内部协作继续。此宿主未提供面板启动接口。':r.status==='already-started'?'团队已经开始，保留当前执行，不重复启动。':'计划已确认，启动请求结果尚未确认。保留原请求，不自动重复发送。'));
+  }
+  async function retryPlanStart(){
+    if(planBusy||!planStartRetry)return;const args={...planStartRetry,requestId:crypto.randomUUID()},generation=connectionGeneration;planBusy=true;renderPlanReview();
+    try{await startApprovedPlan(args,()=>generation===connectionGeneration&&args.teamId===current?.team.id&&args.planHash===current.team.planReview?.hash);}
+    catch(error){planStatus(error.message);}finally{planBusy=false;renderPlanReview();}
   }
   function renderControl(){
     const box=$('teamControl');if(!box)return;
@@ -1013,6 +1028,14 @@ export function setupTeamLanguage(){
     '正在查看历史团队，控制操作已关闭。':'Viewing archived team; controls are disabled.','已返回当前团队。':'Returned to the current team.','操作已保存。':'Operation saved.','当前项目已有团队，保留原团队。':'This project already has a team; its identity is preserved.','已返回聊天，等待你说明修改内容。':'Returned to chat; awaiting your requested changes.',
     '岗位':'Role','职责':'Responsibility','设置理由':'Reason','写入范围':'Write scopes','模型':'Model','思考档位':'Reasoning effort','备用模型':'Fallback model','任务名称':'Task title','验收条件':'Acceptance','负责岗位':'Assignee','搜索任务':'Search tasks','全部状态':'All statuses','查看成员执行':'View member execution','导出报告':'Export report','查看恢复信息':'Recovery information',
   };
+  Object.assign(dictionary,{
+    '确认并开始':'Confirm and start','重试启动请求':'Retry start request','计划已确认，启动请求未能提交：':'Plan approved, but the start request could not be submitted: ',
+    '计划已确认，启动请求已交给当前会话；实际派发进度将在面板显示。':'Plan approved. The start request was handed to this chat; actual dispatch progress will appear in the panel.',
+    '计划已确认，但宿主拒绝了启动请求。可点击重试，不需要重新组建团队。':'Plan approved, but the host rejected the start request. Retry without rebuilding the team.',
+    '计划已确认，等待 Leader 通过内部协作继续。此宿主未提供面板启动接口。':'Plan approved; awaiting the Leader. This host does not provide panel message capability.',
+    '团队已经开始，保留当前执行，不重复启动。':'The team has already started. Preserve its current execution.',
+    '计划已确认，启动请求结果尚未确认。保留原请求，不自动重复发送。':'Plan approved, but the start request is unconfirmed. Preserve the original request without resending.'
+  });
   Object.assign(dictionary,{
   "执行关联待核对：": "Execution association needs verification: ",
   "公开记录时间异常，执行状态待核对。": "Public record timestamps are invalid; execution state needs verification.",
