@@ -22,6 +22,18 @@ before(async()=>{const html=(await readFile('src/host.html','utf8')).replace('<s
  await new Promise(r=>server.listen(0,'127.0.0.1',r));url='http://127.0.0.1:'+server.address().port;
  browser=await chromium.launch({channel:'chrome',headless:true});await mkdir(dir,{recursive:true});});
 after(async()=>{await browser.close();await new Promise(r=>server.close(r));});
+test('validated delivery dependencies are distinct from raw submission in the real task detail UI',async()=>{
+ const {page,errors}=await open();try{await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t3').dependencies[0].when='delivered';const upstream=window.data.team.tasks.find(t=>t.id==='t2');upstream.status='submitted';upstream.attempts=[{runtimeStatus:'completed'}];upstream.deliveryReady=false;});await update(page);await page.locator('[data-task-id="t3"]').click();await expect(page.locator('#taskDetail')).toContainText('t2 有效交付后');await expect(page.locator('#taskDetail')).toContainText('等待有效交付');await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t2').deliveryReady=true;});await update(page);await expect(page.locator('#taskDetail')).toContainText('前置已满足');assert.deepEqual(errors,[]);}finally{await page.close();}
+});
+
+test('current goal view separates execution and acceptance, scopes history and preserves navigation without chat',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>{window.data.team.activeBatchId='feature';window.data.team.batches=[{id:'feature',title:'本次功能',goal:'验收本次功能',qualityMode:'standard',state:'active'}];for(const id of ['t1','t2']){const task=window.data.team.tasks.find(t=>t.id===id);task.batchId='feature';task.qualityMode='standard';}window.data.qualityMetrics={reviewDispatches:1};});await update(page);
+  await expect(page.locator('#teamGoalTitle')).toHaveText('本次功能');await expect(page.locator('#teamBatchSummary')).toContainText('标准验收');await expect(page.locator('[data-list-task-id="t1"]')).toContainText('执行完成 · 待审查');await expect(page.locator('[data-list-task-id="sibling"]')).toHaveCount(0);
+  await page.locator('#taskHistoryToggle').click();await expect(page.locator('[data-list-task-id="sibling"]')).toBeVisible();await page.locator('#taskHistoryToggle').click();await expect(page.locator('[data-list-task-id="sibling"]')).toHaveCount(0);
+  await page.screenshot({path:'evidence/quality-policy-0.37.0.png',fullPage:true});assert.deepEqual(errors,[]);assert.equal(await page.evaluate(()=>window.sent.length),0);
+ }finally{await page.close();}
+});
 async function open(options={}){
  const page=await browser.newPage({viewport:{width:1000,height:900},...options});const errors=[];page.on('pageerror',e=>errors.push(e.message));await page.goto(url);await boot(page);return {page,errors};
 }
@@ -213,7 +225,7 @@ test('member/task links, exact old round, focus/open/scroll retention, restorati
 test('collapsed members retain submitted/blocked work; parallel grid and overview persist',async()=>{
  const {page,errors}=await open();try{
   await page.locator('#toggleMembers').click();await expect(page.locator('[data-member-id="finished"]')).toHaveCount(0);
-  await expect(page.locator('[data-member-id="dev"]')).toBeVisible();await expect(page.locator('[data-member-id="dev"]')).toContainText('已交付，等待独立审查和验收');
+  await expect(page.locator('[data-member-id="dev"]')).toBeVisible();await expect(page.locator('[data-member-id="dev"]')).toContainText('执行完成，等待独立审查和验收');
   await expect(page.locator('[data-member-id="qa"]')).toBeVisible();
   await page.evaluate(async()=>{window.data.team.members.push({id:'idle',role:'未分配成员',responsibility:'等待任务',rosterVerified:true,agentThreadId:'idle-thread'});window.data.team.revision++;await window.view.accept(structuredClone(window.data));});
   await expect(page.locator('[data-member-id="idle"]')).toBeVisible();

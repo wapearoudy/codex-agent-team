@@ -106,7 +106,9 @@ export function orderedMembers(team,runs){
 }
 export function memberHasWork(member,tasks){return tasks.some(t=>t.memberId===member.id&&!['accepted','cancelled'].includes(t.status));}
 export function memberFinishedAt(member,tasks){return Math.max(0,...tasks.filter(t=>t.memberId===member.id).flatMap(t=>(t.attempts??[]).map(a=>Date.parse(a.endedAt)||0)));}
-export function dependencySatisfied(task,when){return when==='accepted'?task?.status==='accepted':['submitted','accepted'].includes(task?.status);}
+// Previews omit the contract's raw evidence. Only the server's recomputed
+// result can unlock a validated delivery; missing proof stays waiting.
+export function dependencySatisfied(task,when){if(when==='delivered')return ['submitted','accepted'].includes(task?.status)&&task?.deliveryReady===true;return when==='accepted'?task?.status==='accepted':['submitted','accepted'].includes(task?.status);}
 export function taskRelationships(team,task){
   return {waiting:(task.dependencies??[]).filter(d=>!dependencySatisfied(team.tasks.find(t=>t.id===d.taskId),d.when)).map(d=>{
     const upstream=team.tasks.find(t=>t.id===d.taskId),member=team.members.find(m=>m.id===upstream?.memberId);
@@ -117,9 +119,9 @@ export function memberWorkSummary(team,member,runs,readiness=[]){
   if(member.removedAt)return {taskId:null,kind:'removed',text:'岗位已移除，执行历史保留'};
   const tasks=team.tasks.filter(t=>t.memberId===member.id),running=tasks.find(t=>t.status==='running');
   if(running)return {taskId:running.id,kind:taskDisplayState(running,runs),text:running.title};
-  const submitted=tasks.find(t=>t.status==='submitted');if(submitted)return {taskId:submitted.id,kind:'submitted',text:'已交付，等待独立审查和验收'};
+  const submitted=tasks.find(t=>t.status==='submitted');if(submitted)return {taskId:submitted.id,kind:'submitted',text:submitted.qualityMode==='light'?'执行完成，等待 Leader 验收':'执行完成，等待独立审查和验收'};
   const pending=tasks.find(t=>!['accepted','cancelled'].includes(t.status));
-  if(pending){const waiting=taskRelationships(team,pending).waiting;if(waiting.length)return {taskId:pending.id,kind:'waiting',text:waiting.map(d=>`等待 ${d.taskId}（${d.memberLabel}）${d.when==='accepted'?'验收':'提交'}`).join('；')};
+  if(pending){const waiting=taskRelationships(team,pending).waiting;if(waiting.length)return {taskId:pending.id,kind:'waiting',text:waiting.map(d=>`等待 ${d.taskId}（${d.memberLabel}）${d.when==='accepted'?'验收':d.when==='delivered'?'有效交付':'提交'}`).join('；')};
     const blockers=readiness.find(r=>r.taskId===pending.id)?.blockers??[];return {taskId:pending.id,kind:pending.status==='blocked'?'blocked':'waiting',text:pending.blockReason||blockers.map(b=>b.message).join('；')||'已就绪，等待 Leader 派发'};}
   return {taskId:null,kind:memberState(member,team.tasks,runs),text:tasks.length?'本批任务已结束':'等待 Leader 分配任务'};
 }

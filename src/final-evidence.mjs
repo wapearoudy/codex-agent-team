@@ -15,7 +15,7 @@ export async function reuseFinalEvidence(team){
     if(acceptedEvidenceHash(team,review,task)!==r.evidenceHash)throw new Error('Saved integration evidence changed after acceptance; retain original proof and resolve the exception');
     assertContractPass(task);await assertEvidenceSnapshot(team,task);
     const verdict=parseReview(review.evidence.findLast(e=>e.attemptId===ra.id)?.summary,ra.marker);
-    for(const c of verdict.checks.filter(c=>c.status==='PASS'))checks.push({name:`${task.id}: ${c.name}`,status:'PASS',evidence:`${c.evidence}\nSaved task ${task.id}, attempt ${a.id}; review ${review.id}, attempt ${ra.id}; candidate ${r.candidateFingerprint}`});
+    for(const c of (r.batch?verdict.targets.find(v=>v.taskId===task.id)?.checks??[]:verdict.checks).filter(c=>c.status==='PASS'))checks.push({name:`${task.id}: ${c.name}`,status:'PASS',evidence:`${c.evidence}\nSaved task ${task.id}, attempt ${a.id}; review ${review.id}, attempt ${ra.id}; candidate ${r.candidateFingerprint}`});
     references.push({...ref,reviewAttemptId:ra.id,candidateFingerprint:r.candidateFingerprint});
   }
   return {checks,references};

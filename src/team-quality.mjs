@@ -13,7 +13,7 @@ const within=(path,scope)=>{const normalize=v=>{const p=posix.normalize(v.replac
 function strings(value,name,{paths=false}={}){
   if(!Array.isArray(value)||value.length>30||value.some(v=>!nonempty(v)||v.length>2000||paths&&!safeQualityPath(v))||new Set(value).size!==value.length)throw new Error(`Invalid quality contract ${name}`);
 }
-export function validateQualityPlan({members,tasks,goalCriteria,findings}){
+export function validateQualityPlan({members,tasks,goalCriteria,findings,batches}){
   if(goalCriteria!==undefined&&(!Array.isArray(goalCriteria)||!goalCriteria.length||goalCriteria.length>30||goalCriteria.some(c=>!c||!nonempty(c.id)||!nonempty(c.description))||new Set(goalCriteria.map(c=>c.id)).size!==goalCriteria.length))throw new Error('Goal criteria need unique IDs and descriptions');
   for(const task of tasks){
     const c=task.contract;if(!c)continue;
@@ -25,7 +25,7 @@ export function validateQualityPlan({members,tasks,goalCriteria,findings}){
     if(task.validationMode==='source-only'&&c.verify?.length)throw new Error('Source-only tasks cannot declare executed verification commands');
     const member=members.find(m=>m.id===task.memberId);
     if((c.inScope??[]).some(path=>!member?.writeScopes.some(scope=>within(path,scope))))throw new Error('Task write scope exceeds its member write scope');
-    if((c.coverageOf??[]).some(id=>!goalCriteria?.some(c=>c.id===id)))throw new Error('Task coverage references an undeclared goal criterion');
+    if((c.coverageOf??[]).some(id=>!(task.batchId?batches?.find(b=>b.id===task.batchId)?.goalCriteria:goalCriteria)?.some(c=>c.id===id)))throw new Error('Task coverage references an undeclared goal criterion');
   }
   if(findings!==undefined){
     if(!Array.isArray(findings))throw new Error('Invalid quality finding ledger');
@@ -39,7 +39,8 @@ export function validateQualityPlan({members,tasks,goalCriteria,findings}){
 }
 export function qualityBlockers(team,task){
   if(!task.contract||task.contract.stage==='requirements'||task.kind==='review')return [];
-  return team.tasks.filter(t=>t.contract?.stage==='requirements'&&t.status!=='accepted'&&!t.supersededBy).map(t=>({code:'requirements-gate',taskId:t.id,message:`等待需求任务 ${t.id} 独立验收`}));
+  const ancestors=new Set();function visit(id){if(ancestors.has(id))return;ancestors.add(id);for(const d of team.tasks.find(t=>t.id===id)?.dependencies??[])visit(d.taskId);}for(const d of task.dependencies??[])visit(d.taskId);
+  return team.tasks.filter(t=>t.contract?.stage==='requirements'&&!['accepted','cancelled'].includes(t.status)&&!t.supersededBy&&(task.batchId?t.batchId===task.batchId:task.qualityMode?ancestors.has(t.id):true)).map(t=>({code:'requirements-gate',taskId:t.id,message:`等待需求任务 ${t.id} 验收`}));
 }
 export function parseDelivery(text,expectedMarker){return parseStructuredReport(text,{expectedMarker,errorMessage:'Contract task must return a structured JSON delivery'});}
 export function assertContractDelivery(task,member,output,commands=[],{projectPath}={}){
@@ -91,15 +92,16 @@ export function recordFindings(team,review,target,verdict,{accept=false}={}){
     row.history.push({at:now(),reviewTaskId:review.id,reviewAttemptId:attemptId,targetTaskId:target.id,targetAttemptId:target.attempts.at(-1)?.id,severity:f.severity,description:f.description,status:f.status,evidence:f.resolutionEvidence??null});
   }
 }
-export function planRepair(team,review,target,note){
+export function planRepair(team,review,target,note,{retainReview=false}={}){
   team.requiresTeamWorkspaceVersion??='0.10.0';
   const round=(target.repairRound??1)+1,limit=team.policy?.maxReviewRounds??3;
   if(round>limit){
-    target.status='blocked';review.status='blocked';target.blockReason=review.blockReason=`Review round limit (${limit}) reached; Leader escalation required: ${note}`;
-    team.dispatchPaused=true;team.state='review-escalated';
+    target.status='blocked';target.blockReason=`Review round limit (${limit}) reached; Leader escalation required: ${note}`;
+    if(!retainReview){review.status='blocked';review.blockReason=target.blockReason;}
+    if(!target.qualityMode){team.dispatchPaused=true;team.state='review-escalated';}
     team.events.push({at:now(),type:'review-round-limit',taskId:target.id,reviewTaskId:review.id,limit});return null;
   }
-  const affected=new Set([target.id,review.id]);
+  const affected=new Set([target.id,...(retainReview?[]:[review.id])]);
   for(let changed=true;changed;){changed=false;for(const row of team.tasks)if(!affected.has(row.id)&&row.dependencies.some(d=>affected.has(d.taskId))){affected.add(row.id);changed=true;}}
   if(team.tasks.some(t=>affected.has(t.id)&&t.status==='running'))throw new Error('Stop and settle affected downstream members before planning repair');
   const stamp=now(),id='repair-'+randomUUID(),reviewId='review-'+randomUUID(),rootTaskId=qualityRoot(target);
@@ -107,12 +109,13 @@ export function planRepair(team,review,target,note){
   const repair=fresh(target);Object.assign(repair,{id,title:`修复第 ${round-1} 轮：${target.title}`.slice(0,200),parentTaskId:rootTaskId,repairRootTaskId:rootTaskId,repairRound:round,repairFindingIds:openFindings(team,target).map(f=>f.id),context:`${target.context??''}\nIndependent review: ${note}`.slice(-12000)});delete repair.supersededBy;
   if(repair.contract&&['implementation','repair'].includes(target.contract.stage))repair.contract.stage='repair';
   const followup=fresh(review);Object.assign(followup,{id:reviewId,title:`复审第 ${round} 轮：${target.title}`.slice(0,200),reviewOfTaskId:id,parentTaskId:rootTaskId,repairRound:round,dependencies:review.dependencies.map(d=>({...d,taskId:d.taskId===target.id?id:d.taskId}))});delete followup.supersededBy;
+  if(retainReview){delete followup.reviewOfTaskIds;followup.dependencies=[{taskId:id,when:'submitted'}];delete followup.completedTargets;}
   for(const row of team.tasks.filter(t=>affected.has(t.id)&&![target.id,review.id].includes(t.id))){
     row.dependencies=row.dependencies.map(d=>({...d,taskId:d.taskId===target.id?id:d.taskId===review.id?reviewId:d.taskId}));
     if(!row.supersededBy&&row.status!=='cancelled'){row.status='waiting';row.blockReason='Upstream repair requires fresh evidence';}
     (row.history??=[]).push({at:stamp,type:'repair-dependency-redirected',fromTaskId:target.id,toTaskId:id});
   }
-  for(const [task,replacement] of [[target,id],[review,reviewId]]){task.status='cancelled';task.supersededBy=replacement;task.blockReason='Replaced by independently reviewed repair; original evidence retained';}
+  for(const [task,replacement] of [[target,id],...(retainReview?[]:[[review,reviewId]])]){task.status='cancelled';task.supersededBy=replacement;task.blockReason='Replaced by independently reviewed repair; original evidence retained';}
   team.tasks.push(repair,followup);team.events.push({at:stamp,type:'repair-planned',rootTaskId,repairTaskId:id,reviewTaskId:reviewId,round});return {repairTaskId:id,reviewTaskId:reviewId,round};
 }
 export function qualityReport(team){

@@ -1,15 +1,16 @@
 import {controlSummary} from './team-control.mjs';
 import {planReviewSummary} from './team-plan-review.mjs';
 import {registrationGap} from './registration-gap.mjs';
+import {deliveryReady} from './team.mjs';
 // Display previews have a separate budget. Saved observations and full evidence
 // are never rewritten, and remain available through read_team(view=full).
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
-const attemptKeys=['id','memberId','number','state','contextGeneration','contextBudget','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection','acceptance','acceptanceException'];
+const attemptKeys=['id','memberId','number','state','contextGeneration','contextBudget','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','connection','acceptance','acceptanceException','leaderAcceptance','batchAcceptances','qualityPolicy'];
 const runKeys=['taskId','memberId','attemptId','threadId','turnId','status','statusEvidence','observedAt','connection','source','attemptIdentitySource','model','usage'];
 export const PANEL_MAX_BYTES=256*1024;
-export function panelTasks(tasks){
+export function panelTasks(tasks,activeBatchId){
   if(tasks.length<=80)return tasks;
-  const selected=new Set([...tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).slice(0,80),...tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-80)].slice(0,80));
+  const selected=new Set([...(activeBatchId?tasks.filter(t=>t.batchId===activeBatchId):[]),...tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).slice(0,80),...tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-80)].slice(0,80));
   return tasks.filter(t=>selected.has(t));
 }
 function previewBudget(bytes){
@@ -45,20 +46,20 @@ export function stateRun(run,budget=previewBudget(24*1024)){
 }
 export function stateRuns(runs){const budget=previewBudget(24*1024);return runs.map(run=>stateRun(run,budget));}
 export function panelResponse(data,detailToken){
-  const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
-  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks,data.team.activeBatchId),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
+  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival','activeBatchId']);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(data.team.requiresTeamWorkspaceVersion);
   team.goal=budget.text(data.team.goal,3000);
-  Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance'])));
+  Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance','batches'])));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);
   if(data.team.planReview)team.planReview=planReviewSummary(data.team);
   team.members=data.team.members.map(m=>({...pick(m,['id','role','goalRevision','goalUpdatedAt','displayName','threadTitle','taskName','status','agentThreadId','agentPath','contextGeneration','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','routeSnapshot','fallbackRoute','activeRoute','workspace','recoveryControl']))}));
-  team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound','contractRevision']),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
+  team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','reviewOfTaskIds','batchId','qualityMode','riskFlags','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound','contractRevision']),deliveryReady:deliveryReady(t),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
   const relevant=data.runs.filter(r=>ids.has(r.taskId));
   const latest=new Set(rows.map(t=>t.attempts.at(-1)?.id));
   const selected=relevant.toReversed().sort((a,b)=>Number(latest.has(b.attemptId))-Number(latest.has(a.attemptId))||Number(b.status==='inProgress')-Number(a.status==='inProgress')).slice(0,40);
   const runs=selected.map(r=>({...stateRun(r,budget),outputs:(r.outputs??[]).slice(-2).map(o=>({...pick(o,['id','type','at']),text:budget.text(o.text,6000)})),commands:(r.commands??[]).slice(-6).map(c=>({...pick(c,['id','status','exitCode','startedAt','endedAt']),command:budget.text(c.command,1000),output:budget.text(c.output,2000)}))}));
-  const output={kind:'team-detail',team,runs,detailToken,registrationGap:registrationGap(data.usage),observedAt:data.observedAt,observationMode:data.observationMode,readiness:budget.value((data.readiness??[]).filter(r=>ids.has(r.taskId))),usage:budget.value(data.usage),workflow:budget.value(data.workflow),diagnostics:budget.value(data.diagnostics),messages:budget.value((data.messages??[]).slice(-10)),checkpoints:budget.value((data.checkpoints??[]).slice(-10)),displayLimits:{preview:true,maxBytes:PANEL_MAX_BYTES,totalTasks:data.team.tasks.length,totalRuns:data.runs.length,truncated:false},evidenceAccess:{tool:'read_team_context',arguments:{teamId:team.id,view:'evidence'},required:['taskId'],handoffTool:'read_team_handoff'}};
+  const output={kind:'team-detail',team,runs,detailToken,qualityMetrics:data.qualityMetrics,registrationGap:registrationGap(data.usage),observedAt:data.observedAt,observationMode:data.observationMode,readiness:budget.value((data.readiness??[]).filter(r=>ids.has(r.taskId))),usage:budget.value(data.usage),workflow:budget.value(data.workflow),diagnostics:budget.value(data.diagnostics),messages:budget.value((data.messages??[]).slice(-10)),checkpoints:budget.value((data.checkpoints??[]).slice(-10)),displayLimits:{preview:true,maxBytes:PANEL_MAX_BYTES,totalTasks:data.team.tasks.length,totalRuns:data.runs.length,truncated:false},evidenceAccess:{tool:'read_team_context',arguments:{teamId:team.id,view:'evidence'},required:['taskId'],handoffTool:'read_team_handoff'}};
   if(data.quality)output.quality={...pick(data.quality,['source','resolvedFindingCount','repairCount','scopeEvidenceSource','scopeIsSandbox']),coverage:budget.value(data.quality.coverage),openFindingCount:data.quality.openFindings.length,openFindings:budget.value(data.quality.openFindings.slice(0,20).map(f=>pick(f,['id','rootTaskId','severity','status','description'])))};
   // Bound structural overhead as well as text, including very long histories.
   const size=()=>Buffer.byteLength(JSON.stringify(output));

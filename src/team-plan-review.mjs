@@ -1,10 +1,11 @@
 import {requireTeamVersion} from './team-version.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {normalizePolicy} from './team-policy.mjs';
+import {attachBatch} from './team-batches.mjs';
 
 const pick=(o,keys)=>Object.fromEntries(keys.filter(k=>o?.[k]!==undefined).map(k=>[k,structuredClone(o[k])]));
 const memberKeys=['id','role','responsibility','reason','writeScopes','route','routeSnapshot','fallbackRoute'];
-const taskKeys=['id','title','goal','context','acceptance','acceptanceCriteria','contract','memberId','priority','kind','validationMode','reviewOfTaskId','parentTaskId','resources','dependencies'];
+const taskKeys=['id','title','goal','context','acceptance','acceptanceCriteria','contract','memberId','priority','kind','validationMode','reviewOfTaskId','reviewOfTaskIds','batchId','qualityMode','riskFlags','parentTaskId','resources','dependencies'];
 const now=()=>new Date().toISOString();
 const stable=v=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.keys(v).sort().map(k=>[k,stable(v[k])])):v;
 export const planHash=value=>createHash('sha256').update(JSON.stringify(stable(value))).digest('hex');
@@ -55,13 +56,14 @@ export function adoptExistingAuthorization(team){
 export function stageExpansion(team,change,brief=''){
   assertPlanMutable(team);adoptExistingAuthorization(team);const previous=team.planReview;
   const pending=previous.scope==='expansion'&&previous.status==='pending'?structuredClone(previous.pending):{members:[],tasks:[]};
+  if(change.batch){if(pending.tasks.length&&!pending.batch)throw new Error('Confirm the existing expansion before adding a different goal batch');if(pending.batch&&planHash(pending.batch)!==planHash(change.batch))throw new Error('One pending expansion must retain the same goal batch policy');pending.batch=structuredClone(change.batch);}
   pending.members.push(...(change.members??[]).map(m=>pick(m,memberKeys)));pending.tasks.push(...(change.tasks??[]).map(t=>pick(t,taskKeys)));
   if(change.policy)pending.policy=normalizePolicy({...pending.policy??team.policy,...change.policy});
   if(change.maxParallel!==undefined)pending.maxParallel=change.maxParallel;
   team.planReview={status:'pending',scope:'expansion',version:previous.version+1,hash:planHash(pending),mode:'required',reason:'新增岗位、扩大范围或提高执行预算',brief,pending,updatedAt:now(),previousApproval:previous.approval??previous.previousApproval};
-  requireTeamVersion(team,'0.11.0');recordVersion(team,team.planReview,pending);return true;
+  requireTeamVersion(team,'0.11.0');if(pending.batch||pending.tasks.some(t=>t.qualityMode||t.batchId||t.riskFlags))requireTeamVersion(team,'0.37.0');recordVersion(team,team.planReview,pending);return true;
 }
-export function expansionCandidate(team){const p=team.planReview?.pending??{};return {...team,members:[...team.members,...(p.members??[])],tasks:[...team.tasks,...(p.tasks??[])],maxParallel:p.maxParallel??team.maxParallel};}
+export function expansionCandidate(team){const p=team.planReview?.pending??{},candidate=structuredClone({...team,members:[...team.members,...(p.members??[])],tasks:[...team.tasks,...(p.tasks??[])],maxParallel:p.maxParallel??team.maxParallel});if((p.tasks??[]).length)attachBatch(candidate,candidate.tasks.filter(t=>p.tasks.some(n=>n.id===t.id)),p.batch);return candidate;}
 export function policyExpands(before,after){const a=normalizePolicy(before),b=normalizePolicy(after);return a.tokenLimit!==null&&(b.tokenLimit===null||b.tokenLimit>a.tokenLimit)||b.maxAttempts>a.maxAttempts||b.maxReviewRounds>a.maxReviewRounds||b.contextChars>a.contextChars||!a.autoRepair&&b.autoRepair||a.requireKnownUsage&&!b.requireKnownUsage;}
 export function reviewRequest(team,input,action){
   if(['superseded','archived'].includes(team.state))throw new Error('Historical team is read-only');
@@ -74,8 +76,8 @@ export function reviewRequest(team,input,action){
   return {hash};
 }
 export function finishPlanDecision(team,input,action,hash){const p=team.planReview,at=now();p.status=action==='approve'?'approved':'cancelled';p.updatedAt=at;if(action==='approve')p.approval={source:input.source??'leader-recorded-user-confirmation',note:input.note,version:p.version,hash:p.hash,at};else p.cancelledAt=at;delete p.pending;team.planDecisions??=[];team.planDecisions.push({requestId:input.requestId,hash,action,version:p.version,at});team.planDecisions=team.planDecisions.slice(-200);team.events.push({at,type:`plan-${action}`,scope:p.scope,version:p.version,hash:p.hash,source:input.source??'leader-recorded-user-confirmation'});}
-export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.confirmation==='team'&&(team.taskPlanning!=='leader'||p.scope!=='initial'))throw new Error('Invalid formation confirmation');if(p.status==='pending'&&p.scope==='initial'&&team.taskPlanning==='leader'&&team.tasks.length)throw new Error('Formation tasks must be planned after approval');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
+export function validatePlanReview(team){const p=team.planReview;if(!p)return;if(!['0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion)||!['pending','approved','cancelled'].includes(p.status)||!['initial','expansion'].includes(p.scope)||!Number.isInteger(p.version)||p.version<1||! /^[0-9a-f]{64}$/.test(p.hash))throw new Error('Invalid plan review state');if(p.confirmation==='team'&&(team.taskPlanning!=='leader'||p.scope!=='initial'))throw new Error('Invalid formation confirmation');if(p.status==='pending'&&p.scope==='initial'&&team.taskPlanning==='leader'&&team.tasks.length)throw new Error('Formation tasks must be planned after approval');if(p.status==='pending'){const value=p.scope==='initial'?planConfiguration(team):p.pending;if(planHash(value)!==p.hash)throw new Error('Pending plan changed without a new review version');}if(p.scope==='initial'&&p.status!=='approved'&&(team.members.some(m=>m.agentThreadId)||team.tasks.some(t=>t.attempts.length)))throw new Error('Unapproved plans cannot contain native executions');}
 
-export function updateExpansionDraft(team,configuration,brief){const p=team.planReview;if(p?.scope!=='expansion'||p.status!=='pending')throw new Error('Only a pending expansion may be revised');const version=p.version;team.planReview={...p,status:'approved'};stageExpansion(team,{members:configuration.members??[],tasks:configuration.tasks??[],policy:configuration.policy,maxParallel:configuration.maxParallel},brief??p.brief);team.planReview.version=version+1;}
+export function updateExpansionDraft(team,configuration,brief){const p=team.planReview;if(p?.scope!=='expansion'||p.status!=='pending')throw new Error('Only a pending expansion may be revised');const version=p.version;team.planReview={...p,status:'approved'};stageExpansion(team,{members:configuration.members??[],tasks:configuration.tasks??[],policy:configuration.policy,maxParallel:configuration.maxParallel,batch:configuration.batch??p.pending?.batch},brief??p.brief);team.planReview.version=version+1;}
 
 export function assertDispatchAllowed(team){assertPlanExecutable(team);if(team.executionControl&&team.executionControl.status!=='active')throw new Error('Team dispatch is paused: stopping or halted; reconcile and explicitly resume before dispatch');}

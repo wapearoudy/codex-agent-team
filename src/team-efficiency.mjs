@@ -10,9 +10,9 @@ export function efficiencyAdvice(run){
 // Checkpoints, progress, usage and delivery receipt timestamps are not business
 // events. A stop, contract/goal change, new attempt or actionable inbox is.
 export function coordinationSignature(t){
-  return createHash('sha256').update(JSON.stringify([t.id,t.state,t.dispatchPaused,t.executionControl,t.planReview,t.policy,t.maxParallel,t.goal,
+  return createHash('sha256').update(JSON.stringify([t.id,t.state,t.dispatchPaused,t.executionControl,t.planReview,t.policy,t.maxParallel,t.goal,t.activeBatchId,t.batches,
     (t.members??[]).map(m=>pick(m,['id','status','agentThreadId','goalRevision','removedAt','recoveryControl'])),
-    (t.tasks??[]).map(x=>[x.id,x.status,x.memberId,x.priority,x.dependencies,x.contractRevision,x.goal,x.acceptance,x.acceptanceCriteria,x.contract,x.resources,x.validationMode,x.attempts?.at(-1)?.id,x.attempts?.at(-1)?.turnId,x.attempts?.at(-1)?.phaseHandoff?.status]),
+    (t.tasks??[]).map(x=>[x.id,x.status,x.memberId,x.priority,x.dependencies,x.contractRevision,x.goal,x.acceptance,x.acceptanceCriteria,x.contract,x.resources,x.validationMode,x.qualityMode,x.batchId,x.reviewOfTaskIds,x.attempts?.at(-1)?.id,x.attempts?.at(-1)?.turnId,x.attempts?.at(-1)?.phaseHandoff?.status]),
     (t.peerMessages??[]).filter(m=>m.recipientThreadId===t.leaderThreadId&&m.status!=='acknowledged'&&m.kind!=='progress').map(m=>[m.id,m.status])])).digest('hex');
 }
 export class SchemaCatalog{

@@ -20,6 +20,7 @@ docs/*
 !docs/CAPABILITIES.md
 !docs/cross-host-contract.md
 !docs/CROSS-HOST.md
+!docs/QUALITY_POLICY.md
 scripts/*
 !scripts/build.mjs
 !scripts/package.py

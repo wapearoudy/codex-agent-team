@@ -14,11 +14,11 @@ controls. Use the host's configured provider and model defaults.
 
 ## Native installation
 
-In the DSH plugin manager, enter `agent-team-deepseek-harness@0.36.1` after this
+In the DSH plugin manager, enter `agent-team-deepseek-harness@0.37.0` after this
 version is published to npm. For an existing CLI profile:
 
 ```text
-dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.36.1
+dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.37.0
 dsh --profile <existing-profile> --dump-config
 ```
 

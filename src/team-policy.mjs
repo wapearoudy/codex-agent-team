@@ -3,13 +3,14 @@ import {DurableStore} from './durable-store.mjs';
 import {validatePlan,validateMembers} from './team.mjs';
 
 export function normalizePolicy(input={}) {
+  if(input.qualityMode!==undefined&&!['light','standard','strict'].includes(input.qualityMode))throw new Error('Invalid quality mode');
   const tokenLimit=input.tokenLimit??null,contextChars=input.contextChars??24000,maxAttempts=input.maxAttempts??3;
   if(tokenLimit!==null&&(!Number.isSafeInteger(tokenLimit)||tokenLimit<1))throw new Error('Token limit must be a positive integer');
   if(!Number.isInteger(contextChars)||contextChars<4000||contextChars>100000)throw new Error('Context budget must be 4000–100000 characters');
   if(!Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)throw new Error('Attempt limit must be 1–10');
   const maxReviewRounds=input.maxReviewRounds??3;
   if(!Number.isInteger(maxReviewRounds)||maxReviewRounds<1||maxReviewRounds>10)throw new Error('Review round limit must be 1–10');
-  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds};
+  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds,...(input.qualityMode?{qualityMode:input.qualityMode}:{})};
 }
 export function nativeRoute(member){const route=member.activeRoute??(member.route?.model?member.route:member.routeSnapshot)??{};return {fork_turns:'none',...(route.model?{model:route.model}:{}),...(route.reasoningEffort?{reasoning_effort:route.reasoningEffort}:{})};}
 export function usageReport(team,runs=[],accounting) {

@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {panelResponse,panelTasks,stateRuns} from './panel-response.mjs';
 import {coordinationResponse} from './team-coordination-response.mjs';
 import {registrationGap} from './registration-gap.mjs';
+import {deliveryReady} from './team.mjs';
 
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
 const currentRuns=data=>data.runs.filter(r=>data.team.tasks.some(t=>t.id===r.taskId&&t.attempts.at(-1)?.id===r.attemptId));
@@ -24,15 +25,15 @@ export function teamResponse(data,view='summary',kind='team-summary',options={})
   const token=detailToken(data),gap=registrationGap(data.usage);
   if(view==='full')return {...data,kind:'team-detail',detailToken:token};
   if(view==='panel')return panelResponse(data,token);
-  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival','policy','profile']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(data.team.requiresTeamWorkspaceVersion);
-  const taskRows=view==='summary'?data.team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(data.team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-20)):panelTasks(data.team.tasks);
+  const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival','policy','profile','activeBatchId','batches']);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  const taskRows=view==='summary'?data.team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(data.team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-20)):panelTasks(data.team.tasks,data.team.activeBatchId);
   const numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const runs=stateRuns(currentRuns(data).filter(r=>taskRows.some(t=>t.id===r.taskId)));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);
   if(data.team.planReview)team.planReview=planReviewSummary(data.team);
   team.members=data.team.members.map(m=>pick(m,['id','role','responsibility','goalRevision','goalUpdatedAt','displayName','threadTitle','taskName','status','agentThreadId','agentPath','contextGeneration','rosterVerified','route','routeSnapshot','fallbackRoute','activeRoute','workspace','recoveryControl','removedAt']));
-  team.tasks=taskRows.map(t=>({...pick(t,['id','title','kind','memberId','status','blockReason','dependencies','reviewOfTaskId','supersededBy','repairRootTaskId','repairRound','contractRevision']),stage:t.contract?.stage,number:numbers.get(t.id),attempt:t.attempts.at(-1)?pick(t.attempts.at(-1),['id','memberId','number','state','contextGeneration','contextBudget','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','acceptance','acceptanceException']):null}));
+  team.tasks=taskRows.map(t=>({...pick(t,['id','title','kind','memberId','status','blockReason','dependencies','reviewOfTaskId','reviewOfTaskIds','batchId','qualityMode','supersededBy','repairRootTaskId','repairRound','contractRevision']),deliveryReady:deliveryReady(t),stage:t.contract?.stage,number:numbers.get(t.id),attempt:t.attempts.at(-1)?pick(t.attempts.at(-1),['id','memberId','number','state','contextGeneration','contextBudget','agentThreadId','turnId','runtimeStatus','startedAt','endedAt','acceptance','acceptanceException']):null}));
   if(view==='state')return {kind:'team-state',team,runs,registrationGap:gap,readiness:data.readiness?.filter(r=>taskRows.some(t=>t.id===r.taskId)),usage:data.usage?pick(data.usage,['totalTokens','leaderTokens','unregisteredNativeTokens','unregisteredNativeCount','inputTokens','cachedInputTokens','uncachedInputTokens','cacheRatio','outputTokens','scope','accountingComplete','observedAt','knownAttempts','unknownAttempts','complete','members','limit','remaining','exhausted','unverifiable']):undefined,workflow:data.workflow,detailToken:token,observedAt:data.observedAt,observationMode:data.observationMode};
   const {team:unusedTeam,runs:unusedRuns,messages,checkpoints,...rest}=data;
   return {...rest,kind,team,runs,detailToken:token,

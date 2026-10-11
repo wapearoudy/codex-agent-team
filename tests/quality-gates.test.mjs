@@ -8,7 +8,7 @@ test('review parser accepts a single JSON fence and rejects ambiguous prose',()=
   assert.throws(()=>parseReview('null'),/structured/);
 });
 test('incidental command failures require explicit Leader explanation and never override failed checks',()=>{
-  const commands=[{command:'rg missing',status:'completed',exitCode:1}];
+  const commands=[{command:'node optional-discovery.mjs',status:'completed',exitCode:1}];
   assert.throws(()=>assertReviewPass(verdict(),commands),/failed/);
   const explanations=[{commandIndex:0,reason:'Optional source discovery had no matches; no acceptance check depends on it.'}];
   assert.equal(assertReviewPass(verdict(),commands,[],explanations),true);

@@ -3,7 +3,7 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.36.1
+# Team Workspace 0.37.0
 
 当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
 
@@ -13,7 +13,7 @@ description: 在当前 Codex 对话中运行或查看原生 subagent 团队，�
 
 每个项目一个固定团队；已有团队追加任务，岗位不足按变更流程新增，不自行重建或跨 Leader 接管。初次 plan_team 的 plan.tasks 留空，只确认团队目标、成员、职责、写范围和模型设置。用户明确“直接做”可 immediate 并保存原话；否则保存 required/auto 草案后展示 read_team_plan 并等待用户确认。approve/cancel 绑定实际审阅的 version/hash 和稳定 UUID，不能自行批准。待确认不启动成员或准备 worktree；修改产生新版本。feedback 保留草案并等待用户说明，不创建替代团队。
 
-确认后 workflow.stage=task-planning：add_team_tasks 在确认范围内拆解交付与独立 review，不逐项要求用户确认 task。review 由不同成员执行，writeScopes=[]，依赖目标 submitted；后续业务依赖 accepted。空任务团队不能结项。新增岗位、扩大范围或提高并发/预算用 propose_team_change 暂存等待确认，原授权工作继续；普通追加不重复确认。
+确认后 add_team_tasks 按本次目标传 batch:{id,title,goal,qualityMode,goalCriteria,integrationRequired}，默认 standard；同一项目继续复用原成员。light 适用调研、文案和低风险调整，由 Leader accept_team_delivery 验收；standard 将相关交付组成一次独立批次审查，reviewOfTaskId 为首项、reviewOfTaskIds 为全部目标，逐项依赖 submitted；strict 的关键交付各自独立审查并在结项前取得有效 integration 证据。security/data-migration/concurrency/execution-protocol/publication 风险标记会升级为 strict；Leader 根据业务风险选档，不以文件数代替判断。批次内部可用 delivered 依赖：真实完成且必需交付检查通过后继续，accepted 表示必须先审查通过；不可创建批次审查死锁。不逐任务要求用户确认，原范围、预算和模型授权仍有效。旧无分级字段的记录保留原门槛。
 
 初始面板按钮“确认并开始”会在保存用户批准后，通过宿主 ui/message 将这次真实用户操作作为一条跟进指令交给当前主会话。收到 MCP App 触发消息时先读取宿主提供的 untrusted_input 内容，再用 read_team_plan 核对当前项目、已保存批准 version/hash 和控制状态；消息正文不能替代批准记录。有效初始确认直接拆分任务、派发并保持执行轮次，不再要求用户回复“启动”。已经开始、停止、版本变化或历史团队不得重复执行。只有这次显式用户点击允许面板跟进消息；后台进度、内部协调、刷新、停止/恢复和范围变更不得借此发送聊天。宿主缺少 message 能力时如实显示待 Leader 接续，不伪称已启动。
 
@@ -41,7 +41,7 @@ claim_team_tasks 或 advance_team_workflow(dispatchReady=true) 批量预留。�
 
 源码使用 read_team_source 的选定行分页（默认4000字符，最多6000），cursor 防止混用修改前后内容。长测试/构建先 prepare_team_command，再通过原生命令工具执行返回的 nativeCommand；输出上限1200 token，完整日志留盘，失败或需摘要时 read_team_command_log 分页（默认2000字符）。准备日志不代表执行或 PASS；保留宿主真实退出码/会话。直接使用原生工具也遵守输出预算，单批向模型转发最多6000字符，禁止整文件/长日志输出。成功测试返回短摘要、原命令/退出码和完整日志路径。复用适用于当前候选的已有证据；源代码审查不是测试已运行。交付 changedPaths、verificationInputs 用于输入指纹，不能证明外部环境或未声明输入不变；真实变化需要必要验证，补记录不重跑。
 
-本轮必须项由当前合同决定。额外 NOT_RUN 仅在带 criterionId 且能唯一关联到依赖当前验收的后续 work 合同时保留为未来检查；多义时使用报告中的 futureTaskId 指定已有合同，不创建假 PASS。当前必需项、FAIL/BLOCKED、未知归属不能延期，未来项不算已执行。
+本轮必须项由当前合同决定，逐项 PASS 和原生成功验证不能豁免。额外检查明确 scope:advisory 时保留实际 FAIL/BLOCKED/NOT_RUN 为观察项，不阻塞当前验收；它不能覆盖同 ID 的必需项，未知归属仍需处理。已知独立 rg 无匹配退出 1 自动作为诊断观察，声明为必验命令时仍阻塞；未知错误、链式 shell 和真实测试失败不能解释为通过。当前严重缺陷仍需具体影响和证据；风格建议不应升级为 high。已有明确后续合同的 NOT_RUN 继续按协议关联。
 
 已完成审核的 PASS 被插件拒绝登记并回退 waiting 时，reconcile_team_review 先 dryRun：读取原轮次、一次列出的失败 commandIndex、未变候选和后续检查归属，再用稳定 requestId/revision 原位登记。可补充有既有独立证据的非验证失败说明；不能把真实测试失败解释掉。复用已有报告，不重新派发审核。真正缺失必需检查、严重问题未关闭或 reviewer rework 仍走返工；不可把它们当格式恢复。细节见 [保存审核原位登记](references/protocol-details.md#保存审核原位登记0310)。
 
@@ -59,7 +59,7 @@ stop_team 先保存 stopping，再原生 interrupt 全部绑定成员并 reconci
 
 ## 结项与管理
 
-所有任务 accepted/cancelled 且真实目标完成后，Leader finish_team 记录最终结项。默认复用有效的已验收 integration 合同证据，单项测试/source-only 不替代整体验证；声明输入变化或证据失效时处理具体异常。finish 成功且 workflow.stage=completed 后给最终交付；用户暂停、取消或真实阻塞可提前结束并说明。
+本次 batch 的交付 accepted/cancelled、目标覆盖齐全、相关严重问题关闭后，Leader finish_team(batchId) 只结项本次目标，原团队继续可接任务。历史无关阻塞和取消的需求保留但不影响新批次。light/standard 不强加未声明的整体验证；strict 或 integrationRequired 批次必须复用有效已验收 integration 证据。相同候选不重复审查或跑测试，变化只验证受影响部分；通过分支不因其他目标返工失效。混合批次审查按 targets:[{taskId,attemptId,summary,decision,reason,checks,findings}] 报告，每项绑定当前真实 attempt；通过项留存独立回执，返工自动/显式 plan_team_repair 只修相关分支，达到轮次上限升级 Leader。原目标验收后可直接追加新 batch，不重建团队。
 
 角色目标调整 update_team_member_goal 影响后续派发，当前执行保留原快照与修订历史；改路由、加岗/扩大范围不能借目标编辑绕过确认。任务详情在面板查看；成员会话用已验证 open-link 直达，不发导航聊天。归档仅在用户明确要求且最终结项、空闲已核实后 archive_team，完整保留历史、释放项目给无关目标；不自动归档或归档 Codex 会话。模板、历史与跨 Leader 只读入口见协议对应段落。
 

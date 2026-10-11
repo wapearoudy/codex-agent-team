@@ -6,15 +6,18 @@ import {recoverableReview} from './review-recovery.mjs';
 
 // A bounded action batch for the current Leader. This module never owns a model
 // loop, sends messages, runs tools, accepts work or silently restarts a worker.
+import {currentTasks,qualityMode,reviewTargetIds} from './quality-policy.mjs';
+import {finishScope} from './team-batches.mjs';
 function deriveWorkflowActions(team,runs=[]) {
+  const scopedTasks=currentTasks(team),activeBatch=team.batches?.find(b=>b.id===team.activeBatchId);
+  const goalComplete=activeBatch?.state==='delivered'||team.state==='delivered'||!!team.finalAcceptance;
   if(['superseded','archived'].includes(team.state))return {actions:[],authority:'current-main-conversation',stage:'archived',automaticAcceptance:true};
-  if(team.state==='delivered'||team.finalAcceptance)return {actions:[],authority:'current-main-conversation',stage:'completed',automaticAcceptance:true};
   if(team.planReview?.scope==='initial'&&team.planReview.status!=='approved')return {actions:team.planReview.status==='pending'?[{type:'plan-review',version:team.planReview.version,hash:team.planReview.hash,requiresUserConfirmation:true}]:[],authority:'current-main-conversation',stage:'plan-review',automaticAcceptance:true};
   if(team.executionControl?.status==='stopping')return {actions:[{type:'stop-members',requiresNativeInterrupt:true,tool:'reconcile_team_stop'}],authority:'current-main-conversation',stage:'stopping',automaticAcceptance:true};
   if(team.executionControl?.status==='halted')return {actions:[],authority:'current-main-conversation',stage:'halted',automaticAcceptance:true};
-  if(team.taskPlanning==='leader'&&!team.tasks.length&&!(team.planReview?.scope==='expansion'&&team.planReview.status==='pending')){const paused=team.dispatchPaused||team.executionControl&&team.executionControl.status!=='active';return {actions:paused?[]:[{type:'plan-tasks',requiresUserConfirmation:false,tool:'add_team_tasks',goal:team.goal,...(team.profile?{profile:team.profile,templateInstruction:'Read read_team_profile and adapt its constraints and optional seed tasks to this confirmed goal before add_team_tasks.'}:{}),memberIds:team.members.filter(m=>!m.removedAt).map(m=>m.id),instruction:'Leader decomposes the confirmed goal within the confirmed roles and write scopes, creates work plus independent reviews, and calls add_team_tasks. Do not ask the user to confirm individual tasks. Material scope expansions still require propose_team_change.'}],authority:'current-main-conversation',stage:'task-planning',automaticAcceptance:true};}
+  if(team.taskPlanning==='leader'&&!team.tasks.length&&!(team.planReview?.scope==='expansion'&&team.planReview.status==='pending')){const paused=team.dispatchPaused||team.executionControl&&team.executionControl.status!=='active';return {actions:paused?[]:[{type:'plan-tasks',requiresUserConfirmation:false,tool:'add_team_tasks',goal:team.goal,...(team.profile?{profile:team.profile,templateInstruction:'Read read_team_profile and adapt its constraints and optional seed tasks to this confirmed goal before add_team_tasks.'}:{}),memberIds:team.members.filter(m=>!m.removedAt).map(m=>m.id),instruction:'Leader decomposes the confirmed goal within the confirmed roles and write scopes, creates risk-appropriate work and scoped independent reviews (light: Leader acceptance; standard: one batch review; strict: separate review for each key delivery), and calls add_team_tasks. Do not ask the user to confirm individual tasks. Material scope expansions still require propose_team_change.'}],authority:'current-main-conversation',stage:'task-planning',automaticAcceptance:true};}
   const actions=team.planReview?.scope==='expansion'&&team.planReview.status==='pending'?[{type:'plan-review',version:team.planReview.version,hash:team.planReview.hash,requiresUserConfirmation:true}]:[],known=new Map(runs.map(r=>[r.attemptId,r]));
-  for(const t of team.tasks) {
+  for(const t of new Set([...(goalComplete?[]:scopedTasks),...team.tasks.filter(t=>t.status==='running')])) {
     const a=t.attempts.at(-1),run=known.get(a?.id);
     if(t.status==='running') {
       if(a.state==='reserved')actions.push({type:'verify-before-binding',taskId:t.id,attemptId:a.id});
@@ -24,6 +27,10 @@ function deriveWorkflowActions(team,runs=[]) {
       }
     } else if(t.status==='waiting'&&recoverableReview(team,t)) {
       actions.push({type:'reconcile-review',taskId:t.id,attemptId:a.id,proposedDecision:'accept',requiresLeaderValidation:true,tool:'reconcile_team_review',reason:'Reuse the saved independent verdict; resolve registration exceptions without another review or test run'});
+    } else if(t.kind!=='review'&&t.status==='submitted'&&qualityMode(t)==='light'&&!team.tasks.some(r=>r.kind==='review'&&reviewTargetIds(r).includes(t.id))) {
+      actions.push({type:'accept-light-delivery',taskId:t.id,attemptId:a.id,requiresLeaderValidation:true,tool:'accept_team_delivery'});
+    } else if(t.status==='blocked'&&!t.supersededBy&&team.tasks.some(r=>r.attempts.at(-1)?.batchReview?.targets?.some(v=>v.taskId===t.id&&v.decision==='rework'))) {
+      actions.push({type:'plan-repair',taskId:t.id,requiresLeaderValidation:true,tool:'plan_team_repair'});
     } else if(t.kind==='review'&&t.status==='submitted') {
       let verdict;try{verdict=parseReview(t.evidence.at(-1)?.summary,a?.marker);}catch{verdict=null;}
       actions.push({type:a?.acceptanceException?'review-exception':'accept-review',taskId:t.id,attemptId:a?.id,proposedDecision:verdict?.decision??null,requiresLeaderValidation:!!a?.acceptanceException,...(a?.acceptanceException?{reason:a.acceptanceException.reason,tool:'accept_team_review'}:{tool:'advance_team_workflow'})});
@@ -31,15 +38,15 @@ function deriveWorkflowActions(team,runs=[]) {
   }
   // Only reservations change while deriving a batch. Historical observations
   // and deliveries may be huge and are never needed or copied here.
-  const candidates=team.tasks.filter(t=>t.status==='waiting').sort((a,b)=>a.priority-b.priority),draft={...team,members:team.members.map(m=>({...m})),tasks:team.tasks.map(t=>({...t,attempts:[...t.attempts]}))},ready=[];
+  const candidates=(goalComplete?[]:scopedTasks).filter(t=>t.status==='waiting').sort((a,b)=>a.priority-b.priority),draft={...team,members:team.members.map(m=>({...m})),tasks:team.tasks.map(t=>({...t,attempts:[...t.attempts]}))},ready=[];
   for(const t of candidates) {
     if(dispatchBlockers(draft,draft.tasks.find(x=>x.id===t.id)).length)continue;
     ready.push(t.id);const picked=draft.tasks.find(x=>x.id===t.id);picked.status='running';picked.attempts.push({state:'reserved'});draft.members.find(m=>m.id===picked.memberId).status='starting';
   }
   if(ready.length&&!team.dispatchPaused)actions.push({type:'claim-batch',taskIds:ready.slice(0,8)});
-  if(team.tasks.length&&team.tasks.every(t=>['accepted','cancelled'].includes(t.status)))actions.push({type:'final-validation',requiresLeaderEvidence:true,tool:'finish_team',reusableEvidence:finalEvidenceCandidates(team)});
+  if(!goalComplete&&scopedTasks.length&&scopedTasks.every(t=>['accepted','cancelled'].includes(t.status)))actions.push({type:'final-validation',batchId:team.activeBatchId,requiresLeaderEvidence:true,tool:'finish_team',reusableEvidence:finalEvidenceCandidates(finishScope(team,team.activeBatchId).team)});
   const maxActions=team.members.length*2+2;
-  return {actions:actions.slice(0,maxActions),maxActions,hasMore:actions.length>maxActions,maxAttempts:team.policy?.maxAttempts??3,automaticAcceptance:true,authority:'current-main-conversation',stage:actions.some(a=>['accept-review','review-exception','reconcile-review'].includes(a.type))?'verify':ready.length?'execute':actions.some(a=>a.type==='final-validation')?'integrate':'observe'};
+  return {actions:actions.slice(0,maxActions),maxActions,hasMore:actions.length>maxActions,maxAttempts:team.policy?.maxAttempts??3,automaticAcceptance:true,authority:'current-main-conversation',...(activeBatch?{batchId:activeBatch.id}:{}),stage:goalComplete&&!actions.length?'completed':actions.some(a=>a.type==='plan-review')?'plan-review':actions.some(a=>['accept-review','review-exception','reconcile-review'].includes(a.type))?'verify':ready.length?'execute':actions.some(a=>a.type==='final-validation')?'integrate':'observe'};
 }
 
 export function workflowActions(team,runs=[],{usage}={}) {

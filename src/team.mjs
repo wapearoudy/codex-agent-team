@@ -23,7 +23,9 @@ import {validateCheckpoints} from './team-checkpoints.mjs';
 import {validateRoster,requiredRosterMembers} from './team-roster.mjs';
 import {TeamArchive} from './team-archive.mjs';
 import {TeamDocument} from './team-document.mjs';
-import {validateQualityPlan,qualityBlockers} from './team-quality.mjs';
+import {validateQualityPlan,qualityBlockers,assertContractPass} from './team-quality.mjs';
+import {reviewTargetIds,qualityMode,QUALITY_MODES,RISK_FLAGS,validateQualityAttempts} from './quality-policy.mjs';
+import {validateBatches} from './team-batches.mjs';
 const now=()=>new Date().toISOString();
 const allowedStatuses=new Set(['waiting','ready','running','submitted','accepted','blocked','cancelled']);
 
@@ -42,7 +44,8 @@ export function validateMembers(members){
 export function validatePlan(plan,{allowEmpty=plan.taskPlanning==='leader'}={}) {
   const {members,tasks}=plan;
   if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
-  if(!Array.isArray(tasks)||!allowEmpty&&tasks.length<1||tasks.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||tasks.filter(t=>t.kind==='integration-review').length>1) throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review');
+  if(!Array.isArray(tasks)||!allowEmpty&&tasks.length<1)throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review per goal');
+  for(const batch of new Set(tasks.map(t=>t.batchId??null))){const scoped=tasks.filter(t=>(t.batchId??null)===batch);if(scoped.filter(t=>t.kind!=='integration-review'&&!['accepted','cancelled'].includes(t.status)).length>40||scoped.filter(t=>t.kind==='integration-review').length>1)throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review per goal');}
   const memberIds=validateMembers(members);
   const taskIds=new Set();
   for(const t of tasks){
@@ -54,11 +57,16 @@ export function validatePlan(plan,{allowEmpty=plan.taskPlanning==='leader'}={}) 
     if(t.acceptanceCriteria!==undefined&&(!Array.isArray(t.acceptanceCriteria)||!t.acceptanceCriteria.length||t.acceptanceCriteria.length>30||t.acceptanceCriteria.some(c=>!c||typeof c.id!=='string'||!c.id.trim()||typeof c.description!=='string'||!c.description.trim())||new Set(t.acceptanceCriteria.map(c=>c.id)).size!==t.acceptanceCriteria.length))throw new Error('Acceptance criteria need unique IDs and descriptions');
     if(t.timeoutSeconds!==undefined&&(!Number.isInteger(t.timeoutSeconds)||t.timeoutSeconds<60||t.timeoutSeconds>7200))throw new Error('Task timeout must be 60–7200 seconds');
     if(t.kind==='review'&&typeof t.reviewOfTaskId!=='string')throw new Error(`Review task ${t.id} must identify its implementation task`);
-    if(!Array.isArray(t.dependencies)||t.dependencies.some(d=>!d||typeof d.taskId!=='string'||!['submitted','accepted'].includes(d.when))) throw new Error(`Task ${t.id} has invalid dependencies`);
+    if(t.qualityMode!==undefined&&!QUALITY_MODES.includes(t.qualityMode)||t.riskFlags?.some(x=>!RISK_FLAGS.includes(x))||t.riskFlags?.length&&qualityMode(t)!=='strict')throw new Error('Invalid task quality policy');
+    if(t.riskFlags?.length&&(!t.contract||!t.acceptanceCriteria?.length||(t.validationMode??'execute')!=='execute'||!t.contract.verify?.length))throw new Error('High-risk changes need an executable contract, required criteria and verification commands');
+    if(!Array.isArray(t.dependencies)||t.dependencies.some(d=>!d||typeof d.taskId!=='string'||!['submitted','accepted','delivered'].includes(d.when))) throw new Error(`Task ${t.id} has invalid dependencies`);
   }
   for(const t of tasks) for(const d of t.dependencies) if(!taskIds.has(d.taskId)||d.taskId===t.id) throw new Error(`Task ${t.id} references a missing or self dependency`);
   for(const t of tasks) if(t.kind==='review'&&(!taskIds.has(t.reviewOfTaskId)||t.reviewOfTaskId===t.id))throw new Error(`Review task ${t.id} references a missing target`);
   for(const t of tasks)if(t.kind==='review'){
+    const ids=reviewTargetIds(t);
+    if(!Array.isArray(ids)||!ids.length||new Set(ids).size!==ids.length||ids[0]!==t.reviewOfTaskId)throw new Error('Invalid batch review targets');
+    for(const id of ids){const target=tasks.find(x=>x.id===id);if(target?.memberId===t.memberId)throw new Error('A member cannot be the sole reviewer of its own work');if(!target||target.kind==='review'||!t.dependencies.some(d=>d.taskId===id&&d.when==='submitted'))throw new Error('Independent batch review must depend on every distinct submitted delivery');if(ids.length>1&&(!t.batchId||target.batchId!==t.batchId||qualityMode(target)!=='standard'))throw new Error('Batch reviews require standard deliveries in the same goal batch');}
     const target=tasks.find(x=>x.id===t.reviewOfTaskId);
     if(target.kind==='review')throw new Error('Review must target a deliverable task');
     if(target.memberId===t.memberId)throw new Error('A member cannot be the sole reviewer of its own work');
@@ -86,7 +94,8 @@ export function createTeam({projectId,projectPath,goal,plan,maxParallel=3,taskPl
 }
 
 function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.events.push({at,type,...details});if(team.mode!=='host-leader')team.events=team.events.slice(-500);}
-function dependenciesReady(team,task){return task.dependencies.every(d=>{const pre=team.tasks.find(t=>t.id===d.taskId);return d.when==='submitted'?['submitted','accepted'].includes(pre.status):pre.status==='accepted';});}
+export function deliveryReady(task){if(!task||!['submitted','accepted'].includes(task.status)||task.attempts?.at(-1)?.observation?.status!=='completed')return false;try{assertContractPass(task);return true;}catch{return false;}}
+function dependenciesReady(team,task){return task.dependencies.every(d=>{const pre=team.tasks.find(t=>t.id===d.taskId);return d.when==='delivered'?deliveryReady(pre):d.when==='submitted'?['submitted','accepted'].includes(pre.status):pre.status==='accepted';});}
 function conflict(a,b){const normalize=p=>p.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();const A=(a.writeScopes??[]).map(normalize),B=(b.writeScopes??[]).map(normalize);if(A.length&&B.length&&a.workspace?.mode==='git-worktree'&&b.workspace?.mode==='git-worktree'&&a.workspace.path!==b.workspace.path)return false;if(!A.length&&!B.length)return false;return !A.length||!B.length||A.some(x=>B.some(y=>x==='.'||y==='.'||x===y||x.startsWith(y+'/')||y.startsWith(x+'/')));}
 
 export function consumedAttempts(task){return task.attempts?.length?task.attempts.filter(a=>a.state!=='released'&&!(a.state==='handed-off'&&a.phaseHandoff?.status==='completed')).length:task.attempt??0;}
@@ -100,7 +109,7 @@ export function dispatchBlockers(team,task){
   if(team.dispatchPaused)add('paused','Leader 已暂停新任务派发');
   reasons.push(...qualityBlockers(team,task));
   if(consumedAttempts(task)>=(team.policy?.maxAttempts??3))add('attempt-limit',`已达到 ${team.policy?.maxAttempts??3} 次实际执行/预留上限，保留历史等待 Leader 调整范围`);
-  for(const d of task.dependencies){const pre=team.tasks.find(t=>t.id===d.taskId);if(!(d.when==='submitted'?['submitted','accepted'].includes(pre?.status):pre?.status==='accepted'))add('dependency',`等待 ${d.taskId} ${d.when==='accepted'?'验收':'提交'}`,d.taskId);}
+  for(const d of task.dependencies){const pre=team.tasks.find(t=>t.id===d.taskId);if(!(d.when==='delivered'?deliveryReady(pre):d.when==='submitted'?['submitted','accepted'].includes(pre?.status):pre?.status==='accepted'))add('dependency',`等待 ${d.taskId} ${d.when==='accepted'?'验收':d.when==='delivered'?'有效交付':'提交'}`,d.taskId);}
   const member=team.members.find(m=>m.id===task.memberId),active=team.tasks.filter(t=>t.status==='running'&&t.id!==task.id);
   if(!member||!['planned','idle'].includes(member.status))add('member-busy','负责成员尚未空闲');
   if(active.length>=team.maxParallel)add('parallel-limit','团队并发名额已满');
@@ -113,7 +122,7 @@ export function dispatchBlockers(team,task){
 }
 
 export function readyTasks(team){
-  return team.tasks.filter(t=>t.status==='waiting'&&dependenciesReady(team,t)&&!team.dispatchPaused)
+  return team.tasks.filter(t=>(!team.activeBatchId||t.batchId===team.activeBatchId)&&t.status==='waiting'&&dependenciesReady(team,t)&&!team.dispatchPaused)
     .sort((a,b)=>(a.priority??3)-(b.priority??3)||a.createdAt.localeCompare(b.createdAt));
 }
 export function schedule(team){
@@ -125,7 +134,7 @@ export function schedule(team){
     const member=team.members.find(m=>m.id===task.memberId);
     if(dispatchBlockers(team,task).length)continue;
     const attempt={id:randomUUID(),memberId:task.memberId,number:task.attempt+1,state:'running',agentThreadId:null,startedAt:now(),endedAt:null,summary:null,
-      ...(task.contractRevision?{contractRevision:task.contractRevision}:{}),dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null,contractRevision:team.tasks.find(t=>t.id===d.taskId).contractRevision??1}))};
+      ...(task.contractRevision?{contractRevision:task.contractRevision}:{}),qualityPolicy:task.qualityMode?{mode:task.qualityMode,batchId:task.batchId??null,riskFlags:task.riskFlags??[]}:undefined,dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null,contractRevision:team.tasks.find(t=>t.id===d.taskId).contractRevision??1}))};
     task.attempt++;task.status='running';task.blockReason=null;task.attempts.push(attempt);task.updatedAt=now();
     member.status='starting';member.lastActivityAt=now();selected.push(task);addEvent(team,'task-dispatched',{taskId:task.id,attemptId:attempt.id,memberId:member.id});
   }
@@ -154,7 +163,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);validateBatches(team);validateQualityAttempts(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}

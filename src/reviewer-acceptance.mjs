@@ -7,17 +7,21 @@ import {assertEvidenceSnapshot,evidenceHash,acceptedEvidenceHash} from './eviden
 import {verificationRecords,verificationCommandMatches} from './verification-command.mjs';
 import {futureReviewChecks,scopeAudit,validateReviewScope} from './review-scope.mjs';
 
+import {reviewTargetIds,commandClassification} from './quality-policy.mjs';
+import {applyBatchReview} from './batch-review.mjs';
 const now=()=>new Date().toISOString();
 export function reviewInputHash(team,review){
   const a=review.attempts.at(-1),target=team.tasks.find(t=>t.id===review.reviewOfTaskId),b=target?.attempts.at(-1);
   // A corrected format gate must retry an old cached rejection once. The
   // discriminator stays stable across unchanged reads and process restarts.
-  return evidenceHash(['review-contract-scope-and-registration-v6',a?.marker,a?.id,a?.turnId,a?.observation?.commands,review.evidence.findLast(e=>e.attemptId===a?.id)?.summary,a?.dependencyAttempts,target?.status,b?.id,b?.turnId,target?.contractRevision??1,target?.contract,target?.acceptanceCriteria,b?.delivery,b?.evidenceSnapshot,b?.verificationReconciliations,(team.findings??[]).filter(f=>f.rootTaskId===(target?.repairRootTaskId??target?.id)),team.tasks.map(t=>[t.id,t.kind,t.status==='cancelled',t.contractRevision??1,t.acceptanceCriteria,t.dependencies,t.contract])]);
+  const targets=reviewTargetIds(review).map(id=>{const t=team.tasks.find(x=>x.id===id),r=t?.attempts.at(-1);return [id,t?.status,r?.id,r?.turnId,t?.contractRevision??1,t?.contract,t?.acceptanceCriteria,r?.delivery,r?.evidenceSnapshot,r?.verificationReconciliations,(team.findings??[]).filter(f=>f.rootTaskId===(t?.repairRootTaskId??id))];});
+  return evidenceHash(['review-contract-scope-and-registration-v7',a?.marker,a?.id,a?.turnId,a?.observation?.commands,review.evidence.findLast(e=>e.attemptId===a?.id)?.summary,a?.dependencyAttempts,targets,team.tasks.map(t=>[t.id,t.kind,t.status==='cancelled',t.contractRevision??1,t.acceptanceCriteria,t.dependencies,t.contract])]);
 }
 export async function applyReviewDecision(engine,team,reviewId,attemptId,decision,note,nonValidationFailures=[],deferredChecks=[],{automatic=false}={}){
   const review=team.tasks.find(t=>t.id===reviewId),a=review?.attempts.at(-1),target=team.tasks.find(t=>t.id===review?.reviewOfTaskId),b=target?.attempts.at(-1);
   if((team.executionControl&&team.executionControl.status!=='active'||['stopping','halted','archived','superseded','delivered'].includes(team.state))&&!(automatic&&team.executionControl?.status==='stopping'))throw new Error('Resume the original team before registering review decisions');
   if(!a||a.id!==attemptId||review.kind!=='review')throw new Error('Current independent review required');
+  if(reviewTargetIds(review).length>1)return applyBatchReview(engine,team,review,attemptId,note);
   if(deferredChecks.length&&decision!=='accept')throw new Error('Deferred checks may only annotate an accepted phase review');
   let verdict;try{verdict=parseReview(review.evidence.findLast(e=>e.attemptId===a.id)?.summary,a.marker);}catch(error){if(decision==='accept'||team.policy?.autoRepair)throw error;}
   if(verdict&&team.policy?.autoRepair&&verdict.decision!==decision)throw new Error('Leader decision must match the structured review before automatic repair');
@@ -34,8 +38,10 @@ export async function applyReviewDecision(engine,team,reviewId,attemptId,decisio
       const candidate=await engine.worktrees.inspect(team,member.id),submitted=b?.candidate;
       if(candidate.dirty||!submitted||candidate.head!==submitted.head||candidate.workspace.path!==submitted.path)throw new Error('Isolated candidate changed after submission; rework and independently review the new commit');
     }
-    const futureChecks=futureReviewChecks(team,review,verdict),scope={validationMode:target.validationMode,deferredChecks,futureChecks,verificationCommands:target.contract?.verify??[],workspace:b.evidenceSnapshot?.workspace};
+    const futureChecks=futureReviewChecks(team,review,verdict),scope={validationMode:target.validationMode,deferredChecks,futureChecks,verificationCommands:target.contract?.verify??[],workspace:b.evidenceSnapshot?.workspace,scopedChecks:!!target.qualityMode};
     assertReviewPass(verdict,a.observation?.commands??[],target?.acceptanceCriteria??[],nonValidationFailures,scope);
+    a.commandObservations=(a.observation?.commands??[]).flatMap((c,index)=>{const p=commandClassification(c,target.contract?.verify??[],b.evidenceSnapshot?.workspace);return p.expectedExitCodes?.includes(c.exitCode)&&c.exitCode!==0?[{commandIndex:index,...p,status:c.status,exitCode:c.exitCode}]:[];});
+    if(target.qualityMode)a.advisoryChecks=verdict.checks.filter(c=>c.scope==='advisory'&&!target.acceptanceCriteria?.some(r=>r.id===c.criterionId)||c.criterionId&&target.acceptanceCriteria?.length&&!target.acceptanceCriteria.some(r=>r.id===c.criterionId));
     if(automatic){
       // The contract gate checks the latest required verification outcomes.
       // Incidental work commands are trace evidence, not a second review gate.
@@ -71,7 +77,7 @@ export async function acceptCompletedReview(engine,team,review){
   const draft=structuredClone(team);
   try{
     const v=parseReview(review.evidence.findLast(e=>e.attemptId===a.id)?.summary,a.marker);
-    if(v.decision!=='accept')throw new Error(v.reason?.trim()||'Independent review requires rework');
+    if(reviewTargetIds(review).length===1&&v.decision!=='accept')throw new Error(v.reason?.trim()||'Independent review requires rework');
     await applyReviewDecision(engine,draft,review.id,a.id,'accept',v.reason,[],[],{automatic:true});
     Object.assign(team,draft);return true;
   }catch(error){
@@ -84,12 +90,13 @@ export async function acceptCompletedReview(engine,team,review){
 export function validateReviewerAcceptance(team){
   for(const task of team.tasks)for(const a of task.attempts){
     validateReviewScope(team,task,a);
+    if(a.batchReview&&JSON.stringify(a.batchReview)!==JSON.stringify(parseReview(task.evidence.findLast(e=>e.attemptId===a.id)?.summary,a.marker)))throw new Error('Batch review must preserve the original native verdict');
     if(a.futureCheckAssociations)assertReviewPass(parseReview(task.evidence.findLast(e=>e.attemptId===a.id)?.summary,a.marker),a.observation?.commands??[],a.futureCheckAssociations.acceptanceCriteria,a.commandExplanations?.items??[],{validationMode:a.deferredCheckExplanations?.validationMode??'execute',deferredChecks:a.deferredCheckExplanations?.items??[],futureChecks:a.futureCheckAssociations.items,verificationCommands:a.futureCheckAssociations.verificationCommands??[],workspace:a.futureCheckAssociations.workspace});
-    if(a.acceptanceException&&(!['0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion)||a.acceptanceException.attemptId!==a.id||task.kind!=='review'||!a.acceptanceException.reason||!a.acceptanceException.inputHash))throw new Error('Invalid reviewer exception audit');
-    for(const r of [a.acceptance,...(a.acceptanceHistory??[])].filter(Boolean)){
+    if(a.acceptanceException&&(!['0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion)||a.acceptanceException.attemptId!==a.id||task.kind!=='review'||!a.acceptanceException.reason||!a.acceptanceException.inputHash))throw new Error('Invalid reviewer exception audit');
+    for(const r of [a.acceptance,...(a.acceptanceHistory??[]),...(a.batchAcceptances??[])].filter(Boolean)){
       const review=team.tasks.find(t=>t.id===r.reviewTaskId),target=team.tasks.find(t=>t.id===r.targetTaskId),ra=review?.attempts.find(x=>x.id===r.reviewAttemptId),ta=target?.attempts.find(x=>x.id===r.targetAttemptId);
       const paired=[ta?.acceptance,...(ta?.acceptanceHistory??[])].some(p=>JSON.stringify(p)===JSON.stringify(r));
-      if(!['0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion)||r.source!=='independent-reviewer'||r.gate!=='plugin-quality-checks'||!ra||!ta||review.reviewOfTaskId!==target.id||review.memberId===target.memberId||!ra.agentThreadId||ra.agentThreadId===ta.agentThreadId||ra.review?.decision!=='accept'||r.reviewThreadId!==ra.agentThreadId||r.reviewTurnId!==ra.turnId||r.targetTurnId!==ta.turnId||!Number.isFinite(Date.parse(r.at))||! /^[a-f0-9]{64}$/.test(r.evidenceHash)||r.candidateFingerprint!==ta.evidenceSnapshot?.fingerprint||![ra.id,ta.id].includes(a.id)||JSON.stringify(ra.acceptance)!==JSON.stringify(r)||!paired)throw new Error('Invalid independent reviewer acceptance audit');
+      if(!['0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion)||r.source!=='independent-reviewer'||r.gate!=='plugin-quality-checks'||!ra||!ta||!reviewTargetIds(review).includes(target.id)||review.memberId===target.memberId||!ra.agentThreadId||ra.agentThreadId===ta.agentThreadId||(r.batch?!ra.batchReview?.targets?.some(v=>v.taskId===target.id&&v.attemptId===ta.id&&v.decision==='accept'):ra.review?.decision!=='accept')||r.reviewThreadId!==ra.agentThreadId||r.reviewTurnId!==ra.turnId||r.targetTurnId!==ta.turnId||!Number.isFinite(Date.parse(r.at))||! /^[a-f0-9]{64}$/.test(r.evidenceHash)||r.candidateFingerprint!==ta.evidenceSnapshot?.fingerprint||![ra.id,ta.id].includes(a.id)||!(r.batch?ra.batchAcceptances?.some(p=>JSON.stringify(p)===JSON.stringify(r)):JSON.stringify(ra.acceptance)===JSON.stringify(r))||!paired)throw new Error('Invalid independent reviewer acceptance audit');
     }
   }
 }

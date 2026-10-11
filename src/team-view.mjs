@@ -51,6 +51,8 @@ export function setupTeamView(app){
   const selectedTask=()=>current?.team.tasks.find(t=>t.id===ui.taskId);
   const selectedMember=()=>current?.team.members.find(m=>m.id===ui.memberId);
   const taskState=t=>taskDisplayState(t,current?.runs??[]);
+  const visibleTasks=()=>current?.team.activeBatchId&&!ui.showTaskHistory?current.team.tasks.filter(t=>t.batchId===current.team.activeBatchId):current?.team.tasks??[];
+  const qualityLabel=mode=>language.text(({light:'轻量验收',standard:'标准验收',strict:'严格验收'})[mode]??'严格验收');
   const pollDelay=()=>document.hidden?10000:1000;
   const liveFields=['status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','observationIssue','model','progress','activity','usage'];
   const liveRun=r=>Object.fromEntries(liveFields.filter(k=>r?.[k]!==undefined).map(k=>[k,r[k]]));
@@ -167,7 +169,7 @@ export function setupTeamView(app){
       number(row,language.text('优先级 ')+t.id,t.priority,v=>t.priority=v,1,5);
       if(t.kind==='review')select(row,language.text('审查对象 ')+t.id,t.reviewOfTaskId,allTasks().filter(x=>x.id!==t.id&&x.kind!=='review'&&x.memberId!==t.memberId).map(x=>[x.id,x.title]),v=>{const old=t.reviewOfTaskId;t.reviewOfTaskId=v;t.dependencies=t.dependencies.filter(d=>d.taskId!==old&&d.taskId!==v);t.dependencies.push({taskId:v,when:'submitted'});});
       const deps=node('details');deps.append(node('summary',language.text('任务依赖 ')+t.id));row.append(deps);
-      for(const other of allTasks().filter(x=>x.id!==t.id)){const existing=t.dependencies.find(d=>d.taskId===other.id);select(deps,language.text('依赖 ')+t.id+' ← '+other.id,existing?.when??'',[['',language.text('无依赖')],['submitted',language.text('等待提交')],['accepted',language.text('等待验收')]],v=>{t.dependencies=t.dependencies.filter(d=>d.taskId!==other.id);if(v)t.dependencies.push({taskId:other.id,when:v});});}
+      for(const other of allTasks().filter(x=>x.id!==t.id)){const existing=t.dependencies.find(d=>d.taskId===other.id);select(deps,language.text('依赖 ')+t.id+' ← '+other.id,existing?.when??'',[['',language.text('无依赖')],['submitted',language.text('等待提交')],['delivered',language.text('等待有效交付')],['accepted',language.text('等待验收')]],v=>{t.dependencies=t.dependencies.filter(d=>d.taskId!==other.id);if(v)t.dependencies.push({taskId:other.id,when:v});});}
       if(t.acceptanceCriteria)field(row,language.text('逐项验收 ')+t.id,t.acceptanceCriteria.map(x=>x.id+' | '+x.description).join('\n'),v=>t.acceptanceCriteria=lines(v).map(line=>{const i=line.indexOf('|');return {id:line.slice(0,i).trim(),description:line.slice(i+1).trim()};}),true);
       if(t.contract){for(const [key,title] of [['inScope',language.text('包含路径')],['outOfScope',language.text('排除路径')],['verify',language.text('验证命令')],['coverageOf',language.text('覆盖目标')]])field(row,title+' '+t.id,(t.contract[key]??[]).join('\n'),v=>t.contract[key]=lines(v),true);}
       if(pending)row.append(button(language.text('删除任务 ')+t.id,()=>change(()=>{const ids=new Set([t.id,...tasks.filter(x=>x.reviewOfTaskId===t.id).map(x=>x.id)]);if(tasks.some(x=>!ids.has(x.id)&&x.dependencies.some(d=>ids.has(d.taskId))))throw new Error(language.text('其他任务仍依赖此任务，请先调整依赖。'));for(let i=tasks.length-1;i>=0;i--)if(ids.has(tasks[i].id))tasks.splice(i,1);})));
@@ -275,15 +277,18 @@ export function setupTeamView(app){
     const focused=document.activeElement?.dataset?.focusKey,scrollY=ui.scrollY??window.scrollY;
     restoring=true;
     if(viewingHistory){$('teamControl').hidden=true;}
-    const {team,runs}=current,tasks=team.tasks,active=runs.filter(r=>tasks.some(t=>t.status==='running'&&t.attempts.at(-1)?.id===r.attemptId)&&runIsActive(r));
-    taskNumbers=new Map(tasks.map((task,index)=>[task.id,'t'+(task.number??index+1)]));
+    const {team,runs}=current,tasks=visibleTasks(),active=runs.filter(r=>tasks.some(t=>t.status==='running'&&t.attempts.at(-1)?.id===r.attemptId)&&runIsActive(r));
+    taskNumbers=new Map(team.tasks.map((task,index)=>[task.id,'t'+(task.number??index+1)]));
     const usage=current.usage;$('usageSummary').textContent=usage?language.text('累计处理 ')+usage.totalTokens.toLocaleString()+' tokens'+(usage.cachedInputTokens!=null?language.text(' · 缓存输入 ')+usage.cachedInputTokens.toLocaleString():'')+(usage.uncachedInputTokens!=null?language.text(' · 新增输入 ')+usage.uncachedInputTokens.toLocaleString():'')+(usage.outputTokens!=null?language.text(' · 输出 ')+usage.outputTokens.toLocaleString():'')+(usage.unknownAttempts?' · '+usage.unknownAttempts+language.text(usage.scope==='current-team-time-window'?' 个上下文用量未知':' 轮用量未知'):'')+(usage.limit?language.text(' / 预算 ')+usage.limit.toLocaleString():'')+(usage.leaderTokens!=null?language.text(' · 含 Leader ')+usage.leaderTokens.toLocaleString():'')+(usage.unregisteredNativeCount?language.text(' · 未登记成员 ')+usage.unregisteredNativeCount:''):'';
     $('usageSummary').title=usage?.scope==='current-team-time-window'?language.text('当前团队时间范围的累计处理量，包含缓存输入；未登记原生成员只统计成本，不代表已验收。'):'';
     renderExecutionNotice();
     const unknown=tasks.filter(t=>taskState(t)==='unknown'),observed=tasks.filter(t=>taskState(t)==='observed');
     $('projectName').textContent=team.projectPath.split(/[\\/]/).filter(Boolean).at(-1)||'Team Workspace';
     $('currentProject').textContent=language.text('当前主会话的固定团队 · ')+(team.state==='delivered'?language.text('已完成本批验收'):language.text('任务与成员执行'));
-    $('goalDetails').querySelector('.eyebrow').textContent=language.text(viewingHistory?'历史目标':'当前目标');$('teamGoalText').textContent=team.goal;$('teamGoalTitle').textContent=team.goal;$('goalDetails').hidden=false;
+    const batch=team.batches?.find(b=>b.id===team.activeBatchId);
+    $('goalDetails').querySelector('.eyebrow').textContent=language.text(viewingHistory?'历史目标':'当前目标');$('teamGoalText').textContent=batch?.goal??team.goal;$('teamGoalTitle').textContent=batch?.title??team.goal;$('goalDetails').hidden=false;
+    const batchSummary=$('teamBatchSummary');if(batchSummary){batchSummary.hidden=!batch;batchSummary.textContent=batch?qualityLabel(batch.qualityMode)+' · '+language.text(batch.state==='delivered'?'本目标已验收':'本目标执行中')+(current.qualityMetrics?' · '+language.text('审查执行 ')+current.qualityMetrics.reviewDispatches:''):'';}
+    const historyToggle=$('taskHistoryToggle');if(historyToggle){historyToggle.hidden=!batch;historyToggle.textContent=language.text(ui.showTaskHistory?'仅看本次目标':'查看历史任务');historyToggle.onclick=()=>{ui.showTaskHistory=!ui.showTaskHistory;storeState();render();};historyToggle.setAttribute('aria-pressed',String(!!ui.showTaskHistory));}
     const memberCount=team.members.filter(m=>!m.removedAt).length;
     $('headerSummary').textContent=team.taskPlanning==='leader'&&!tasks.length?language.text(team.planReview?.status==='pending'?'待确认团队':'待拆分任务'):tasks.filter(t=>t.status==='accepted').length+'/'+tasks.length+language.text(' 已验收');
     $('progressValue').textContent=(tasks.length?Math.round(tasks.filter(t=>t.status==='accepted').length/tasks.length*100):0)+'%';
@@ -348,7 +353,7 @@ export function setupTeamView(app){
   }
   if($('showRegistration'))$('showRegistration').onclick=()=>void showRegistrationRecords();
   function renderOverviewStatus(active,pending,unknown){
-    const {team}=current,tasks=team.tasks,control=team.executionControl?.status,issues=tasks.filter(t=>['blocked','failed','interrupted'].includes(taskState(t))),ready=pending.filter(r=>r.ready),submitted=tasks.filter(t=>t.status==='submitted'),reserved=tasks.filter(t=>taskState(t)==='reserved');
+    const {team}=current,tasks=visibleTasks(),control=team.executionControl?.status,issues=tasks.filter(t=>['blocked','failed','interrupted'].includes(taskState(t))),ready=pending.filter(r=>r.ready),submitted=tasks.filter(t=>t.status==='submitted'),reserved=tasks.filter(t=>taskState(t)==='reserved');
     const counted=(n,source,singular,plural)=>language.locale==='en'?n+' '+(n===1?singular:plural):n+language.text(source);
     let state='waiting',title=language.text('等待执行'),task=null;
     if(team.planReview?.scope==='initial'&&team.planReview.status==='pending')title=language.text(team.planReview.confirmation==='team'?'等待团队确认':'等待计划确认');
@@ -374,11 +379,11 @@ export function setupTeamView(app){
   }
   function filteredTasks(){
     const query=$('taskSearch').value.trim().toLowerCase(),status=$('taskStatusFilter').value;
-    return current.team.tasks.filter(t=>(!status||t.status===status)&&(!query||[t.id,t.title,t.goal,taskNumbers.get(t.id)].some(v=>String(v??'').toLowerCase().includes(query))));
+    return visibleTasks().filter(t=>(!status||t.status===status)&&(!query||[t.id,t.title,t.goal,taskNumbers.get(t.id)].some(v=>String(v??'').toLowerCase().includes(query))));
   }
   function renderTaskList(){
     const list=$('taskList'),matching=filteredTasks(),tasks=matching.slice(0,100);list.replaceChildren();
-    $('taskListCount').textContent=tasks.length+'/'+current.team.tasks.length;
+    $('taskListCount').textContent=tasks.length+'/'+visibleTasks().length;
     const focus=$('taskFocus');focus.replaceChildren();
     const groups=[['blocked','failed','interrupted','unknown'],['running','starting','reserved','observed'],['submitted','completed','settling']];
     const highlighted=groups.map(states=>matching.find(t=>states.includes(taskState(t)))).find(Boolean)??matching.find(t=>t.status==='waiting'&&current.readiness?.some(r=>r.taskId===t.id&&r.ready));
@@ -393,26 +398,28 @@ export function setupTeamView(app){
       const row=button('',()=>{chooseTask(task.id);if(ui.taskId){$('selectionPanel').focus({preventScroll:true});$('selectionPanel').scrollIntoView({block:'nearest'});}},'task-row','task-row:'+task.id),copy=node('span',undefined,'task-copy'),owner=current.team.members.find(m=>m.id===task.memberId),state=taskState(task);
       row.dataset.listTaskId=task.id;row.dataset.state=state;row.dataset.focused=String(task.id===highlighted?.id);row.setAttribute('aria-pressed',String(ui.taskId===task.id));copy.append(node('span',task.title,'task-title'));
       const assignee=node('span',owner?roleLabel(owner):task.memberId,'task-owner');assignee.title=owner?memberName(current.team,owner):task.memberId;
-      row.append(node('span',taskNumbers.get(task.id),'task-number'),copy,assignee,node('span',label(state),'status-pill '+state));list.append(row);
+      if(task.qualityMode)copy.append(node('small',qualityLabel(task.qualityMode),'task-quality'));
+      const statusText=state==='submitted'?language.text('执行完成')+' · '+language.text(task.qualityMode==='light'?'待 Leader 验收':'待审查'):label(state);
+      row.append(node('span',taskNumbers.get(task.id),'task-number'),copy,assignee,node('span',statusText,'status-pill '+state));list.append(row);
     }
     if(!tasks.length)list.append(node('p',language.text('没有匹配的任务'),'task-list-empty'));
     if(matching.length>tasks.length)list.append(node('p',language.text('当前仅显示前 100 项，请搜索或筛选更多任务。'),'task-list-empty'));
   }
   function renderMembers(){
-    const {team,runs}=current,ordered=orderedMembers(team,runs),visible=ui.membersOpen?ordered:ordered.filter(({member})=>memberHasWork(member,team.tasks)||!team.tasks.some(t=>t.memberId===member.id));
+    const {team,runs}=current,ordered=orderedMembers({...team,tasks:visibleTasks()},runs),visible=ui.membersOpen?ordered:ordered.filter(({member})=>memberHasWork(member,team.tasks)||!team.tasks.some(t=>t.memberId===member.id));
     const hidden=ordered.length-visible.length;
     $('membersHeading').textContent=team.members.filter(m=>!m.removedAt).length+language.text(' 名成员')+(team.members.some(m=>m.removedAt)?language.text(' · 含历史岗位'):'');
     $('toggleMembers').textContent=ui.membersOpen?language.text('收起已结束成员'):hidden?language.text('展开已结束 ')+hidden+language.text(' 名成员'):language.text('展开全部');
     $('toggleMembers').setAttribute('aria-expanded',String(ui.membersOpen));$('memberTree').hidden=false;
     $('memberTree').replaceChildren(...visible.map(({member:m,index:i,state})=>{
-      const assigned=team.tasks.filter(t=>t.memberId===m.id),item=node('article',undefined,'member'+(state==='running'?' active':''));
+      const assigned=visibleTasks().filter(t=>t.memberId===m.id),item=node('article',undefined,'member'+(state==='running'?' active':''));
       item.dataset.memberId=m.id;item.dataset.selected=String(ui.memberId===m.id);item.dataset.state=state;
       const head=node('div',undefined,'member-head'),avatar=node('div',m.role.slice(0,1)||String(i+1),'avatar');avatar.setAttribute('aria-hidden','true');
       const body=node('div',undefined,'member-info'),identity=button(roleLabel(m),()=>chooseMember(m.id),'member-name member-select','member:'+m.id);identity.title=memberName(team,m);
       identity.setAttribute('aria-pressed',String(ui.memberId===m.id));body.append(identity,node('span',m.responsibility,'responsibility'));
       const executions=memberExecutions(m,team.tasks,runs),latest=executions.toSorted((a,b)=>Date.parse(a.startedAt)-Date.parse(b.startedAt)).at(-1);
       if(latest?.model){const model=node('span',latest.model,'model-tag');model.title=latest.model;body.append(model);}
-      const summary=memberWorkSummary(team,m,runs,current.readiness),status=node('div',undefined,'member-state '+state);
+      const summary=memberWorkSummary({...team,tasks:visibleTasks()},m,runs,current.readiness),status=node('div',undefined,'member-state '+state);
       const summaryText=team.members.reduce((text,member)=>text.replaceAll(memberName(team,member),roleLabel(member)),summary.text);
       const activity=node('div',(summary.taskId?(taskNumbers.get(summary.taskId)??summary.taskId)+' · ':'')+summaryText,'member-action');
       status.append(node('div',label(state)),node('div',team.taskPlanning==='leader'&&!assigned.length?language.text('尚未分配任务'):assigned.filter(t=>t.status==='accepted').length+'/'+assigned.length+language.text(' 已验收'),'member-count'));
@@ -435,7 +442,7 @@ export function setupTeamView(app){
     if(!visible.length)$('memberTree').append(node('p',ui.membersOpen?language.text('团队尚未登记成员'):language.text('所有成员本批工作已结束，展开可回看执行记录。'),'muted'));
   }
   function renderGraph(){
-    const {team}=current,query=$('taskSearch').value.trim().toLowerCase(),status=$('taskStatusFilter').value;
+    const team={...current.team,tasks:visibleTasks()},query=$('taskSearch').value.trim().toLowerCase(),status=$('taskStatusFilter').value;
     const matching=filteredTasks();
     const tasks=(query||status?matching:team.tasks.length>100?team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-60)):matching).slice(-100),byId=new Map(tasks.map(t=>[t.id,t])),ranks=new Map(),rows=new Map(),positions=new Map();
     const cardWidth=160,cardHeight=76,columnStep=186,rowStep=88;
@@ -489,15 +496,16 @@ export function setupTeamView(app){
   }
   function renderDetails(){
     const task=current.team.tasks.find(t=>t.id===ui.taskId),box=$('taskDetail');box.hidden=!task;box.replaceChildren();if(!task)return;
+    if(task.qualityMode)box.append(node('p',qualityLabel(task.qualityMode)+(task.batchId?' · '+task.batchId:'')+(task.status==='submitted'?' · '+language.text('执行完成，验收处理中'):''),'task-quality-detail'));
     const member=current.team.members.find(m=>m.id===task.memberId),attempt=task.attempts.find(a=>a.id===ui.attemptId)??task.attempts.at(-1),relationship=taskRelationships(current.team,task);
     const head=node('div',undefined,'detail-heading');head.append(node('h2',task.id+' · '+task.title),node('span',label(taskState(task)),'status-pill '+taskState(task)));box.append(head);
     const actions=node('div',undefined,'detail-actions');actions.append(button(language.text('定位负责人 · ')+memberName(current.team,member),()=>locateMember(member.id),'subtle-button','locate:'+task.id),button(language.text('查看成员执行'),()=>{ui.taskId=task.id;chooseMember(member.id);},'subtle-button','member-detail:'+task.id));
     const executor=current.team.members.find(m=>m.id===(attempt?.memberId??member.id))??member;
     const open=button(language.text('打开对应 subagent'),()=>void requestNavigation(executor.id,task.id,attempt?.id),'subtle-button','task-open:'+task.id);open.disabled=!attempt?.agentThreadId;actions.append(open);if(open.disabled)actions.append(node('small',language.text('任务尚未绑定执行会话'),'muted'));if(ui.taskId)box.append(actions);
     const dl=node('dl'),field=(name,value)=>dl.append(node('dt',name),node('dd',value));field(language.text('负责人'),memberName(current.team,member));field(language.text('目标'),task.goal);field(language.text('验收'),task.acceptance);
-    field(language.text('前置'),task.dependencies.map(d=>d.taskId+' '+(d.when==='accepted'?language.text('验收后'):language.text('提交后'))).join('；')||language.text('无，可并行执行'));
-    field(language.text('等待条件'),relationship.waiting.length?relationship.waiting.map(d=>d.taskId+' · '+d.memberLabel+language.text(' · 等待')+(d.when==='accepted'?language.text('验收'):language.text('提交'))).join('；'):language.text('前置已满足'));
-    field(language.text('完成后解锁'),relationship.downstream.map(d=>d.id+' · '+d.memberLabel+'（'+(d.when==='accepted'?language.text('验收后'):language.text('提交后'))+'）').join('；')||language.text('无后续依赖'));
+    field(language.text('前置'),task.dependencies.map(d=>d.taskId+' '+(d.when==='accepted'?language.text('验收后'):d.when==='delivered'?language.text('有效交付后'):language.text('提交后'))).join('；')||language.text('无，可并行执行'));
+    field(language.text('等待条件'),relationship.waiting.length?relationship.waiting.map(d=>d.taskId+' · '+d.memberLabel+language.text(' · 等待')+(d.when==='accepted'?language.text('验收'):d.when==='delivered'?language.text('有效交付'):language.text('提交'))).join('；'):language.text('前置已满足'));
+    field(language.text('完成后解锁'),relationship.downstream.map(d=>d.id+' · '+d.memberLabel+'（'+(d.when==='accepted'?language.text('验收后'):d.when==='delivered'?language.text('有效交付后'):language.text('提交后'))+'）').join('；')||language.text('无后续依赖'));
     if(task.blockReason)field(language.text('阻塞原因'),task.blockReason);
     if(task.supersededBy)field(language.text('修复替代'),task.supersededBy+language.text('（原交付和审查证据保留）'));
     if(task.repairRound)field(language.text('审查轮次'),language.text('第 ')+task.repairRound+language.text(' 轮'));
@@ -527,7 +535,7 @@ export function setupTeamView(app){
   function renderMember(){
     const member=selectedMember(),box=$('memberDetail');box.hidden=!member||!ui.memberView;box.replaceChildren();if(box.hidden)return;
     const head=node('div',undefined,'detail-heading');head.append(node('h2',memberName(current.team,member)+language.text(' · subagent 执行')),button(language.text('返回团队'),()=>{ui.memberView=false;storeState();render();locateMember(member.id);},'subtle-button','back-team'));box.append(head);
-    const tasks=current.team.tasks.filter(t=>t.memberId===member.id),chips=node('div',undefined,'member-task-list');chips.append(...tasks.map(t=>chip(t,true)));box.append(chips);
+    const tasks=visibleTasks().filter(t=>t.memberId===member.id),chips=node('div',undefined,'member-task-list');chips.append(...tasks.map(t=>chip(t,true)));box.append(chips);
     const executions=memberExecutions(member,current.team.tasks,current.runs).toReversed(),attempt=executions.find(e=>e.attemptId===ui.attemptId)??executions.find(e=>e.taskId===ui.taskId)??executions[0];
     const list=node('div',undefined,'execution-tabs');list.setAttribute('role','group');list.setAttribute('aria-label',language.text('成员任务轮次'));
     for(const e of executions){const b=button(e.taskId+language.text(' · 第 ')+e.number+language.text(' 轮'),()=>chooseTask(e.taskId,e.attemptId,true),'subtle-button','execution-tab:'+e.attemptId);b.setAttribute('aria-pressed',String(attempt?.attemptId===e.attemptId));list.append(b);}box.append(list);
@@ -721,7 +729,7 @@ export function setupTeamView(app){
   }catch(error){$('feedback').textContent=language.text('记录读取失败：')+error.message;}}
   $('exportReport').onclick=()=>void showRecord('export_team_report');
   $('showRecovery').onclick=()=>void showRecord('read_team_recovery');
-  $('showDiagnostics').onclick=()=>{if(current){$('teamRecords').open=true;$('recordOutput').textContent=(current.diagnostics?.stages??[]).map(s=>s.taskId+language.text(' · 预留到绑定 ')+(s.reservationToBindMs??language.text('未知'))+language.text(' ms · 执行 ')+(s.executionMs??language.text('未知'))+' ms').join('\n')||language.text('尚无可计算的执行时间记录。');}};
+  $('showDiagnostics').onclick=()=>{if(current){$('teamRecords').open=true;const ids=new Set(visibleTasks().map(t=>t.id)),stages=(current.diagnostics?.stages??[]).filter(s=>ids.has(s.taskId)).map(s=>s.taskId+language.text(' · 预留到绑定 ')+(s.reservationToBindMs??language.text('未知'))+language.text(' ms · 执行 ')+(s.executionMs??language.text('未知'))+' ms'),metrics=current.qualityMetrics;const summary=metrics?[language.text('审查执行 ')+metrics.reviewDispatches,language.text('实际派发 ')+(metrics.executionDispatches??0),language.text('验证复用 ')+(metrics.reusedVerificationCount??0),language.text('相同候选重复验证 ')+(metrics.repeatedVerificationCount??0),language.text('已观察执行时长 ')+(metrics.observedExecutionMs??language.text('未知'))+' ms']:[];$('recordOutput').textContent=[...summary,...stages].join('\n')||language.text('尚无可计算的执行时间记录。');}};
   $('downloadReport').onclick=()=>{if(!report)return;const url=URL.createObjectURL(new Blob([report.text],{type:report.mimeType})),a=document.createElement('a');a.href=url;a.download=report.filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   return {accept,setLanguage:value=>language.set(value),connect:async()=>{linked=true;const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('loadingState').hidden=!current;$('emptyState').hidden=true;
     try{const data=await call('open_team_workspace');if(linked&&generation===connectionGeneration)await accept(data);}
@@ -945,7 +953,7 @@ function setupTeamExtras({app,call,getData,getTask,getLanguage,accept,switchTeam
           details.append(n('p',text('运行中先停止并核实终态，已提交先返工；已通过的合同保持冻结。')));
           details.append(btn(text('提交合同修订'),async()=>{try{const patch={goal:goal.value,acceptance:acceptance.value};if(criteria.value.trim())patch.acceptanceCriteria=lines(criteria.value).map(line=>{const at=line.indexOf(':');if(at<1)throw new Error('Each criterion needs ID: description');return {id:line.slice(0,at).trim(),description:line.slice(at+1).trim()};});if(kind.value)patch.contract={stage:kind.value,inScope:lines(inside.value),outOfScope:lines(outside.value),verify:lines(verify.value),coverageOf:lines(coverage.value)};await perform('amend_team_task_contract',{...args(),taskId:task.id,requestId:crypto.randomUUID(),reason:note.value,patch});}catch(e){message(e.message);}}));return;
         }
-        const owner=select(details,text('新负责人'),roster,task.memberId),priority=field(details,text('任务优先级'),task.priority),deps=field(details,text('依赖（任务 ID: submitted 或 accepted）'),task.dependencies.map(d=>d.taskId+': '+d.when).join('\n'),true);
+        const owner=select(details,text('新负责人'),roster,task.memberId),priority=field(details,text('任务优先级'),task.priority),deps=field(details,text('依赖（任务 ID: submitted、delivered 或 accepted）'),task.dependencies.map(d=>d.taskId+': '+d.when).join('\n'),true);
         details.append(btn(text('保存任务调整'),async()=>{try{if(owner.value!==task.memberId)await perform('reassign_team_task',{...args(),taskId:task.id,memberId:owner.value,note:note.value,requestId:crypto.randomUUID()});await perform('edit_team_task',{...args(),taskId:task.id,patch:{priority:Number(priority.value),dependencies:lines(deps.value).map(line=>{const at=line.lastIndexOf(':');return {taskId:line.slice(0,at).trim(),when:line.slice(at+1).trim()};})}});}catch{}}));
       }
       taskSelect.onchange=taskForm;taskForm();
@@ -1098,6 +1106,25 @@ export function setupTeamLanguage(){
   "其他任务仍依赖此任务，请先调整依赖。": "Other tasks depend on this task. Update their dependencies first.",
   "新增交付与独立审查": "Add delivery and independent review",
   "最多 40 项待执行任务。": "At most 40 unfinished tasks.",
+  "轻量验收": "Light acceptance",
+  "标准验收": "Standard acceptance",
+  "严格验收": "Strict acceptance",
+  "本目标已验收": "Current goal accepted",
+  "本目标执行中": "Current goal in progress",
+  "审查执行 ": "Review runs: ",
+  "仅看本次目标": "Show current goal only",
+  "查看历史任务": "Show task history",
+  "执行完成": "Execution complete",
+  "待 Leader 验收": "Awaiting Leader acceptance",
+  "执行完成，验收处理中": "Execution complete, acceptance pending",
+  "实际派发 ": "Actual dispatches: ",
+  "验证复用 ": "Reused verification: ",
+  "相同候选重复验证 ": "Repeated verification on the same candidate: ",
+  "已观察执行时长 ": "Observed execution time: ",
+  "有效交付": "Validated delivery",
+  "有效交付后": "After validated delivery",
+  "等待有效交付": "Wait for validated delivery",
+  "依赖（任务 ID: submitted、delivered 或 accepted）": "Dependencies (task ID: submitted, delivered or accepted)",
   "请先设置交付岗位和另一名只读审查岗位。": "Add an implementation role and a different read-only reviewer first.",
   "新交付": "New delivery",
   "请填写交付目标": "Enter the delivery objective",
