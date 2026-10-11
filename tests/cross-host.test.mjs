@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {observedNativeTools,observedNativeMembers} from '../integrations/deepseek-harness/index.mjs';
 import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -27,6 +28,23 @@ test('DSH native turn-end alone establishes terminal cancellation; abort receipt
   assert.equal(normalizeDshSession(session,events).turns[0].status,'inProgress');assert.equal(normalizeDshSession(session,events).nativeTools[0].name,'subagent');
   events.push({seq:3,type:'turn/end',data:{turn:7,reason:{kind:'aborted'}}});const stopped=normalizeDshSession(session,events);assert.equal(stopped.turns[0].status,'interrupted');assert.equal(stopped.turns[0].statusEvidence.source,'persisted-turn-aborted');assert.equal(stopped.turns[0].items[0].content[0].text,'CONTRACT');assert.ok(!JSON.stringify(stopped).includes('SECRET'));
 });
+test('DSH pre-request capabilities require exact native session and honor the request header',()=>{
+  const session={id:'native',requestHeader:()=>({tools:[]})},agent={id:'native',session},tools=[{name:'spawn_teammate',description:'Native host delegation',parameters:{name:{type:'string',required:true}}}];
+  const ctx={agents:{get:()=>agent},tools:{wireSchemas:scope=>{assert.equal(scope,agent);return {schemas:tools};}}};
+  assert.deepEqual(observedNativeTools(ctx,session),tools);
+  assert.deepEqual(observedNativeTools({...ctx,agents:{get:()=>({...agent,session:{id:'native'}})}},session),[]);
+  assert.deepEqual(observedNativeTools({...ctx,tools:{wireSchemas:()=>{throw new Error('host unavailable');}}},session),[]);
+  session.requestHeader=()=>({tools:[{name:'native-header-tool',parameters:{}}]});
+  assert.equal(observedNativeTools(ctx,session)[0].name,'native-header-tool');
+});
+test('DSH native roster maps verified targets and excludes provisioning and diagnostics',()=>{
+  const session={id:'lead'},agent={id:'lead',session},ctx={agents:{get:()=>agent},agentTeams:{listMembers:scope=>{assert.equal(scope,agent);return [{id:'lead',name:'lead',status:'running'},{id:'child-id',name:'member',status:'inactive',diagnostics:['private']},{id:'not-started',name:'pending',status:'provisioning'},{id:'failed-id',name:'failed',status:'failed'}];}}};
+  assert.deepEqual(observedNativeMembers(ctx,session),[{id:'lead',target:'lead'},{id:'child-id',target:'member'}]);
+  const optional={...ctx,get:key=>{assert.equal(key,'agentTeams');return ctx.agentTeams;}};Object.defineProperty(optional,'agentTeams',{get(){throw new Error('Undeclared service property');}});
+  assert.deepEqual(observedNativeMembers(optional,session),[{id:'lead',target:'lead'},{id:'child-id',target:'member'}]);
+  assert.deepEqual(observedNativeMembers({...ctx,get:()=>undefined},session),[]);
+  assert.deepEqual(observedNativeMembers({...ctx,agents:{get:()=>({...agent,session:{id:'lead'}})}},session),[]);
+});
 test('OpenCode persisted messages determine status; idle and incomplete output remain unknown',()=>{
   const info={id:'child',directory:process.cwd(),parentID:'leader',time:{created:1}},messages=[{info:{id:'u',role:'user'},parts:[{type:'text',text:'contract'}]},{info:{id:'a',parentID:'u',role:'assistant',time:{created:2}},parts:[{type:'reasoning',text:'hidden'},{type:'text',text:'working'}]}];
   assert.equal(normalizeOpenCodeSession(info,messages,{type:'idle'}).turns[0].status,'unknown');messages[1].info.error={name:'MessageAbortedError'};assert.equal(normalizeOpenCodeSession(info,messages).turns[0].status,'interrupted');
@@ -46,6 +64,43 @@ test('Claude blocked Stop is unknown; exact structured TaskOutput receipt commit
 test('Claude hook issues native ticket; MCP model identity cannot override caller',async()=>{
   const {cwd,bridge}=await fixture('claude-code');const result=await handleHook({session_id:'leader',cwd,hook_event_name:'PreToolUse',tool_name:'mcp__team-workspace__read_team',tool_input:{threadId:'attacker',_hostTicket:'model-ticket'}},{bridge});
   assert.notEqual(result.hookSpecificOutput.updatedInput._hostTicket,'model-ticket');assert.deepEqual(await bridge.authenticate(result.hookSpecificOutput.updatedInput._hostTicket,'read_team'),{threadId:'leader'});
+});
+
+test('Claude modern Agent receipt works without task_id; foreground commits and background stays active',async()=>{
+  const {cwd,bridge}=await fixture('claude-code'),base={session_id:'leader',cwd};
+  await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+  await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_use_id:'launch-real',tool_response:{agentId:'child',status:'async_launched',outputFile:'host-output'}},{bridge});
+  assert.equal((await bridge.store.read()).claudeLaunches['launch-real'].agentId,'child');
+  assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+  await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_response:{agentId:'child',status:'completed',content:[{type:'text',text:'actual foreground'}]}},{bridge});
+  assert.equal((await bridge.readThread('child')).turns.at(-1).status,'completed');
+  await handleHook({...base,hook_event_name:'PreToolUse',tool_name:'SendMessage',tool_use_id:'resume-real',tool_input:{to:'child',message:'continue'}},{bridge});
+  assert.equal((await bridge.readThread('child')).turns.at(-1).status,'unknown');
+  await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'SendMessage',tool_use_id:'resume-real',tool_response:{success:true}},{bridge});
+  assert.equal((await bridge.readThread('child')).turns.at(-1).id,'resume-real');
+  assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+});
+
+test('Claude registered native task notifications bind exact launch and do not settle a resumed turn from old task',async()=>{
+  const {cwd,bridge}=await fixture('claude-code'),config=join(cwd,'claude'),project=join(config,'projects','native');await mkdir(project,{recursive:true});const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;
+  try {
+    const base={session_id:'leader',cwd},path=join(project,'leader.jsonl');await writeFile(path,'');
+    await handleHook({...base,hook_event_name:'SessionStart',transcript_path:path},{bridge});
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_use_id:'launch',tool_response:{agentId:'child',status:'async_launched'}},{bridge});
+    const rows=[{type:'system',subtype:'task_started',session_id:'leader',task_id:'real-task',tool_use_id:'launch'},{type:'system',subtype:'task_notification',session_id:'leader',task_id:'real-task',status:'completed'}];await writeFile(path,rows.map(r=>JSON.stringify(r)).join('\n')+'\n');
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'completed');
+    await handleHook({...base,hook_event_name:'PreToolUse',tool_name:'SendMessage',tool_use_id:'new-launch',tool_input:{to:'child',message:'resume'}},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'SendMessage',tool_use_id:'new-launch',tool_response:{success:true}},{bridge});
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+    rows.push({type:'system',subtype:'task_started',session_id:'wrong-parent',task_id:'wrong-task',tool_use_id:'new-launch'},{type:'system',subtype:'task_notification',session_id:'wrong-parent',task_id:'wrong-task',status:'completed'});await writeFile(path,rows.map(r=>JSON.stringify(r)).join('\n')+'\n');
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+    rows.push({type:'system',subtype:'task_started',session_id:'leader',task_id:'new-task',tool_use_id:'new-launch'},{type:'system',subtype:'task_updated',session_id:'leader',task_id:'new-task',patch:{status:'stopped'}});await writeFile(path,rows.map(r=>JSON.stringify(r)).join('\n')+'\n');
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'interrupted');
+    assert.equal((await bridge.readThread('child')).turns.at(-1).statusEvidence.source,'persisted-native-task-stop');
+    await bridge.putThread(await bridge.readThread('child'));
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'interrupted');
+  } finally {if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;}
 });
 test('Claude authorized transcript refresh stays unknown without committed receipt',async()=>{
   const {cwd,bridge}=await fixture('claude-code'),config=join(cwd,'claude'),project=join(config,'projects','native');await mkdir(project,{recursive:true});const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;

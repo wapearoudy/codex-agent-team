@@ -1,5 +1,5 @@
 // Host-owned data only. Model arguments must never enter these normalizers.
-export const publicText=value=>typeof value==='string'?value.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi,'Bearer [redacted]').replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]]+)/gi,(_match,prefix,credential)=>prefix+(credential.startsWith('"')?'"[redacted]"':credential.startsWith("'")?"'[redacted]'":prefix.startsWith('"')?'"[redacted]"':'[redacted]')):'';
+export const publicText=value=>typeof value==='string'?value.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi,'Bearer [redacted]').replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]&]+)/gi,(_match,prefix,credential)=>prefix+(credential.startsWith('"')?'"[redacted]"':credential.startsWith("'")?"'[redacted]'":prefix.startsWith('"')?'"[redacted]"':'[redacted]')):'';
 export const textBlocks=blocks=>typeof blocks==='string'?publicText(blocks):(blocks??[]).filter(b=>b.type==='text'&&typeof b.text==='string').map(b=>publicText(b.text)).join('\n');
 export function normalizeUsage(value){
   if(!value)return undefined;
@@ -16,10 +16,11 @@ export function sanitizeThread(thread){
   const out={id:thread.id,cwd:thread.cwd,parentThreadId:thread.parentThreadId??null,turns:[]};
   for(const key of ['model','modelProvider','reasoningEffort','createdAt'])if(thread[key]!==undefined)out[key]=thread[key];
   if(Array.isArray(thread.nativeTools))out.nativeTools=thread.nativeTools.filter(t=>typeof t.name==='string').map(t=>({name:t.name,description:publicText(t.description).slice(0,8000),parameters:structuredClone(t.parameters??{})}));
+  if(Array.isArray(thread.nativeMembers)){out.nativeMembers=thread.nativeMembers.filter(m=>typeof m.id==='string'&&m.id&&typeof m.target==='string'&&/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(m.target)).map(m=>({id:m.id,target:m.target}));if(new Set(out.nativeMembers.map(m=>m.id)).size!==out.nativeMembers.length||new Set(out.nativeMembers.map(m=>m.target)).size!==out.nativeMembers.length)throw new Error('Ambiguous native teammate roster');}
   for(const t of thread.turns??[]){
     if(typeof t.id!=='string')throw new Error('Native turn identity is required');
     const turn={id:t.id,status:['inProgress','completed','failed','interrupted','unknown'].includes(t.status)?t.status:'unknown',items:[]};
-    if(turn.status==='interrupted'&&t.statusEvidence?.source!=='persisted-turn-aborted')turn.status='unknown';
+    if(turn.status==='interrupted'&&!['persisted-turn-aborted','persisted-native-task-stop'].includes(t.statusEvidence?.source))turn.status='unknown';
     if(t.statusEvidence)turn.statusEvidence={status:turn.status,source:t.statusEvidence.source};
     if(t.usage)turn.usage=normalizeUsage(t.usage);
     for(const i of t.items??[]){
@@ -68,7 +69,7 @@ export function normalizeOpenCodeSession(info,messages,status){
     const text=textBlocks(parts);if(text)current.items.push({type:'agentMessage',id:m.id,text,phase:m.finish&&m.finish!=='tool-calls'?'final_answer':'commentary'});
     if(m.tokens){current.usage??={};for(const[k,v]of Object.entries(normalizeUsage(m.tokens)??{}))current.usage[k]=(current.usage[k]??0)+v;}
     for(const p of parts)if(p.type==='tool'&&p.tool==='bash'){const s=p.state??{};current.items.push({type:'commandExecution',commandId:p.callID,cwd:info.directory,command:s.input?.command??'',status:s.status==='completed'?'completed':s.status==='error'?'failed':'inProgress',exitCode:s.metadata?.exit??null,aggregatedOutput:s.output??s.error??''});}
-    if(m.error){current.status=m.error.name==='MessageAbortedError'?'interrupted':'failed';current.statusEvidence={status:current.status,source:current.status==='interrupted'?'persisted-turn-aborted':'native-message-error'};}
+    if(m.error){current.status=m.error.name==='MessageAbortedError'?'interrupted':'failed';current.statusEvidence={status:current.status,source:current.status==='interrupted'?'persisted-turn-aborted':'native-message-error'};if(current.status==='failed'){const message=m.error.data?.message??m.error.message??m.error.name;current.items.push({type:'agentMessage',id:m.id,text:publicText(String(message)).slice(0,4000),phase:'final_answer'});}}
     else if(m.time?.completed&&m.finish&&m.finish!=='tool-calls'){current.status='completed';current.statusEvidence={status:'completed',source:'native-message-completed'};}
   }
   const last=thread.turns.at(-1);if(last&&['busy','retry'].includes(status?.type)){last.status='inProgress';delete last.statusEvidence;}

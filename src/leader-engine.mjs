@@ -5,7 +5,7 @@ import {reconcileReview} from './review-reconciliation.mjs';
 import {verificationCommandMatches} from './verification-command.mjs';
 import {applyReviewDecision,acceptCompletedReview,reviewInputHash} from './reviewer-acceptance.mjs';
 import {reuseFinalEvidence} from './final-evidence.mjs';
-import {lastMemberExecution,retireTaskContext,assertFreshBinding,boundedDispatchPrompt} from './task-context.mjs';
+import {lastMemberExecution,retireTaskContext,stoppedContextIsIdle,assertFreshBinding,boundedDispatchPrompt} from './task-context.mjs';
 import {registerNativeAttempts,registrationOptions,submitRegistered} from './native-registration.mjs';
 import {memberGoalRequest,changeMemberGoal,memberGoalSnapshot,memberGoalDetail} from './member-goals.mjs';
 import {memberClaimRequest,memberReport,assertMember} from './member-work.mjs';
@@ -79,7 +79,7 @@ export class LeaderEngine {
         `For task-scoped coordination, use send_team_peer_message with teamId ${team.id}, attemptId ${a.id} and a stable requestId. Send only to a roster member or leader. The returned nativeAction may be delivered using the existing native send_message tool; record its actual result with record_team_peer_sender_delivery. Never auto-resend an unknown delivery. Use consume_team_inbox to read and acknowledge your exact pending messages in one call. Progress belongs in checkpoints or kind=progress (saved only); only actionable blockers/questions/completions request native delivery. After your final delivery, finish this turn and wait. Never self-claim another task in this execution context.`,
         task.kind==='review'?`Return JSON with attemptMarker, summary, decision (accept or rework), reason, checks [{name,criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], findings [{id,severity:blocker|high|medium|low,status:open|resolved,description,resolutionEvidence}]. resolutionEvidence must be nonempty text or a nonempty list of nonempty text entries; retain concrete proof for every resolved finding. Use stable IDs for new findings and preserve supplied IDs when resolving earlier findings. Use findings:[] if none. Every PASS check requires concrete evidence. Cover these target criteria: ${JSON.stringify(team.tasks.find(t=>t.id===task.reviewOfTaskId)?.acceptanceCriteria??[])}. Review independently against the exact upstream attempt and contract; do not fix the implementation. Reuse saved host verification and logs when they cover the same unchanged candidate and required checks; do not repeat tests merely to register acceptance. An accept verdict that passes plugin gates directly accepts the target and unlocks dependencies. Report changed candidates, missing evidence or findings as exceptions.`:task.contract?'Return JSON with attemptMarker, summary, changedPaths (project-relative), acceptanceResults [{criterionId,status:PASS|FAIL|BLOCKED|NOT_RUN,evidence}], commandsRun, verificationInputs (project-relative files needed to keep this evidence valid) and limitations. Execute uncovered contract.verify commands using native command tools, so the host records the real exit code. A phase check may be reused only while its declared inputs remain unchanged; otherwise execute that check. Report missing/failed checks honestly; submission is not acceptance.':'Return a summary, changed file paths, test commands/results and remaining limitations. Completion is a submission, not acceptance.'
       ].join('\n\n'),buildHandoff(team,task.id),normalizePolicy(team.policy).contextChars);
-    const packet={...(team.nativeTools?{nativeTools:team.nativeTools}:{}),taskId:task.id,attemptId:a.id,memberId:m.id,...naming,taskName:generation>1?naming.taskName.slice(0,64-contextSuffix.length)+contextSuffix:naming.taskName,titleAction:memberTitleAction(team,m),existingThreadId:m.agentThreadId,existingAgentPath:m.agentPath??null,marker:a.marker,spawnOptions:nativeRoute(m),workspace:m.workspace??{path:team.projectPath,mode:'shared'},...bounded,contextIsolation:{mode:'task',generation,previousThreadId:team.contextHistory?.findLast(c=>c.memberId===m.id)?.threadId??null},
+    const packet={leaderThreadId:team.leaderThreadId,...(team.nativeTools?{nativeTools:team.nativeTools}:{}),...(m.nativeTarget?{nativeTarget:m.nativeTarget}:{}),taskId:task.id,attemptId:a.id,memberId:m.id,...naming,taskName:generation>1?naming.taskName.slice(0,64-contextSuffix.length)+contextSuffix:naming.taskName,titleAction:memberTitleAction(team,m),existingThreadId:m.agentThreadId,existingAgentPath:m.agentPath??null,marker:a.marker,spawnOptions:nativeRoute(m),workspace:m.workspace??{path:team.projectPath,mode:'shared'},...bounded,contextIsolation:{mode:'task',generation,previousThreadId:team.contextHistory?.findLast(c=>c.memberId===m.id)?.threadId??null},
       action:m.agentThreadId?'followup-native-member':'spawn-native-member'};
     return this.adapter?.dispatch(packet)??packet;
   }
@@ -99,6 +99,11 @@ export class LeaderEngine {
       if(!member||task.status==='running')continue;
       const last=lastMemberExecution(rosterTeam,member);if(!last)continue;
       if(rosterTeam.tasks.some(t=>t.memberId===member.id&&t.status==='running'))throw new Error('Member still has an active attempt; preserve its context');
+      if(last.attempt.state==='stopped'&&last.attempt.stopEvidence?.quiescence?.source==='native-latest-turn'){
+        const idle=await this.observer.inspectIdle(rosterTeam.leaderThreadId,rosterTeam.projectPath,member.agentThreadId);
+        if(!stoppedContextIsIdle(last,idle))throw new Error('Stopped member quiescence changed; reconcile its latest native state before retiring');
+        retirements.set(member.id,idle);continue;
+      }
       const run=await this.observer.inspect(rosterTeam.leaderThreadId,rosterTeam.projectPath,member.agentThreadId,last.attempt.marker,{requireIdle:true,boundTurnId:last.attempt.turnId,...registrationOptions(last.attempt)});
       assertObservationTurn(last.attempt,run);
       if(!last.attempt.endedAt||!terminal(run.status)||run.turnId!==last.attempt.turnId)throw new Error('Native member is not confirmed terminal; preserve its task context');
@@ -155,6 +160,7 @@ export class LeaderEngine {
       const m=t.members.find(x=>x.id===task.memberId);
       if(m.agentThreadId&&m.agentThreadId!==threadId)throw new Error('Reuse the existing native member; do not silently replace it');
       assertFreshBinding(t,m,threadId);
+      if(snapshot.nativeTarget){m.nativeTarget=snapshot.nativeTarget;a.nativeTarget=snapshot.nativeTarget;requireTeamVersion(t,'0.35.0');}
         const first=!a.agentThreadId;bindMemberThread(t,taskId,threadId,attemptId);m.agentPath=snapshot.agentPath??m.agentPath??null;if(t.memberStartup==='on-demand'||m.contextGeneration){m.rosterVerified=true;m.initializationTurnId??=snapshot.turnId;}a.state=snapshot.turnId?'running':'linking';associateTurn(t,task,snapshot);a.executedRoute={model:snapshot.model??nativeRoute(m).model??null,provider:snapshot.provider??m.routeSnapshot?.provider??null,reasoningEffort:snapshot.reasoningEffort??nativeRoute(m).reasoning_effort??null,source:snapshot.model?'host-observed-model':'frozen-route-only'};if(first){a.boundAt=now();t.totalDispatches++;}
       }
     });
@@ -174,6 +180,7 @@ export class LeaderEngine {
     await this.store.update(id,owner,revision,t=>{for(const {memberId,snapshot} of verified){const m=t.members.find(m=>m.id===memberId);
       if(m.agentThreadId&&m.agentThreadId!==snapshot.threadId)throw new Error('Reuse this member’s existing native subagent');
       assertFreshBinding(t,m,snapshot.threadId);
+      if(snapshot.nativeTarget){m.nativeTarget=snapshot.nativeTarget;requireTeamVersion(t,'0.35.0');}
       m.agentThreadId=snapshot.threadId;m.agentPath=snapshot.agentPath;delete m.initializationNeedsRetry;m.rosterVerified=snapshot.status==='completed'&&!!snapshot.turnId;m.initializationTurnId=snapshot.turnId;m.status=m.rosterVerified?'idle':'starting';m.lastActivityAt=now();
       t.events.push({at:now(),type:'native-roster-member-linked',memberId,threadId:snapshot.threadId,verified:m.rosterVerified});
     }});const data=await this.receipt(owner,id);return {...data,titleActions:verified.map(v=>memberTitleAction(data.team,data.team.members.find(m=>m.id===v.memberId)))};
@@ -381,7 +388,7 @@ export class LeaderEngine {
   async pause(owner,id,revision){await this.native(owner,id);await this.store.update(id,owner,revision,pauseDispatch);return this.receipt(owner,id);}
   async stop(owner,id,revision,input){
     const t=await this.native(owner,id);if(!input||!controlRequest(t,'stop',input).saved)try{await this.store.update(id,owner,revision,t=>requestStop(t,input));}catch(error){if(!input||!controlRequest(await this.native(owner,id),'stop',input).saved)throw error;}
-    const data=await this.receipt(owner,id),active=data.team.executionControl?.status==='stopping'&&(!input||data.team.executionControl.requestId===input.requestId);return {...data,leaderAction:active?{type:'interrupt-native-members',targets:stopTargets(data.team),note:'Interrupt all existing native members, including initialization turns. Bind or explicitly release uncertain reservations. Then reconcile_team_stop; unknown is never halted. End the Leader work turn after reconciliation.'}:null};
+    const data=await this.receipt(owner,id),active=data.team.executionControl?.status==='stopping'&&(!input||data.team.executionControl.requestId===input.requestId),targets=active?stopTargets(data.team):[];return {...data,leaderAction:active?{type:'interrupt-native-members',targets:this.adapter?.interruptTargets?await this.adapter.interruptTargets(data.team,targets):targets,note:'Interrupt all verified existing native members, including initialization turns. Use nativeAction when supplied; tool=null requires native identity verification before control. Bind or explicitly release uncertain reservations. Then reconcile_team_stop; unknown is never halted. End the Leader work turn after reconciliation.'}:null};
   }
   async reconcileStop(owner,id,revision,{unstartedTaskIds=[],note=''}={}){
     const team=await this.native(owner,id);if(team.executionControl?.status!=='stopping')throw new Error('Team is not stopping');

@@ -1,5 +1,15 @@
 # codex-agent-team
 
+## 0.35.0 原生控制与失败诊断
+
+支持 DSH desktop 的 durable teammate 协议：按实际工具 schema 使用 `spawn_teammate`，从宿主 roster 获取真实会话 ID，核实名称映射后才接续或停止；旧 continuable profile 仍可用。公开事件保留同一成员的冷接续历史，主会话首次请求模型前也能取得实际可调用的工具目录。不能用成员名称或 one-shot job ID 代替会话身份。
+
+Claude 接续使用 `SendMessage`；后台 Agent 回执不再依赖不存在的 `task_id` 字段。真实持久化 task 通知按启动轮次关联，停止请求与终态分开记录。宿主缺少可信通知时仍为 unknown。OpenCode 的原生认证错误保留公开原因；请求头和凭据不进入团队记录。
+
+修复已确认空闲成员仍被历史关联异常挡住派发的问题。新任务可使用独立上下文，旧 BLOCKED 与中断证据继续保留。停止整个 DSH 团队时也核对当前 Leader 的真实名称/会话映射；映射陈旧或缺失时停止回执不提供可执行控制。新增原生停止证据使用版本门禁，URL token 脱敏。
+
+真实模型验证入口为 `node scripts/verify-host-execution.mjs --all --live`，显式启动现有配置的模型并保存原生回执。DSH 已取得同一成员的派发、接续与中断证据；Claude Code 和 OpenCode 的当前 Go 模型返回订阅 403，完整闭环仍 BLOCKED。不会自动换模型或将协议测试当作模型闭环通过。
+
 ## 0.33.1 多宿主适配
 
 保留 Codex，并增加 DeepSeekHarness 原生 Cordis 插件、Claude Code 插件和 Hooks、OpenCode 原生插件。各宿主的当前主会话担任 Leader，复用任务、成员和独立审查引擎；实际会话身份和执行记录由宿主接入层提供。新宿主的数据独立保存，不迁移或覆盖现有 Codex 团队。

@@ -31,6 +31,18 @@ async function fixture(){
   return {root,cwd,observer,engine,projects,context,team,threads,lifecycle,usage,calls,saved,set,aborted,claim,bind,work};
 }
 
+test('persisted native task-stop permits same-member continuation, while a stop request remains ambiguous',async()=>{
+ const f=await fixture(),c=await f.claim('work'),first=turn('old',c.dispatch.marker,'inProgress',null);f.set('dev',[first]);await f.bind(c,'dev');
+ first.status='interrupted';f.set('dev',[first,turn('new',c.dispatch.marker,'completed','continued')]);
+ f.lifecycle.set('old',{status:'interrupted',source:'native-stop-hook-awaiting-receipt'});
+ await assert.rejects(()=>f.observer.inspect('leader',f.cwd,'dev',c.dispatch.marker,{boundTurnId:'old'}),/not uniquely visible/);
+ f.lifecycle.set('old',{status:'interrupted',source:'persisted-native-task-stop'});
+ const observed=await f.observer.inspect('leader',f.cwd,'dev',c.dispatch.marker,{boundTurnId:'old'});
+ assert.equal(observed.turnId,'new');assert.deepEqual(observed.turnHistory.map(t=>t.turnId),['old','new']);assert.equal(observed.turnHistory[0].statusEvidence.source,'persisted-native-task-stop');
+ const saved=await f.saved(),settled=await f.engine.settle('owner',f.team.id,saved.revision,'work',c.dispatch.attemptId);
+ assert.equal(settled.team.requiresTeamWorkspaceVersion,'0.35.0');validateTeam(settled.team);
+ const legacy=structuredClone(settled.team);legacy.requiresTeamWorkspaceVersion='0.34.0';assert.throws(()=>validateTeam(legacy),/requires Team Workspace 0.35.0/);
+});
 test('interrupted continuation binds the completed turn and retains turn-scoped evidence without mutating on read',async()=>{
   const f=await fixture(),c=await f.claim('work');
   const first=turn('old',c.dispatch.marker,'inProgress',null,[command('old check',1)]);f.set('dev',[first]);const b=await f.bind(c,'dev');

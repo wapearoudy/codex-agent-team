@@ -8,6 +8,7 @@ import {NativePublicFeed} from './native-public.mjs';
 import {sumTurnUsage} from './turn-association.mjs';
 import {observeTeamUsage,usageKey} from './native-usage.mjs';
 import {parseStructuredReport} from './report-format.mjs';
+const confirmedInterrupted=e=>e?.status==='interrupted'&&['persisted-turn-aborted','persisted-native-task-stop'].includes(e.source);
 
 // Observation only. Never start/resume/fork a model session in the plugin.
 export class NativeMembers {
@@ -105,7 +106,7 @@ export class NativeMembers {
         let next=turns[turns.indexOf(matching.at(-1))+1];
         while(next&&reportedMarkers(next).includes(marker)&&reportedMarkers(next).every(m=>m===marker)){
           const prior=await statusOf(matching.at(-1));
-          if(prior.status!=='interrupted'||prior.statusEvidence?.source!=='persisted-turn-aborted')break;
+          if(prior.status!=='interrupted'||!confirmedInterrupted(prior.statusEvidence))break;
           matching.push(next);next=turns[turns.indexOf(next)+1];
         }
       }
@@ -118,7 +119,7 @@ export class NativeMembers {
         for(const [i,t] of matching.entries()){
           const texts=t.items.flatMap(item=>item.type==='agentMessage'?[item.text]:item.type==='userMessage'?(item.content??[]).filter(c=>c.type==='text').map(c=>c.text):[]);
           if(texts.some(text=>(text?.match(/TEAM_WORKSPACE_ATTEMPT:[0-9a-f-]{36}/gi)??[]).some(other=>other!==marker)))ambiguous();
-          if(i<matching.length-1){const s=await statusOf(t);if(s.status!=='interrupted'||s.statusEvidence?.source!=='persisted-turn-aborted'||turns.indexOf(matching[i+1])!==turns.indexOf(t)+1)ambiguous();}
+          if(i<matching.length-1){const s=await statusOf(t);if(s.status!=='interrupted'||!confirmedInterrupted(s.statusEvidence)||turns.indexOf(matching[i+1])!==turns.indexOf(t)+1)ambiguous();}
         }
       }
       const readTurn=async turn=>{

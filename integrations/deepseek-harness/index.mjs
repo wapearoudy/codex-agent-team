@@ -3,6 +3,15 @@ import {normalizeDshSession,textBlocks,publicText} from '../../src/host-normaliz
 import {connectEngine} from '../common/client.mjs';
 export const name='team-workspace';
 export const inject=['tools','sessions','agents'];
+export function observedNativeTools(ctx,session){
+  const recorded=session.requestHeader?.()?.tools;if(Array.isArray(recorded)&&recorded.length)return recorded;
+  const agent=ctx.agents.get(session.id);if(!agent||agent.id!==session.id||agent.session!==session)return [];
+  try{return ctx.tools.wireSchemas(agent).schemas??[];}catch{return [];}
+}
+export function observedNativeMembers(ctx,session){
+  const agent=ctx.agents.get(session.id);if(!agent||agent.id!==session.id||agent.session!==session)return [];
+  try{const teams=typeof ctx.get==='function'?ctx.get('agentTeams',true):ctx.agentTeams;return (teams?.listMembers(agent)??[]).filter(row=>typeof row.id==='string'&&typeof row.name==='string'&&['running','inactive'].includes(row.status)).map(row=>({id:row.id,target:row.name}));}catch(error){ctx.logger?.warn?.(`Team Workspace native roster: ${publicText(error.message)}`);return [];}
+}
 function publicEvent(event){
   const d=event.data??{},base={seq:event.seq,type:event.type};
   if(['turn/start','turn/end'].includes(event.type))return {...base,data:{turn:d.turn,...(d.reason?{reason:{kind:d.reason.kind}}:{})}};
@@ -16,9 +25,9 @@ export async function apply(ctx,config={}){
   const bridge=new HostBridge({host:'deepseek-harness',root:config.bridgeRoot});await bridge.ensure();
   const engine=await connectEngine({host:bridge.host,entryUrl:import.meta.url,bridgeRoot:bridge.root});
   const events=new Map(),pending=new Map(),timers=new Map();
-  const publish=session=>{clearTimeout(timers.get(session.id));timers.delete(session.id);const previous=pending.get(session.id)??Promise.resolve();const next=previous.catch(()=>{}).then(async()=>{const thread=normalizeDshSession(session,events.get(session.id)??[]);await bridge.putThread(thread);if(thread.model)await bridge.setModels([{id:thread.model,model:thread.model,provider:thread.modelProvider,source:'observed-native-session',childModelSelectable:false}]);});pending.set(session.id,next);next.catch(error=>ctx.logger?.warn?.(`Team Workspace observer: ${error.message}`));return next;};
+  const publish=session=>{clearTimeout(timers.get(session.id));timers.delete(session.id);const previous=pending.get(session.id)??Promise.resolve();const next=previous.catch(()=>{}).then(async()=>{const thread=normalizeDshSession(session,events.get(session.id)??[]);thread.nativeTools=observedNativeTools(ctx,session);thread.nativeMembers=observedNativeMembers(ctx,session);await bridge.putThread(thread);if(thread.model)await bridge.setModels([{id:thread.model,model:thread.model,provider:thread.modelProvider,source:'observed-native-session',childModelSelectable:false}]);});pending.set(session.id,next);next.catch(error=>ctx.logger?.warn?.(`Team Workspace observer: ${error.message}`));return next;};
   ctx.on('session/event',(session,event)=>{const visible=publicEvent(event);if(visible){const list=events.get(session.id)??[];list.push(visible);events.set(session.id,list);}if(event.type==='turn/end')void publish(session);else if(!timers.has(session.id))timers.set(session.id,setTimeout(()=>void publish(session),100));});
-  ctx.on('session/created',session=>{events.set(session.id,[]);void publish(session);});
+  ctx.on('session/created',session=>{if(!events.has(session.id))events.set(session.id,[]);void publish(session);});
   // No history API promises: a late-mounted session is unknown until native events arrive.
   for(const session of ctx.sessions.list())await publish(session);
   // Cordis owns resources through fiber effects; a plain "dispose" listener

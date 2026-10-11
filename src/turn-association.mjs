@@ -1,6 +1,6 @@
 import {requireTeamVersion} from './team-version.mjs';
 
-const interrupted=row=>row.status==='interrupted'&&row.statusEvidence?.status==='interrupted'&&row.statusEvidence.source==='persisted-turn-aborted';
+const interrupted=row=>row.status==='interrupted'&&row.statusEvidence?.status==='interrupted'&&['persisted-turn-aborted','persisted-native-task-stop'].includes(row.statusEvidence.source);
 const ids=rows=>rows.map(row=>row.turnId);
 function assertChain(run,marker,threadId){
   const rows=run.turnHistory,link=run.turnAssociation;
@@ -30,7 +30,7 @@ export function associateTurn(team,task,run){
     attempt.turnHistory=run.turnHistory.map((row,i)=>i<previous.length-1?previous[i]:structuredClone(row));
     attempt.turnAssociation={...structuredClone(run.turnAssociation),links:run.turnAssociation.links.map((link,i)=>links[i]??{...link,linkedAt:at})};
     for(const link of attempt.turnAssociation.links.slice(links.length))team.events.push({at,type:'native-task-turn-continued',taskId:task.id,attemptId:attempt.id,threadId:run.threadId,...link});
-    requireTeamVersion(team,'0.17.0');
+    requireTeamVersion(team,run.turnHistory.some(row=>row.statusEvidence?.source==='persisted-native-task-stop')?'0.35.0':'0.17.0');
     if(team.checkpoints?.some(c=>c.attemptId===attempt.id&&c.taskId===task.id&&c.turnId!==run.turnId))requireTeamVersion(team,'0.21.0');
   }
   attempt.turnId=run.turnId;attempt.observation=run;attempt.runtimeStatus=run.status;
@@ -38,7 +38,8 @@ export function associateTurn(team,task,run){
 export function validateTurnAssociations(team){
   for(const task of team.tasks)for(const attempt of task.attempts??[]){
     if(!attempt.turnHistory&&!attempt.turnAssociation)continue;
-    if(!['0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Continuation history requires Team Workspace 0.17.0');
+    if(!['0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Continuation history requires Team Workspace 0.17.0');
+    if(attempt.turnHistory.some(row=>row.statusEvidence?.source==='persisted-native-task-stop')&&Number(team.requiresTeamWorkspaceVersion.split('.')[1])<35)throw new Error('Native task-stop continuation requires Team Workspace 0.35.0');
     assertChain({threadId:attempt.agentThreadId,turnId:attempt.turnId,turnHistory:attempt.turnHistory,turnAssociation:attempt.turnAssociation},attempt.marker,attempt.agentThreadId);
     if(attempt.turnAssociation.links.some(link=>!Number.isFinite(Date.parse(link.linkedAt))))throw new Error('Continuation link has no audit timestamp');
   }

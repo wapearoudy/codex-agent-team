@@ -32,3 +32,4 @@ scripts/*
 !scripts/register-native-work.mjs
 !scripts/install-host.mjs
 !scripts/verify-hosts.mjs
+!scripts/verify-host-execution.mjs

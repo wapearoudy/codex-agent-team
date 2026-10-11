@@ -8,7 +8,7 @@ import {LeaderEngine} from '../src/leader-engine.mjs';
 import {TeamNavigation} from '../src/team-navigation.mjs';
 import {memberClaimRequest,assertMember,memberWork} from '../src/member-work.mjs';
 import {validateTeam} from '../src/team.mjs';
-import {boundedDispatchPrompt} from '../src/task-context.mjs';
+import {boundedDispatchPrompt,validateTaskContexts} from '../src/task-context.mjs';
 import {TeamArchive as LegacyArchive} from './fixtures/legacy-archive-v011.mjs';
 import {NativeMembers} from '../src/native-members.mjs';
 import {TeamArchive} from '../src/team-archive.mjs';
@@ -16,6 +16,13 @@ import {TeamArchive} from '../src/team-archive.mjs';
 const role=(id,writeScopes=[])=>({id,role:id,responsibility:'Scoped execution',reason:'Independent responsibility',writeScopes});
 const work=(id,dependencies=[])=>({id,title:'Work '+id,goal:'Implement '+id,acceptance:'Verified '+id,acceptanceCriteria:[{id:'criterion-'+id,description:'Preserve the exact requirement for '+id}],memberId:'dev',kind:'work',dependencies});
 const review=id=>({id:'review-'+id,title:'Review '+id,goal:'Independently check '+id,acceptance:'Evidence checked',memberId:'qa',kind:'review',reviewOfTaskId:id,dependencies:[{taskId:id,when:'submitted'}]});
+test('DSH roster targets require a supported reader even before the first task generation',()=>{
+  const team={hostId:'deepseek-harness',requiresTeamWorkspaceVersion:'0.35.0',members:[{id:'dev',agentThreadId:'native-child',nativeTarget:'real-role'}],tasks:[]};
+  assert.doesNotThrow(()=>validateTaskContexts(team));
+  for(const requiresTeamWorkspaceVersion of [undefined,'0.34.0'])assert.throws(()=>validateTaskContexts({...team,requiresTeamWorkspaceVersion}),/verified DSH session/);
+  assert.throws(()=>validateTaskContexts({...team,hostId:'codex'}),/verified DSH session/);
+  assert.throws(()=>validateTaskContexts({...team,members:[{...team.members[0],agentThreadId:null}]}),/verified DSH session/);
+});
 async function fixture({contextChars=24000}={}){
   const root=await mkdtemp(join(tmpdir(),'task-context-')),runs=new Map(),usageCalls=[];
   const observer={async inspect(parent,cwd,thread,marker,options={}){const r=runs.get(marker);if(!r||r.threadId!==thread)throw new Error('No verified native execution');if(options.requireIdle&&r.latestActive)throw new Error('Latest native turn is active');return structuredClone({...r,parentThreadId:parent});},async historicalUsage(parent,cwd,thread,turns){usageCalls.push(thread);return turns.map(turnId=>({turnId,usage:{totalTokens:100,inputTokens:80,outputTokens:20,cachedInputTokens:0}}));}};
@@ -44,10 +51,32 @@ test('uncertain or currently active native execution blocks rotation without cha
   for(const change of [{status:'unknown'},{latestActive:true}]){f.runs.set(first.dispatch.marker,{...run,...change});await assert.rejects(()=>f.claim('b'),/terminal|active/);assert.deepEqual(await f.saved(),before);}
   f.runs.set(first.dispatch.marker,run);const next=await f.claim('b');f.seed(next.dispatch,'native-b','starting',{turnId:null});await f.engine.bind('owner',f.team.id,next.team.revision,'b',next.dispatch.attemptId,'native-b');const pending=await f.saved();await assert.rejects(()=>f.claim('b'),/not ready/);assert.deepEqual(await f.saved(),pending);assert.equal(pending.contextHistory.length,1);
 });
+test('Leader team-stop applies host identity protection to its returned control actions',async()=>{
+ const f=await fixture(),c=await f.claim();f.seed(c.dispatch,'native-a','inProgress');let t=await f.saved();await f.engine.bind('owner',t.id,t.revision,'a',c.dispatch.attemptId,'native-a');t=await f.saved();let called=0;
+ f.engine.adapter={async interruptTargets(team,targets){called++;assert.equal(team.leaderThreadId,'leader');return targets.map(target=>({...target,nativeAction:{tool:null,reason:'Current native binding unavailable'}}));}};
+ const stopped=await f.engine.stop('owner',t.id,t.revision,{requestId:randomUUID(),reason:'Verify protected control receipt'});
+ assert.equal(called,1);assert.equal(stopped.team.executionControl.status,'stopping');assert.equal(stopped.leaderAction.targets[0].threadId,'native-a');assert.equal(stopped.leaderAction.targets[0].nativeAction.tool,null);assert.match(stopped.leaderAction.note,/tool=null requires native identity verification/);
+});
 
 test('a completed member cannot self-claim new work in its old context',async()=>{
   const f=await fixture(),first=await f.claim();await f.complete(first,'native-a');const team=await f.saved(),context={cwd:f.root,threadId:'native-a',parentThreadId:'leader'};
   assert.throws(()=>memberClaimRequest(team,context,{taskId:'b',requestId:randomUUID()}),/clean execution/);const work=memberWork(team,context);assert.equal(work.tasks.find(t=>t.taskId==='b').ready,false);assert.ok(work.tasks.find(t=>t.taskId==='b').blockers.some(b=>b.code==='task-context-isolation'));assert.deepEqual(await f.saved(),team);
+});
+
+test('confirmed stopped context can retire without accepting ambiguous historical task output',async()=>{
+  const f=await fixture(),first=await f.claim();f.seed(first.dispatch,'native-a','inProgress');
+  let t=await f.saved();await f.engine.bind('owner',t.id,t.revision,'a',first.dispatch.attemptId,'native-a');t=await f.saved();
+  const quiet={turnId:'later-completed-turn',status:'completed',source:'native-latest-turn'};
+  await f.engine.store.update(t.id,'owner',t.revision,s=>{const a=s.tasks[0].attempts[0];a.state='stopped';a.endedAt=new Date().toISOString();a.stopEvidence={quiescence:quiet,associationError:'Missing persisted predecessor abort'};s.tasks[0].status='blocked';s.members[0].status='idle';s.tasks.find(x=>x.id==='b').dependencies=[];});
+  let latest={...quiet,turnId:'different-turn'};
+  f.observer.inspectIdle=async()=>({threadId:'native-a',turnId:null,status:'unknown',quiescence:latest});
+  const before=await f.saved();await assert.rejects(()=>f.claim('b'),/quiescence changed/);assert.deepEqual(await f.saved(),before);
+  latest=quiet;const next=await f.claim('b');
+  assert.equal(next.dispatch.existingThreadId,null);assert.equal(next.dispatch.contextIsolation.generation,2);
+  assert.equal(next.team.tasks[0].status,'blocked');assert.equal(next.team.tasks[0].attempts[0].runtimeStatus,'inProgress');assert.equal(next.team.tasks[0].attempts[0].turnId,'turn-'+first.dispatch.attemptId);
+  const retired=next.team.contextHistory[0];assert.equal(retired.status,'unknown');assert.equal(retired.source,'host-observed-quiescence');assert.deepEqual(retired.quiescence,quiet);assert.equal(validateTeam(next.team),true);
+  const forged=structuredClone(next.team);forged.contextHistory[0].quiescence.turnId='forged';assert.throws(()=>validateTeam(forged),/context ownership/);
+  assert.throws(()=>validateTeam({...next.team,requiresTeamWorkspaceVersion:'0.33.0'}),/context ownership/);
 });
 
 test('historical navigation and token accounting follow each recorded native context, including retired ones',async()=>{

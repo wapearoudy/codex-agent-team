@@ -10,21 +10,34 @@ export async function handleHook(input,{bridge=new HostBridge({host:'claude-code
   let thread;try{thread=await bridge.readThread(id);}catch(error){if(error.code!=='HOST_SESSION_UNAVAILABLE')throw error;if(id!==input.session_id&&!isChildEvent)throw new Error('Subagent must first be observed by SubagentStart');thread={id,cwd:input.cwd,parentThreadId:id===input.session_id?null:input.session_id,turns:[]};}
   if(event==='SubagentStart'||event==='UserPromptSubmit'){const baseline=thread.turns.at(-1)?.id??null,hookTurnId=input.tool_use_id??randomUUID();thread.turns.push({id:hookTurnId,status:'inProgress',items:input.prompt?[{type:'userMessage',content:input.prompt}]:[]});await bridge.store.transaction(d=>{d.claudeHookTurns??={};d.claudeHookTurns[id]={hookTurnId,baselineTranscriptTurnId:baseline,linkedTranscriptTurnId:null,receiptTurnId:null};});}
   const turn=thread.turns.at(-1)??{id:input.tool_use_id??randomUUID(),status:'unknown',items:[]};if(!thread.turns.length)thread.turns.push(turn);
-  if(['SubagentStop','Stop'].includes(event)){if(typeof input.last_assistant_message==='string')turn.items.push({type:'agentMessage',text:input.last_assistant_message,phase:'final_answer'});if(turn.statusEvidence?.source!=='native-task-receipt'){turn.status='unknown';turn.statusEvidence={status:'unknown',source:'native-stop-hook-awaiting-receipt'};}}
+  if(['SubagentStop','Stop'].includes(event)){if(typeof input.last_assistant_message==='string')turn.items.push({type:'agentMessage',text:input.last_assistant_message,phase:'final_answer'});if(!['native-task-receipt','persisted-native-task-stop'].includes(turn.statusEvidence?.source)){turn.status='unknown';turn.statusEvidence={status:'unknown',source:'native-stop-hook-awaiting-receipt'};}}
   if(input.tool_name==='Bash'&&event==='PreToolUse')turn.items.push({type:'commandExecution',commandId:input.tool_use_id,cwd:input.cwd,command:input.tool_input?.command??'',status:'inProgress',aggregatedOutput:''});
   if(input.tool_name==='Bash'&&['PostToolUse','PostToolUseFailure'].includes(event)){const item=turn.items.find(i=>i.type==='commandExecution'&&i.commandId===input.tool_use_id);if(item){const r=input.tool_response??{};item.status=event==='PostToolUseFailure'?'failed':'completed';item.exitCode=r.exitCode??r.exit_code??null;item.aggregatedOutput=publicText(typeof r==='string'?r:[r.stdout,r.stderr].filter(Boolean).join('\n'));}}
   if(input.tool_name==='SubagentHandback'&&event==='PostToolUse')turn.items.push({type:'agentMessage',text:input.tool_input?.message??'',phase:'final_answer'});
   // TaskStop receipts prove only that cancellation was requested.
   await bridge.putThread(thread);
+  if(event==='PreToolUse'&&input.tool_name==='SendMessage'){
+    const recipient=input.tool_input?.to,registry=await bridge.store.read(),child=typeof recipient==='string'?registry.threads[recipient]:null;
+    if(child?.parentThreadId===input.session_id&&child.turns.at(-1)?.status!=='inProgress'){
+      const hookTurnId=input.tool_use_id??randomUUID(),baseline=child.turns.at(-1)?.id??null;
+      child.turns.push({id:hookTurnId,status:'unknown',items:[]});
+      await bridge.store.transaction(d=>{d.claudeHookTurns??={};d.claudeHookTurns[recipient]={hookTurnId,baselineTranscriptTurnId:baseline,linkedTranscriptTurnId:null,receiptTurnId:null};d.claudeLaunches??={};if(input.tool_use_id)d.claudeLaunches[input.tool_use_id]={agentId:recipient,parentId:input.session_id,hookTurnId};});
+      await bridge.putThread(child);
+    }
+  }
+  if(event==='PostToolUse'&&input.tool_name==='SendMessage'){
+    const registry=await bridge.store.read(),binding=registry.claudeLaunches?.[input.tool_use_id],child=binding?registry.threads[binding.agentId]:null;
+    if(binding?.parentId===input.session_id&&child?.parentThreadId===input.session_id&&child.turns.at(-1)?.id===binding.hookTurnId&&child.turns.at(-1)?.status==='unknown'){child.turns.at(-1).status='inProgress';await bridge.putThread(child);}
+  }
   if(event==='PostToolUse'&&['Agent','TaskOutput'].includes(input.tool_name)){
     const r=input.tool_response??{},task=r.task??r,taskId=task.task_id??r.task_id,agentId=task.agentId??task.agent_id??r.agentId??r.agent_id;
-    if(input.tool_name==='Agent'&&agentId&&taskId){const child=await bridge.readThread(agentId);if(child.parentThreadId!==input.session_id)throw new Error('Claude launch receipt parent mismatch');await bridge.store.transaction(d=>{d.claudeTasks??={};d.claudeTasks[taskId]={agentId,parentId:input.session_id,hookTurnId:d.claudeHookTurns?.[agentId]?.hookTurnId??null};});}
+    if(input.tool_name==='Agent'&&agentId){const child=await bridge.readThread(agentId);if(child.parentThreadId!==input.session_id)throw new Error('Claude launch receipt parent mismatch');await bridge.store.transaction(d=>{const binding={agentId,parentId:input.session_id,hookTurnId:d.claudeHookTurns?.[agentId]?.hookTurnId??null};d.claudeLaunches??={};if(input.tool_use_id)d.claudeLaunches[input.tool_use_id]=binding;d.claudeTasks??={};if(taskId)d.claudeTasks[taskId]=binding;});}
     const registry=await bridge.store.read(),binding=taskId?registry.claudeTasks?.[taskId]:null;
     const childId=agentId??binding?.agentId;
     // Only structured committed receipts count. A stop hook or prose summary
     // cannot establish lifecycle completion, and task IDs are never guessed.
     const terminal=task.status==='completed'||task.status==='failed';
-    const foreground=input.tool_name==='Agent'&&agentId&&r.isAsync===false;
+    const foreground=input.tool_name==='Agent'&&agentId&&(r.isAsync===false||r.status==='completed');
     const currentHookTurn=childId?registry.claudeHookTurns?.[childId]?.hookTurnId:null;
     const sameAttempt=input.tool_name==='Agent'||binding?.hookTurnId&&binding.hookTurnId===currentHookTurn;
     if(childId&&sameAttempt&&(terminal||foreground)){

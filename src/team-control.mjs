@@ -12,7 +12,7 @@ export function controlRequest(team,action,input){
 }
 function record(team,action,input,hash){team.controlHistory??=[];team.controlHistory.push({action,requestId:input.requestId,reason:input.reason,hash,at:now()});team.controlHistory=team.controlHistory.slice(-200);requireTeamVersion(team,'0.12.0');}
 export function stopTargets(team){
-  return [...team.members.filter(m=>!m.removedAt&&m.agentThreadId).map(m=>({memberId:m.id,threadId:m.agentThreadId,agentPath:m.agentPath??null,initialization:!m.rosterVerified,...(()=>{const t=team.tasks.find(t=>t.memberId===m.id&&t.status==='running');return t?{taskId:t.id,attemptId:t.attempts.at(-1)?.id}:{};})()})),...team.tasks.filter(t=>t.status==='running'&&!t.attempts.at(-1)?.agentThreadId).map(t=>({taskId:t.id,memberId:t.memberId,attemptId:t.attempts.at(-1).id,threadId:null,action:'verify-host-before-bind-or-release'}))];
+  return [...team.members.filter(m=>!m.removedAt&&m.agentThreadId).map(m=>({memberId:m.id,threadId:m.agentThreadId,agentPath:m.agentPath??null,...(m.nativeTarget?{nativeTarget:m.nativeTarget}:{}),initialization:!m.rosterVerified,...(()=>{const t=team.tasks.find(t=>t.memberId===m.id&&t.status==='running');return t?{taskId:t.id,attemptId:t.attempts.at(-1)?.id}:{};})()})),...team.tasks.filter(t=>t.status==='running'&&!t.attempts.at(-1)?.agentThreadId).map(t=>({taskId:t.id,memberId:t.memberId,attemptId:t.attempts.at(-1).id,threadId:null,action:'verify-host-before-bind-or-release'}))];
 }
 export function requestStop(team,input={reason:'Leader requested a stop; verify all native turns',requestId:randomUUID()}){
   const {hash,saved}=controlRequest(team,'stop',input);if(saved)return;
@@ -30,7 +30,7 @@ export function resumeTeam(team,input){
 export function validateControl(team){
   if(team.memberStartup!==undefined&&!['on-demand','eager'].includes(team.memberStartup))throw new Error('Invalid member startup mode');
   if(team.executionControl&&(!['active','stopping','halted'].includes(team.executionControl.status)||!team.executionControl.reason||team.executionControl.status!=='active'&&!team.dispatchPaused))throw new Error('Invalid team stop state');
-  if((team.executionControl||team.memberStartup||team.tasks.some(t=>t.contractRevision))&&!['0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('New lifecycle records require Team Workspace 0.12.0');
+  if((team.executionControl||team.memberStartup||team.tasks.some(t=>t.contractRevision))&&!['0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('New lifecycle records require Team Workspace 0.12.0');
 }
 
 export function controlSummary(team){const c=team.executionControl;if(!c)return undefined;return {...Object.fromEntries(['status','requestId','requestedAt','previousState','observedAt','stoppedAt','resumedAt'].filter(k=>c[k]!==undefined).map(k=>[k,c[k]])),reason:String(c.reason??'').slice(0,2000),...(c.resumeReason?{resumeReason:String(c.resumeReason).slice(0,2000)}:{}),pending:(c.pending??[]).slice(0,16).map(p=>({memberId:p.memberId,taskId:p.taskId,reason:String(p.reason??'').slice(0,240)}))};}

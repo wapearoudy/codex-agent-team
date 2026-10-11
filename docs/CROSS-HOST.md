@@ -1,6 +1,6 @@
 # Native hosts
 
-Team Workspace 0.33.1 separates host integration from the existing team engine.
+Team Workspace 0.35.0 separates host integration from the existing team engine.
 The current conversation is Leader in every host. Team persistence, role/task
 identity, versioned approval, independent review, reservations, evidence and
 unknown-state handling stay shared. Existing Codex teams and paths remain intact.
@@ -8,8 +8,8 @@ unknown-state handling stay shared. Existing Codex teams and paths remain intact
 | Host | Native integration | Delegation/control | Display |
 | --- | --- | --- | --- |
 | Codex | Existing MCP plugin and app-server read-only observer | spawn/followup/interrupt | Existing embedded MCP App |
-| DeepSeekHarness | Cordis native plugin, actual caller/session events | Continuable profile subagent; send_message/interrupt_agent | Native tool results |
-| Claude Code | Native plugin, MCP server and Hooks | Agent; TaskOutput/TaskStop using actual task receipt | Native tool results and Agent task output |
+| DeepSeekHarness | Cordis native plugin, actual caller/session events and roster | Durable spawn_teammate or verified continuable subagent; native name/ID controls | Native tool results |
+| Claude Code | Native plugin, MCP server and Hooks | Agent, SendMessage, TaskStop; persisted task notifications | Native tool results and Agent task output |
 | OpenCode | Native plugin SDK, actual caller/session API/events | task; verified child abort | Native tool results and native session IDs |
 
 No unsupported host is given a fake Codex URL or a static external dashboard.
@@ -37,12 +37,29 @@ and Cordis overlay: select the intended profile explicitly and follow that packa
 README. Staging is not reported as activation. Codex still uses the existing
 official `node scripts/install-plugin.mjs` registration.
 
-DSH fixed members require a `backgroundMode: continuable` profile exposing
+Legacy DSH fixed members require a `backgroundMode: continuable` profile exposing
 `subagent`, `send_message`, and `interrupt_agent`. The adapter checks the installed
 tool's declaration of reusable subagent IDs as well as those controls. Unknown
 wording requires profile verification. It rejects one-shot profiles before
 dispatch: their job IDs do not identify reusable member sessions. Binding still
 requires the actual native `subagentId`, parent, project, and attempt marker.
+The current desktop durable protocol exposes `spawn_teammate`, `send_message`
+with a `target`, and `interrupt_agent` with a `target`. Its native roster maps
+that name to an actual session ID. `get_current_project.context.nativeMembers`
+exposes only verified mappings; binding still checks actual parent, project and
+marker. Later control rechecks the saved native target against the current Leader
+roster; the target is cleared when its context is retired. A missing, changed or
+ambiguous mapping cannot be guessed from the session ID. Optional Cordis roster
+lookup uses its public service API, allowing older profiles without that service.
+Whole-team stop applies the same check to each target and returns a null native
+action for an unverified binding; the stopping state is retained until native
+quiescence is confirmed. A saved alias never authorizes stopping its replacement.
+Legacy UUID-based stop verifies the actual child snapshot's parent and canonical
+approved workspace before returning a control action; a missing roster service
+does not permit an unknown UUID.
+Wire catalogs come from the exact registered calling Agent when no native
+request header exists; PTC/unknown catalogs remain blocked before dispatch.
+
 The actual tool schema determines background support. Sibling messages are
 saved for the Leader to relay; native DSH permits parent/child messaging only.
 
@@ -69,8 +86,9 @@ stays unknown. Transcript delay does not trigger another spawn.
 
 OpenCode and DSH delegation inherit their native presets. Per-member model or
 effort overrides are rejected unless that native tool exposes a verified route;
-the actual model is recorded at binding. Claude Code can use observed models in
-its Agent model argument, but no per-member effort argument is invented. No host
+the actual model is recorded at binding. Claude Code's Agent model argument uses
+native aliases; provider model IDs are not passed to that alias-only argument.
+No per-member effort argument is invented. No host
 gets the Codex model catalog or an automatic downgrade.
 
 ## Verification boundary
@@ -85,8 +103,17 @@ For this release, installed Claude Code 2.1.290 passes native plugin validation;
 DSH 0.1.7-rc.2 passes actual Cordis/ToolRuntime registration and overlay parsing;
 OpenCode 1.18.3 passes native server registration and parent/child session events
 through the bridge. Independent checks use the installed DSH tool schema and
-lineage authorization, not a model run. Model delivery/resume/stop are NOT_RUN
-in all three new hosts. Codex source/cache byte equality is checked separately;
+lineage authorization, not a model run. Those 0.33.1 registration checks did not
+run models. New 0.35.0 live verification has obtained DSH model dispatch,
+same-child resume and persisted abort evidence. Claude Code and OpenCode
+attempted their existing Go routes and returned native 403 errors requiring an
+active subscription before creating a member. Their model delivery/resume/stop
+remain BLOCKED; no automatic route substitution is performed.
+Run `node scripts/verify-host-execution.mjs --all --live` only when real model
+execution is authorized and the existing providers are usable. The verifier
+preserves failed attempts, uses isolated projects, and never treats process
+cleanup as cancellation proof.
+Codex source/cache byte equality is checked separately;
 an existing resident MCP connection is not silently replaced.
 
 API references: [Claude Code Hooks](https://code.claude.com/docs/en/hooks),

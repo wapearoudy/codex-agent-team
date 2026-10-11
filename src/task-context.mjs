@@ -8,30 +8,38 @@ export function lastMemberExecution(team,member){
 export function ownsNativeThread(team,memberId,threadId){
   return !!threadId&&(team.members.some(m=>m.id===memberId&&m.agentThreadId===threadId)||(team.contextHistory??[]).some(c=>c.memberId===memberId&&c.threadId===threadId));
 }
+export function stoppedContextIsIdle(last,observed){
+  const saved=last?.attempt?.stopEvidence?.quiescence,current=observed?.quiescence;
+  return last?.attempt?.state==='stopped'&&!!last.attempt.endedAt&&saved?.source==='native-latest-turn'&&current?.source==='native-latest-turn'&&!!current.turnId&&saved.turnId===current.turnId&&saved.status===current.status&&terminal.has(current.status);
+}
 export function retireTaskContext(team,member,observed){
   const last=lastMemberExecution(team,member);
   if(!last)return;
-  if(team.tasks.some(t=>t.memberId===member.id&&t.status==='running')||!last.attempt.endedAt||!terminal.has(observed.status)||observed.threadId!==member.agentThreadId||observed.turnId!==last.attempt.turnId)
+  const stoppedIdle=stoppedContextIsIdle(last,observed);
+  if(team.tasks.some(t=>t.memberId===member.id&&t.status==='running')||!last.attempt.endedAt||observed.threadId!==member.agentThreadId||!stoppedIdle&&(!terminal.has(observed.status)||observed.turnId!==last.attempt.turnId))
     throw new Error('Task context is not confirmed settled; preserve the original native attempt');
   const at=new Date().toISOString(),generation=member.contextGeneration??1;
-  (team.contextHistory??=[]).push({memberId:member.id,generation,threadId:member.agentThreadId,agentPath:member.agentPath??null,taskId:last.taskId,attemptId:last.attempt.id,turnId:observed.turnId,status:observed.status,retiredAt:at,source:'host-observed-terminal',route:last.attempt.executedRoute??null});
+  (team.contextHistory??=[]).push({memberId:member.id,generation,threadId:member.agentThreadId,agentPath:member.agentPath??null,taskId:last.taskId,attemptId:last.attempt.id,turnId:last.attempt.turnId,status:stoppedIdle?'unknown':observed.status,retiredAt:at,source:stoppedIdle?'host-observed-quiescence':'host-observed-terminal',...(stoppedIdle?{quiescence:structuredClone(observed.quiescence)}:{}),route:last.attempt.executedRoute??null});
   team.events.push({at,type:'task-context-retired',memberId:member.id,threadId:member.agentThreadId,attemptId:last.attempt.id,generation});
   member.contextGeneration=generation+1;member.agentThreadId=null;member.agentPath=null;member.rosterVerified=true;member.initializationTurnId=null;
   delete member.recoveryControl;delete member.stopObservation;delete member.initializationNeedsRetry;
-  requireTeamVersion(team,'0.14.0');
+  delete member.nativeTarget;
+  requireTeamVersion(team,stoppedIdle?'0.34.0':'0.14.0');
 }
 export function assertFreshBinding(team,member,threadId){
   if((team.contextHistory??[]).some(c=>c.threadId===threadId))throw new Error('Retired task context cannot be reused; spawn the reserved clean native session with fork_turns=none');
   if(team.members.some(m=>m.id!==member.id&&m.agentThreadId===threadId))throw new Error('Different roles require distinct native members');
 }
 export function validateTaskContexts(team){
+  for(const member of team.members)if(member.nativeTarget!==undefined&&(!(Number(team.requiresTeamWorkspaceVersion?.split('.')[1])>=35)||team.hostId!=='deepseek-harness'||!member.agentThreadId||!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(member.nativeTarget)))throw new Error('Native teammate target requires a verified DSH session and Team Workspace 0.35.0');
   if(team.contextHistory===undefined&&!team.tasks.some(t=>t.attempts?.some(a=>a.contextGeneration)))return;
-  if(!['0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task context isolation requires Team Workspace 0.14.0');
+  if(!['0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Task context isolation requires Team Workspace 0.14.0');
   const seen=new Set(team.members.filter(m=>m.agentThreadId).map(m=>m.agentThreadId));
   if(team.contextHistory!==undefined&&!Array.isArray(team.contextHistory))throw new Error('Invalid task context history');
   for(const c of team.contextHistory??[]){
     const member=team.members.find(m=>m.id===c.memberId),task=team.tasks.find(t=>t.id===c.taskId),a=task?.attempts.find(a=>a.id===c.attemptId);
-    if(!member||!a||(a.memberId??task.memberId)!==member.id||a.agentThreadId!==c.threadId||a.turnId!==c.turnId||!a.endedAt||seen.has(c.threadId)||!Number.isInteger(c.generation)||c.generation<1||c.generation>=(member.contextGeneration??1)||!terminal.has(c.status)||!Number.isFinite(Date.parse(c.retiredAt))||c.source!=='host-observed-terminal')throw new Error('Invalid task context ownership history');
+    const retiredIdle=Number(team.requiresTeamWorkspaceVersion?.split('.')[1])>=34&&c.source==='host-observed-quiescence'&&c.status==='unknown'&&stoppedContextIsIdle({attempt:a},{quiescence:c.quiescence});
+    if(!member||!a||(a.memberId??task.memberId)!==member.id||a.agentThreadId!==c.threadId||a.turnId!==c.turnId||!a.endedAt||seen.has(c.threadId)||!Number.isInteger(c.generation)||c.generation<1||c.generation>=(member.contextGeneration??1)||!retiredIdle&&(!terminal.has(c.status)||c.source!=='host-observed-terminal')||!Number.isFinite(Date.parse(c.retiredAt)))throw new Error('Invalid task context ownership history');
     seen.add(c.threadId);
   }
   for(const member of team.members){

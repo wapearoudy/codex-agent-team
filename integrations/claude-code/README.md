@@ -11,12 +11,16 @@ cannot choose them. SubagentStart records real direct-child identity.
 
 SubagentStop records public final text. Stop hooks can be blocked, so observing
 a stop hook does not establish committed completion. Settlement needs a
-structured Agent or TaskOutput receipt for that exact child. A background Agent
-receipt must supply both its real task ID and agent ID; the bridge stores that
-mapping. TaskOutput must return that mapped task's completed or failed status.
+structured Agent receipt for that exact child. Current background Agent receipts
+can omit task IDs: the bridge binds their native tool-use ID to the real child.
+Native task_started records in an authorized parent transcript can map that
+tool-use ID to a task; task_notification/task_updated terminal records settle
+only the exact bound child activation. Foreground Agent status completed also
+commits completion. Legacy TaskOutput receipts remain supported.
 If the host omits a structured identity/terminal receipt, status remains unknown;
 do not invent task IDs or accept the work from final text alone. TaskStop records
-only a request and never marks the agent stopped.
+only a request and never marks the agent stopped. PreToolUse SendMessage observes
+the same child entering a new activation; an old task receipt cannot settle it.
 
 Transcript files are read only after native hooks register their checked
 identity and authorized Claude project-storage path. `CLAUDE_CONFIG_DIR` is
@@ -25,5 +29,5 @@ do not become lifecycle authority. Public final JSON reports retain their text.
 
 There is no supported native MCP App panel here. Use the six compact native
 MCP tool results. The plugin creates no Codex session, URL dashboard, or separate
-coordinator model. Real Agent/TaskOutput receipt shapes must be validated in a
+coordinator model. Real Agent/task-notification receipt persistence must be validated in a
 configured Claude Code session before claiming end-to-end completion.
