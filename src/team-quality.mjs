@@ -3,6 +3,7 @@ import {isAbsolute,win32,posix} from 'node:path';
 import {contractCommandEvidence,verificationRecords} from './verification-command.mjs';
 import {resolutionEvidenceText} from './quality-gates.mjs';
 import {parseStructuredReport} from './report-format.mjs';
+import {ignoredValidationArtifacts} from './validation-artifacts.mjs';
 
 const stages=new Set(['requirements','implementation','verification','review','repair','integration']);
 const nonempty=v=>typeof v==='string'&&v.trim().length>0;
@@ -41,17 +42,19 @@ export function qualityBlockers(team,task){
   return team.tasks.filter(t=>t.contract?.stage==='requirements'&&t.status!=='accepted'&&!t.supersededBy).map(t=>({code:'requirements-gate',taskId:t.id,message:`等待需求任务 ${t.id} 独立验收`}));
 }
 export function parseDelivery(text,expectedMarker){return parseStructuredReport(text,{expectedMarker,errorMessage:'Contract task must return a structured JSON delivery'});}
-export function assertContractDelivery(task,member,output,commands=[]){
+export function assertContractDelivery(task,member,output,commands=[],{projectPath}={}){
   if(!task.contract||task.kind==='review')return null;
   const delivery=parseDelivery(output,task.attempts?.at(-1)?.marker);
   if(!nonempty(delivery.summary)||!Array.isArray(delivery.acceptanceResults)||delivery.acceptanceResults.some(c=>!c||!nonempty(c.criterionId)||!['PASS','FAIL','BLOCKED','NOT_RUN'].includes(c.status)||!nonempty(c.evidence))||new Set(delivery.acceptanceResults.map(c=>c.criterionId)).size!==delivery.acceptanceResults.length||task.acceptanceCriteria.some(c=>!delivery.acceptanceResults.some(r=>r.criterionId===c.id)))throw new Error('Contract delivery must report every acceptance criterion with evidence');
   if(!Array.isArray(delivery.changedPaths)||delivery.changedPaths.length>1000||delivery.changedPaths.some(p=>!safeQualityPath(p)))throw new Error('Contract delivery needs safe project-relative changedPaths');
-  for(const path of delivery.changedPaths){
+  const artifacts=member.writeScopes.length===0&&task.contract.inScope?.length===0&&(task.validationMode??'execute')==='execute'&&!delivery.changedPaths.some(path=>task.contract.outOfScope?.some(scope=>within(path,scope)))?ignoredValidationArtifacts(delivery.changedPaths,projectPath):[];
+  const changedPaths=delivery.changedPaths.filter(path=>!artifacts.includes(path));
+  for(const path of changedPaths){
     if(!member.writeScopes.some(scope=>within(path,scope))||!task.contract.inScope?.some(scope=>within(path,scope))||task.contract.outOfScope?.some(scope=>within(path,scope)))throw new Error(`Reported change is outside the task write scope: ${path}`);
   }
   // A model's commandsRun claim cannot substitute for host command records.
   // Failed checks may be submitted for review, but cannot pass acceptance.
-  return {...delivery,scopeEvidenceSource:'member-reported-paths',verifiedCommands:contractCommandEvidence(task.contract.verify??[],commands),commandVerificationVersion:1};
+  return {...delivery,changedPaths,...(artifacts.length?{reportedChangedPaths:delivery.changedPaths,validationArtifactPaths:artifacts,artifactEvidenceSource:'git-ignored-project-validation-output'}:{}),scopeEvidenceSource:'member-reported-paths',verifiedCommands:contractCommandEvidence(task.contract.verify??[],commands),commandVerificationVersion:1};
 }
 export function assertContractPass(task){
   if(!task.contract||task.kind==='review')return;

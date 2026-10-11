@@ -9,6 +9,35 @@ const observed=(command,expected='npm run typecheck',record={})=>assertContractD
   [{command,status:'completed',exitCode:0,...record}]
 ).verifiedCommands[0].observed;
 
+test('native PowerShell logging wrapper preserves the exact captured exit and workspace',()=>{
+  const required='node integrations/claude-code/verify-replay.mjs evidence/native.json evidence/inputs.json';
+  const wrap=script=>'"C:\\\\native\\\\pwsh.exe" -Command '+"'"+script+"'";
+  const actual=wrap(required+' *> evidence/native.log\n$taskExit = $LASTEXITCODE\nWrite-Output "Replay exit=$taskExit; log=evidence/native.log"\nexit $taskExit');
+  assert.equal(verificationCommandMatches(actual,required,{cwd:'E:\\project',workspace:'E:\\project'}),true);
+  assert.equal(verificationCommandMatches(actual,required,{cwd:'E:\\other',workspace:'E:\\project'}),false);
+  for(const exitCode of [1,null])assert.equal(contractCommandEvidence([required],[{command:actual,cwd:'E:\\project',status:'completed',exitCode}],{workspace:'E:\\project'})[0].observed,false);
+});
+test('PowerShell wrapper cannot hide failure, execute extra commands or echo a claimed check',()=>{
+  const required='node verify.mjs',wrap=script=>"pwsh -Command '"+script+"'";
+  const valid=required+' > evidence/native.log 2>&1; $code = $LASTEXITCODE; exit $code';
+  assert.equal(verificationCommandMatches(wrap(valid),required),true);
+  for(const bad of [valid.replace('exit $code','exit 0'),valid.replace('$LASTEXITCODE','0'),valid.replace('exit $code','$code=0; exit $code'),valid.replace('exit $code','node other.mjs; exit $code'),valid.replace(required,'echo '+required),valid.replace(required,required+' | echo success'),valid.replace('exit $code','Write-Output "$(node verify.mjs)"; exit $code'),valid.replace('evidence/native.log','$unknown')])assert.equal(verificationCommandMatches(wrap(bad),required),false,bad);
+});
+
+test('PowerShell exit capture rejects automatic variables, including discard and boolean constants',()=>{
+  const required='node scripts/verify-host-execution.mjs --host opencode --live';
+  const wrap=name=>"pwsh -Command '"+required+'; $'+name+' = $LASTEXITCODE; exit $'+name+"'";
+  for(const name of ['null','NuLl','true','false','LASTEXITCODE','Error','Host','HOME','PWD','PID','PSItem','_','args','input','Matches','this'])assert.equal(verificationCommandMatches(wrap(name),required),false,name);
+  for(const name of ['taskExit','nativeExitCode','code'])assert.equal(verificationCommandMatches(wrap(name),required),true,name);
+});
+test('PowerShell native result metadata cannot replace or modify the captured command exit',()=>{
+  const required='node scripts/verify-host-execution.mjs --host opencode --live';
+  const metadata="[pscustomobject]@{attemptMarker='TEAM_WORKSPACE_ATTEMPT:proof';command='"+required+"';exitCode=$nativeExitCode;at=[DateTime]::UtcNow.ToString('o');log='evidence/native.log'} | ConvertTo-Json -Compress | Set-Content -LiteralPath 'evidence/result.json' -Encoding utf8";
+  const wrap=middle=>{const script=required+' *> evidence/native.log; $nativeExitCode = $LASTEXITCODE; '+middle+'; exit $nativeExitCode';return 'pwsh -Command '+"'"+script.replaceAll("'","'\"'\"'")+"'";};
+  assert.equal(verificationCommandMatches(wrap(metadata),required),true);
+  for(const bad of [metadata.replace('exitCode=$nativeExitCode','exitCode=0'),metadata.replace("command='"+required+"'","command='node different.mjs'"),metadata.replace("at=[DateTime]::UtcNow.ToString('o')",'at=$(node different.mjs)'),metadata.replace('evidence/result.json','src/result.json'),metadata+'; $nativeExitCode=0',metadata.replace('ConvertTo-Json -Compress','node different.mjs')])assert.equal(verificationCommandMatches(wrap(bad),required),false,bad);
+});
+
 test('successful host shell wrappers match the complete required script without changing its content',()=>{
   for(const command of [
     'npm run typecheck',"/bin/zsh -lc 'npm run typecheck'",'/bin/bash -c "npm run typecheck"',

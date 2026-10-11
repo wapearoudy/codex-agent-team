@@ -253,7 +253,7 @@ export class LeaderEngine {
     // Quality gates use the completed turn's commands. Earlier interrupted
     // checks remain turn-scoped evidence and cannot silently validate this result.
     const reusable=a.phaseContinuation?await reusablePhaseCommands(team,task):[];
-    const delivery=assertContractDelivery(task,member,output,[...reusable,...(run.commands??[])]);if(delivery)a.delivery=delivery;
+    const delivery=assertContractDelivery(task,member,output,[...reusable,...(run.commands??[])],{projectPath:team.projectPath});if(delivery)a.delivery=delivery;
     if(member.workspace?.mode==='git-worktree'){
       const candidate=await this.worktrees.inspect(team,member.id);if(candidate.dirty)throw new Error('Commit the isolated candidate before submitting it for independent review');
       a.candidate={head:candidate.head,path:candidate.workspace.path,branch:candidate.workspace.branch,base:candidate.workspace.base,observedAt:now()};

@@ -1,4 +1,4 @@
-# Team Workspace 0.35.0
+# Team Workspace 0.36.0
 
 ## 0.35.0 多宿主接入
 

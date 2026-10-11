@@ -1,1 +1,1 @@
-{"name":"agent-team-deepseek-harness","version":"0.35.0","type":"module","main":"./dist/index.mjs","exports":{".":"./dist/index.mjs","./cordis.patch.yml":"./cordis.patch.yml"},"dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}
+{"name":"agent-team-deepseek-harness","version":"0.36.0","type":"module","main":"./dist/index.mjs","exports":{".":"./dist/index.mjs","./cordis.patch.yml":"./cordis.patch.yml"},"dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}

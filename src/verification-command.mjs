@@ -1,5 +1,6 @@
 import {posix,win32} from 'node:path';
 import {createHash} from 'node:crypto';
+import {powerShellVerificationCommand} from './powershell-verification.mjs';
 // Interpret recorded paths by their own syntax, never by the server OS. Native
 // Windows drive/UNC paths and POSIX paths must retain distinct identities.
 const directoryPath=value=>/^(?:[A-Za-z]:[\\/]|\\\\)/.test(value??'')?win32:posix;
@@ -41,6 +42,7 @@ const shells=new Set(['sh','bash','zsh','/bin/sh','/bin/bash','/bin/zsh','/usr/b
 const shellFlags=new Set(['-c','-lc','-cl','-l -c','--login -c']);
 function commandIdentity(command,{logVariable=false}={}){
   let script=command.trim();
+  script=powerShellVerificationCommand(script,literalShellWords)??script;
   // Only a literal terminal log redirect is allowed. No pipelines, executable
   // expansions in the path, appended commands or substituted exit codes.
   for(let depth=0;depth<4;depth++){

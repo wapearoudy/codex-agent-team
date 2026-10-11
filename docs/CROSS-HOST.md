@@ -1,6 +1,6 @@
 # Native hosts
 
-Team Workspace 0.35.0 separates host integration from the existing team engine.
+Team Workspace 0.36.0 separates host integration from the existing team engine.
 The current conversation is Leader in every host. Team persistence, role/task
 identity, versioned approval, independent review, reservations, evidence and
 unknown-state handling stay shared. Existing Codex teams and paths remain intact.
@@ -99,16 +99,39 @@ native registration/API smoke results and zero model starts separately. Actual
 model delivery, permission prompts, provider quota and interactive UI require
 their respective host; report these separately when not run.
 
-For this release, installed Claude Code 2.1.290 passes native plugin validation;
+The rebuilt 0.36.0 packages pass native loading checks: installed Claude Code
+2.1.290 passes native plugin validation;
 DSH 0.1.7-rc.2 passes actual Cordis/ToolRuntime registration and overlay parsing;
-OpenCode 1.18.3 passes native server registration and parent/child session events
+OpenCode 1.19.0 passes native server registration and parent/child session events
 through the bridge. Independent checks use the installed DSH tool schema and
-lineage authorization, not a model run. Those 0.33.1 registration checks did not
-run models. New 0.35.0 live verification has obtained DSH model dispatch,
-same-child resume and persisted abort evidence. Claude Code and OpenCode
-attempted their existing Go routes and returned native 403 errors requiring an
-active subscription before creating a member. Their model delivery/resume/stop
-remain BLOCKED; no automatic route substitution is performed.
+lineage authorization, not a model run. These registration checks start zero
+models. The 0.35.0 live verification obtained DSH model dispatch,
+same-child resume and persisted abort evidence; that unchanged native lifecycle
+is reused. Its Claude/OpenCode subscription 403 attempts remain historical
+failures. After the user's native configuration update, the 0.36.0 OpenCode
+1.19.0 run used the saved `opencode-go/deepseek-v4.1-flash` route and exited zero:
+one child, same-child task resume, active Bash, native abort and persistent
+`MessageAbortedError` / `persisted-turn-aborted` before cleanup.
+
+Claude Code 2.1.290 also produced actual dispatch, same-child SendMessage resume
+and persistent native task-stop evidence. The original verifier incorrectly
+compared hook and transcript IDs; its five failed command runs are preserved.
+After fixing that mapping, the formally amended verification contract re-reads
+the same actual receipts through the production bridge with 19 original native
+production inputs unchanged. This starts zero models and does not rewrite the
+original live exit codes. No model route or credential is changed by the plugin.
+
+Workflow fixes are validated separately from these model events: fixed literal
+PowerShell log/JSON wrappers must preserve the captured native exit code. Only
+caller-owned capture variables are accepted; automatic variables such as `$null`,
+`$false` and `$LASTEXITCODE` cannot be used as the saved exit variable. Only
+read-only execution tasks can classify existing, untracked, Git-ignored project
+`evidence/` paths as validation artifacts; aliases, tracked/source paths, failed
+checks and missing mandatory commands remain rejected. Raw member reports and
+classified artifact paths are retained. Native bridge/hook sources used in the
+model runs remain unchanged by these later coordinator fixes; a rebuilt bundle
+is checked for native registration separately, without claiming another model
+run. Interactive host UI is not covered by these CLI lifecycle checks.
 Run `node scripts/verify-host-execution.mjs --all --live` only when real model
 execution is authorized and the existing providers are usable. The verifier
 preserves failed attempts, uses isolated projects, and never treats process

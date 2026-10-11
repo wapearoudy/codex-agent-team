@@ -6,6 +6,28 @@ import {DurableStore} from './durable-store.mjs';
 import {sanitizeThread,textBlocks,normalizeUsage} from './host-normalize.mjs';
 const hosts=new Set(['deepseek-harness','claude-code','opencode']);
 const hash=value=>createHash('sha256').update(value).digest('hex');
+function claudeTaskReceipt(row,parentId){
+  if(row.type==='system'&&['task_started','task_notification','task_updated'].includes(row.subtype)){
+    if(row.session_id&&row.session_id!==parentId||row.sessionId&&row.sessionId!==parentId)return null;
+    return row;
+  }
+  if(row.type!=='user'||row.message?.role!=='user'||row.origin?.kind!=='task-notification'||row.origin?.producer!=='session-task'||row.promptSource!=='system'||row.turnOrigin!=='task_notification'||row.sessionId!==parentId||typeof row.cwd!=='string'||!row.cwd)return null;
+  const content=row.message.content;
+  if(typeof content!=='string'||!/^\s*<task-notification>[\s\S]*<\/task-notification>\s*$/.test(content))return null;
+  const field=tag=>{const matches=[...content.matchAll(new RegExp('<'+tag+'>([^<>]*)</'+tag+'>','g'))];return matches.length===1?matches[0][1].trim():null;};
+  const taskId=field('task-id'),toolUseId=field('tool-use-id'),status=field('status');
+  if(!taskId||!toolUseId||!status||!/^[-a-zA-Z0-9_]{1,200}$/.test(taskId)||!/^[-a-zA-Z0-9_]{1,200}$/.test(toolUseId))return null;
+  return {subtype:'task_notification',task_id:taskId,tool_use_id:toolUseId,status,cwd:row.cwd,sessionId:parentId};
+}
+function preserveClaudeTurn(turn,observed,{active=false,terminal=true}={}){
+  const commands=new Set(turn.items.filter(i=>i.type==='commandExecution').map(i=>i.commandId??i.id));
+  turn.items.push(...observed.items.filter(i=>i.type==='commandExecution'&&!commands.has(i.commandId??i.id)));
+  const trusted=['native-task-receipt','persisted-native-task-stop'].includes(observed.statusEvidence?.source)&&observed.statusEvidence?.status===observed.status&&['completed','failed','interrupted'].includes(observed.status);
+  if(terminal&&trusted){turn.status=observed.status;turn.statusEvidence=observed.statusEvidence;}
+  else if(active&&observed.status==='inProgress'){turn.status='inProgress';if(observed.statusEvidence?.status==='inProgress')turn.statusEvidence=observed.statusEvidence;}
+  const texts=new Set(turn.items.filter(i=>i.type==='agentMessage').map(i=>i.text));
+  turn.items.push(...observed.items.filter(i=>i.type==='agentMessage'&&i.phase==='final_answer'&&!texts.has(i.text)));
+}
 export class HostBridge{
   constructor({host,root=process.env.TEAM_WORKSPACE_BRIDGE_ROOT??join(homedir(),'.agent-team','bridge',host),ticketTtlMs=30000,now=Date.now}={}){
     if(!hosts.has(host))throw new Error('Unsupported native host');this.host=host;this.root=root;this.file=join(root,'registry.json');this.now=now;this.ticketTtlMs=ticketTtlMs;
@@ -17,9 +39,19 @@ export class HostBridge{
   async refreshClaudeTaskReceipts(parentId){
     const registry=await this.store.read(),path=registry.transcripts[parentId]?.path;if(!path)return;
     let body;try{if(await realpath(path)!==path)throw new Error('Claude registered transcript path changed');body=await readFile(path,'utf8');}catch(e){if(e.code==='ENOENT')return;throw e;}
-    const rows=[];for(const line of body.split('\n')){try{const row=JSON.parse(line);if(row.type==='system'&&['task_started','task_notification','task_updated'].includes(row.subtype)&&(!row.session_id||row.session_id===parentId)&&(!row.sessionId||row.sessionId===parentId)){if(row.cwd&&await realpath(row.cwd)!==registry.threads[parentId]?.cwd)throw new Error('Claude task receipt project mismatch');rows.push(row);}}catch(e){if(e instanceof SyntaxError)continue;throw e;}}
+    const rows=[];for(const line of body.split('\n')){try{const row=claudeTaskReceipt(JSON.parse(line),parentId);if(row){if(row.cwd&&await realpath(row.cwd)!==registry.threads[parentId]?.cwd)throw new Error('Claude task receipt project mismatch');rows.push(row);}}catch(e){if(e instanceof SyntaxError)continue;throw e;}}
     if(!rows.length)return;
-    await this.store.transaction(d=>{d.claudeTasks??={};for(const row of rows){if(row.subtype==='task_started'&&row.task_id&&row.tool_use_id){const launch=d.claudeLaunches?.[row.tool_use_id];if(launch?.parentId===parentId)d.claudeTasks[row.task_id]={...launch};}const binding=d.claudeTasks[row.task_id];if(!binding||binding.parentId!==parentId)continue;const state=d.claudeHookTurns?.[binding.agentId],child=d.threads[binding.agentId];if(!state||binding.hookTurnId!==state.hookTurnId||child?.parentThreadId!==parentId)continue;const terminal={completed:'completed',failed:'failed',stopped:'interrupted',killed:'interrupted'}[row.status??row.patch?.status];if(!terminal)continue;const last=child.turns.at(-1);if(last?.id!==state.hookTurnId&&last?.id!==state.linkedTranscriptTurnId)continue;last.status=terminal;last.statusEvidence={status:terminal,source:terminal==='interrupted'?'persisted-native-task-stop':'native-task-receipt'};state.receiptTurnId=state.hookTurnId;}});
+    await this.store.transaction(d=>{d.claudeTasks??={};for(const row of rows){
+      const launch=row.tool_use_id?d.claudeLaunches?.[row.tool_use_id]:null;
+      const binding=launch??d.claudeTasks[row.task_id];
+      if(!row.task_id||!binding||binding.parentId!==parentId||row.tool_use_id&&!launch)continue;
+      const state=d.claudeHookTurns?.[binding.agentId],child=d.threads[binding.agentId];
+      if(!state||binding.hookTurnId!==state.hookTurnId||child?.parentThreadId!==parentId||child.cwd!==d.threads[parentId]?.cwd)continue;
+      const last=child.turns.at(-1);if(last?.id!==state.hookTurnId&&last?.id!==state.linkedTranscriptTurnId)continue;
+      d.claudeTasks[row.task_id]={...binding};
+      const terminal={completed:'completed',failed:'failed',stopped:'interrupted',killed:'interrupted'}[row.status??row.patch?.status];if(!terminal)continue;
+      last.status=terminal;last.statusEvidence={status:terminal,source:terminal==='interrupted'?'persisted-native-task-stop':'native-task-receipt'};state.receiptTurnId=state.hookTurnId;
+    }});
   }
   async setModels(rows){const clean=[];for(const r of rows??[]){const model=r.model??r.id;if(typeof model!=='string'||!model)continue;clean.push({id:r.id??model,model,...(r.provider?{provider:r.provider}:{}),...(r.displayName?{displayName:r.displayName}:{}),source:r.source??'observed-host-model',childModelSelectable:r.childModelSelectable===true,...(Array.isArray(r.supportedReasoningEfforts)?{supportedReasoningEfforts:r.supportedReasoningEfforts.filter(v=>typeof v==='string')}:{} )});}if(JSON.stringify((await this.store.read()).models)===JSON.stringify(clean))return;await this.store.transaction(d=>{d.models=clean;});}
   async readModels(){return (await this.store.read()).models;}
@@ -37,10 +69,10 @@ export class HostBridge{
     // Hook-recorded lifecycle and commands have stronger authority than a late transcript.
     if(turns.length){
       const observed=thread.turns.at(-1),last=turns.at(-1),state=(await this.store.read()).claudeHookTurns?.[thread.id];
+      for(const turn of turns){if(turn===last&&turn.id===observed?.id)continue;const previous=thread.turns.find(t=>t.id===turn.id);if(previous)preserveClaudeTurn(turn,previous);}
       const sameTurn=observed?.id===last.id||state&&observed?.id===state.hookTurnId&&last.id!==state.baselineTranscriptTurnId&&(!state.linkedTranscriptTurnId||state.linkedTranscriptTurnId===last.id)||state&&observed?.id===state.linkedTranscriptTurnId&&last.id===state.linkedTranscriptTurnId;
       if(sameTurn&&observed){
-        last.items.push(...observed.items.filter(i=>i.type==='commandExecution'));if(['native-task-receipt','persisted-native-task-stop'].includes(observed.statusEvidence?.source)&&(!state||state.receiptTurnId===state.hookTurnId)){last.status=observed.status;last.statusEvidence=observed.statusEvidence;}
-        const ids=new Set(last.items.filter(i=>i.type==='agentMessage').map(i=>i.text));last.items.push(...observed.items.filter(i=>i.type==='agentMessage'&&i.phase==='final_answer'&&!ids.has(i.text)));
+        preserveClaudeTurn(last,observed,{active:Boolean(state&&state.receiptTurnId!==state.hookTurnId&&(observed.id===state.hookTurnId||observed.id===state.linkedTranscriptTurnId)),terminal:!state||state.receiptTurnId===state.hookTurnId});
         if(state&&!state.linkedTranscriptTurnId)await this.store.transaction(d=>{if(d.claudeHookTurns?.[thread.id]?.hookTurnId===state.hookTurnId)d.claudeHookTurns[thread.id].linkedTranscriptTurnId=last.id;});
       }else if(state&&observed?.id===state.hookTurnId&&last.id===state.baselineTranscriptTurnId)turns.push(observed);
       thread={...thread,turns};await this.putThread(thread);

@@ -4,13 +4,17 @@ import {randomUUID} from 'node:crypto';
 import {join} from 'node:path';
 import {HostBridge} from '../../src/host-bridge.mjs';
 
+export function matchesNativeHookTurn(turn,state,hookTurnId) {
+  return Boolean(hookTurnId&&turn?.id&&state?.hookTurnId===hookTurnId&&(turn.id===hookTurnId||turn.id===state.linkedTranscriptTurnId));
+}
+
 export async function runLive({project,bridgeRoot,packageRoot,evidence,record=()=>{},binary=join(process.env.APPDATA,'npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe')}) {
   const bridge=new HostBridge({host:'claude-code',root:bridgeRoot});
   const marker=`TEAM_WORKSPACE_NATIVE_CLAUDE:${randomUUID()}`;
   const parentId=randomUUID(),messages=[],tasks=new Map();let childId,activeTaskId,closed=false;const deadline=Date.now()+240000;
   const emit=event=>record({host:'claude-code',parentId,...event});
   const proc=spawn(binary,['--print','--verbose','--input-format','stream-json','--output-format','stream-json','--include-partial-messages','--session-id',parentId,'--plugin-dir',packageRoot,'--tools','Agent,SendMessage,TaskStop,Read,Bash','--allowedTools','Agent,SendMessage,TaskStop,Read,Bash'],{cwd:project,env:{...process.env,TEAM_WORKSPACE_BRIDGE_ROOT:bridgeRoot},windowsHide:true,stdio:['pipe','pipe','pipe']});
-  let pending='';proc.stdout.on('data',chunk=>{pending+=chunk;let index;while((index=pending.indexOf('\n'))>=0){const line=pending.slice(0,index);pending=pending.slice(index+1);let row;try{row=JSON.parse(line);}catch{continue;}messages.push(row);if(row.type==='system'&&['task_started','task_notification','task_updated'].includes(row.subtype)){tasks.set(row.task_id,{...tasks.get(row.task_id),...row});emit({kind:row.subtype,taskId:row.task_id,toolUseId:row.tool_use_id,status:row.status});}if(row.type==='system'&&row.subtype==='init')emit({kind:'init',model:row.model,sessionId:row.session_id,tools:row.tools});}});
+  let pending='';proc.stdout.on('data',chunk=>{pending+=chunk;let index;while((index=pending.indexOf('\n'))>=0){const line=pending.slice(0,index);pending=pending.slice(index+1);let row;try{row=JSON.parse(line);}catch{continue;}messages.push(row);if(row.type==='system'&&['task_started','task_notification','task_updated'].includes(row.subtype)){tasks.set(row.task_id,{...tasks.get(row.task_id),...row,...(row.subtype==='task_started'?{startedToolUseId:row.tool_use_id}:{})});emit({kind:row.subtype,taskId:row.task_id,toolUseId:row.tool_use_id,status:row.status});}if(row.type==='system'&&row.subtype==='init')emit({kind:'init',model:row.model,sessionId:row.session_id,tools:row.tools});}});
   proc.stderr.on('data',()=>{});proc.on('close',code=>{closed=true;emit({kind:'process-close',code});});proc.on('error',error=>{closed=true;emit({kind:'launch-error',code:error.code});});
   const send=prompt=>proc.stdin.write(JSON.stringify({type:'user',session_id:parentId,message:{role:'user',content:prompt},parent_tool_use_id:null})+'\n');
   const until=async(predicate,label)=>{while(Date.now()<deadline){const failure=messages.find(row=>row.type==='result'&&row.is_error===true);if(failure){emit({kind:'native-failure',subtype:failure.subtype,errors:([failure.result,...(failure.errors??[])]).filter(Boolean).map(String).map(s=>s.replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_.-]+/g,'[redacted]').slice(0,300))});throw new Error(`Claude native result failed before ${label}`);}const value=await predicate();if(value)return value;if(closed)throw new Error(`Claude exited before ${label}`);await new Promise(resolve=>setTimeout(resolve,150));}throw new Error(`Claude native verification timeout: ${label}`);};
@@ -25,13 +29,14 @@ export async function runLive({project,bridgeRoot,packageRoot,evidence,record=()
     send(`Use native SendMessage to the same exact agent ${childId} with: "Do not use tools or modify files. Print exactly ${marker}:resumed and stop." Do not create another Agent. Wait for its completion.`);
     const resumed=await until(async()=>{const t=await snapshot();return t?.turns.at(-1)?.id!==initial.turns.at(-1).id&&t?.turns.at(-1)?.status==='completed'&&t;},'same member new terminal');assert.ok(JSON.stringify(resumed.turns.at(-1)).includes(`${marker}:resumed`));
     emit({kind:'resumed-terminal',childId,turnId:resumed.turns.at(-1).id,status:'completed'});
-    const existingTasks=new Set(tasks.keys());send(`Use native SendMessage to the same exact agent ${childId} with: "Read-only cancellation test. Use Bash to run node -e 'setTimeout(()=>{},60000)' once, then print finished. Do not modify files." Do not create another Agent. Wait for its completion.`);
+    const existingLaunches=new Set([...tasks.values()].map(task=>task.startedToolUseId));send(`Use native SendMessage to the same exact agent ${childId} with: "Read-only cancellation test. Use Bash to run node -e 'setTimeout(()=>{},60000)' once, then print finished. Do not modify files." Do not create another Agent. Wait for its completion.`);
     const active=await until(async()=>{const t=await snapshot();return t?.turns.at(-1)?.id!==resumed.turns.at(-1).id&&t?.turns.at(-1)?.status==='inProgress'&&t;},'plugin active same child');
+    const activeState=(await bridge.store.read()).claudeHookTurns?.[childId],activeHookTurnId=activeState?.hookTurnId;assert.ok(matchesNativeHookTurn(active.turns.at(-1),activeState,activeHookTurnId));
     emit({kind:'bridge-active',childId,turnId:active.turns.at(-1).id,status:'inProgress'});
-    activeTaskId=await until(()=>[...tasks].find(([id,t])=>!existingTasks.has(id)&&t.subtype==='task_started')?.[0],'native active task id');
+    activeTaskId=await until(()=>[...tasks].find(([id,t])=>id===childId&&t.startedToolUseId&&!existingLaunches.has(t.startedToolUseId))?.[0],'native active task id');
     const requestId=randomUUID();proc.stdin.write(JSON.stringify({type:'control_request',request_id:requestId,request:{subtype:'stop_task',task_id:activeTaskId}})+'\n');emit({kind:'stop-control-request',childId,taskId:activeTaskId,requestId});
     await until(()=>messages.find(row=>row.type==='control_response'&&row.response?.request_id===requestId),'native stop control response');
-    const terminal=await until(async()=>{const t=await snapshot();return t?.turns.at(-1)?.id===active.turns.at(-1).id&&t?.turns.at(-1)?.status==='interrupted'&&t;},'plugin-observed native stopped terminal');
+    const terminal=await until(async()=>{const t=await snapshot(),state=(await bridge.store.read()).claudeHookTurns?.[childId],last=t?.turns.at(-1);return matchesNativeHookTurn(last,state,activeHookTurnId)&&state.receiptTurnId===activeHookTurnId&&last.status==='interrupted'&&last.statusEvidence?.source==='persisted-native-task-stop'&&t;},'plugin-observed native stopped terminal');
     assert.ok([...tasks.values()].some(t=>t.task_id===activeTaskId&&['stopped','killed'].includes(t.status)));
     const result={host:'claude-code',status:'PASS',parentId,childId,marker,turns:[initial,resumed,terminal].map(t=>({id:t.turns.at(-1).id,status:t.turns.at(-1).status,statusEvidence:t.turns.at(-1).statusEvidence}))};emit({kind:'result',...result});return result;
   } finally {if(!closed){proc.stdin.end();await new Promise(resolve=>{const timer=setTimeout(()=>{proc.kill();resolve();},5000);proc.once('close',()=>{clearTimeout(timer);resolve();});});}emit({kind:'cleanup',terminalProof:false});}

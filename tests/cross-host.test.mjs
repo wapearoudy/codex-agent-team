@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {HostBridge} from '../src/host-bridge.mjs';
 import {sanitizeThread,normalizeDshSession,normalizeOpenCodeSession} from '../src/host-normalize.mjs';
 import {handleHook} from '../integrations/claude-code/hooks/bridge.mjs';
+import {matchesNativeHookTurn} from '../integrations/claude-code/verify-live.mjs';
 const temporary=()=>mkdtemp(join(tmpdir(),'team-host-'));
 async function fixture(host='opencode',options={}){const cwd=await temporary(),bridge=new HostBridge({host,root:join(cwd,'bridge'),...options});await bridge.putThread({id:'leader',cwd,parentThreadId:null,turns:[]});return {cwd,bridge};}
 test('native tickets bind exact session and tool, expire and consume atomically',async()=>{
@@ -102,6 +103,68 @@ test('Claude registered native task notifications bind exact launch and do not s
     assert.equal((await bridge.readThread('child')).turns.at(-1).status,'interrupted');
   } finally {if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;}
 });
+test('Claude stop verification follows the exact native hook through its transcript identity mapping',()=>{
+  assert.equal(matchesNativeHookTurn({id:'stop-launch'},{hookTurnId:'stop-launch',linkedTranscriptTurnId:null},'stop-launch'),true);
+  assert.equal(matchesNativeHookTurn({id:'interrupt-transcript'},{hookTurnId:'stop-launch',linkedTranscriptTurnId:'interrupt-transcript'},'stop-launch'),true);
+  assert.equal(matchesNativeHookTurn({id:'old-transcript'},{hookTurnId:'stop-launch',linkedTranscriptTurnId:'interrupt-transcript'},'stop-launch'),false);
+  assert.equal(matchesNativeHookTurn({id:'interrupt-transcript'},{hookTurnId:'new-launch',linkedTranscriptTurnId:'interrupt-transcript'},'stop-launch'),false);
+  assert.equal(matchesNativeHookTurn(undefined,undefined,undefined),false);
+});
+test('Claude Agent receipt waits for the concurrent native SubagentStart registration',async()=>{
+  const {cwd,bridge}=await fixture('claude-code'),base={session_id:'leader',cwd};
+  await handleHook({...base,hook_event_name:'SessionStart'},{bridge});
+  const receipt=handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_use_id:'concurrent-launch',tool_response:{agentId:'child',isAsync:true,status:'async_launched'}},{bridge});
+  const registration=new Promise((resolve,reject)=>setTimeout(()=>handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge}).then(resolve,reject),50));
+  const outcomes=await Promise.allSettled([receipt,registration]);for(const outcome of outcomes)assert.equal(outcome.status,'fulfilled',outcome.reason?.message);
+  const registry=await bridge.store.read();assert.equal(registry.claudeLaunches['concurrent-launch'].agentId,'child');assert.equal(registry.claudeLaunches['concurrent-launch'].hookTurnId,registry.claudeHookTurns.child.hookTurnId);
+  assert.equal((await bridge.readThread('child')).parentThreadId,'leader');
+});
+test('Claude persisted session-task notification commits only its exact native launch',async()=>{
+  const {cwd,bridge}=await fixture('claude-code'),config=join(cwd,'claude'),project=join(config,'projects','native');await mkdir(project,{recursive:true});const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;
+  try {
+    const base={session_id:'leader',cwd},path=join(project,'leader.jsonl');await writeFile(path,'');
+    await handleHook({...base,hook_event_name:'SessionStart',transcript_path:path},{bridge});
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_use_id:'launch',tool_response:{agentId:'child',status:'async_launched'}},{bridge});
+    const notification=(uuid,toolUseId,status,overrides={})=>({uuid,type:'user',sessionId:'leader',cwd,origin:{kind:'task-notification',producer:'session-task'},promptSource:'system',turnOrigin:'task_notification',message:{role:'user',content:`<task-notification>\n<task-id>child</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>${status}</status>\n<result>done</result>\n</task-notification>`},...overrides});
+    const rows=[notification('forged','launch','completed',{origin:undefined,promptSource:'user',turnOrigin:undefined}),notification('wrong-parent','launch','completed',{sessionId:'other'}),notification('unknown-launch','not-launched','completed')];
+    const persist=()=>writeFile(path,rows.map(row=>JSON.stringify(row)).join('\n')+'\n');await persist();
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+    rows.push(notification('initial-terminal','launch','completed'));await persist();
+    const initial=await bridge.readThread('child');assert.equal(initial.turns.at(-1).status,'completed');assert.equal(initial.turns.at(-1).statusEvidence.source,'native-task-receipt');
+    await handleHook({...base,hook_event_name:'PreToolUse',tool_name:'SendMessage',tool_use_id:'resume',tool_input:{to:'child',message:'resume'}},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'SendMessage',tool_use_id:'resume',tool_response:{success:true}},{bridge});
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+    rows.push(notification('resume-terminal','resume','completed'));await persist();
+    const resumed=await bridge.readThread('child');assert.equal(resumed.turns.at(-1).id,'resume');assert.equal(resumed.turns.at(-1).status,'completed');
+    await handleHook({...base,hook_event_name:'PreToolUse',tool_name:'SendMessage',tool_use_id:'stop-round',tool_input:{to:'child',message:'wait'}},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'SendMessage',tool_use_id:'stop-round',tool_response:{success:true}},{bridge});
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
+    rows.push(notification('stop-terminal','stop-round','stopped'));await persist();
+    const stopped=await bridge.readThread('child');assert.equal(stopped.turns.at(-1).id,'stop-round');assert.equal(stopped.turns.at(-1).status,'interrupted');assert.equal(stopped.turns.at(-1).statusEvidence.source,'persisted-native-task-stop');
+  } finally {if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;}
+});
+test('Claude transcript refresh preserves the exact hook turn in progress and prior terminal history',async()=>{
+  const {cwd,bridge}=await fixture('claude-code'),config=join(cwd,'claude'),project=join(config,'projects','native','leader','subagents');await mkdir(project,{recursive:true});const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;
+  try {
+    const base={session_id:'leader',cwd},path=join(project,'agent-child.jsonl');
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    const row=(uuid,type,content)=>JSON.stringify({uuid,type,sessionId:'leader',agentId:'child',cwd,message:{role:type,content,stop_reason:type==='assistant'?'end_turn':null}});
+    const rows=[row('initial-user','user','first'),row('initial-output','assistant','done')];await writeFile(path,rows.join('\n')+'\n');await bridge.registerClaudeTranscript('child',path);
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_use_id:'initial-launch',tool_response:{agentId:'child',isAsync:false}},{bridge});
+    assert.equal((await bridge.readThread('child')).turns.at(-1).status,'completed');
+    await handleHook({...base,hook_event_name:'PreToolUse',tool_name:'SendMessage',tool_use_id:'resume-launch',tool_input:{to:'child',message:'run'}},{bridge});
+    await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'SendMessage',tool_use_id:'resume-launch',tool_response:{success:true}},{bridge});
+    await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});
+    rows.push(row('resume-user','user','run'));await writeFile(path,rows.join('\n')+'\n');
+    await handleHook({...base,agent_id:'child',hook_event_name:'PreToolUse',tool_name:'Bash',tool_use_id:'active-command',tool_input:{command:'node -e "setTimeout(()=>{},60000)"'}},{bridge});
+    const active=await bridge.readThread('child');assert.equal(active.turns.at(-1).id,'resume-user');assert.equal(active.turns.at(-1).status,'inProgress');assert.equal(active.turns.at(-1).items.find(i=>i.commandId==='active-command').status,'inProgress');
+    assert.equal(active.turns[0].status,'completed');assert.equal(active.turns[0].statusEvidence.source,'native-task-receipt');
+    const repeat=await bridge.readThread('child');assert.equal(repeat.turns.at(-1).status,'inProgress');assert.equal(repeat.turns[0].status,'completed');
+  } finally {if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;}
+});
 test('Claude authorized transcript refresh stays unknown without committed receipt',async()=>{
   const {cwd,bridge}=await fixture('claude-code'),config=join(cwd,'claude'),project=join(config,'projects','native');await mkdir(project,{recursive:true});const previous=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;
   try{const path=join(project,'leader.jsonl');await writeFile(path,JSON.stringify({uuid:'u',sessionId:'leader',cwd,type:'user',message:{role:'user',content:'task'}})+'\n'+JSON.stringify({uuid:'a',sessionId:'leader',cwd,type:'assistant',message:{role:'assistant',model:'actual-model',stop_reason:'end_turn',content:[{type:'thinking',thinking:'secret'},{type:'text',text:'done'}]}})+'\n');await bridge.registerClaudeTranscript('leader',path);const t=await bridge.readThread('leader');assert.equal(t.turns[0].status,'unknown');assert.equal(t.model,'actual-model');assert.ok(!JSON.stringify(t).includes('secret'));await assert.rejects(bridge.registerClaudeTranscript('leader',join(project,'other.jsonl')),/identity mismatch/);}finally{if(previous===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=previous;}
@@ -112,5 +175,5 @@ test('Claude resume cannot inherit previous receipt or transcript completion',as
   await handleHook({...base,hook_event_name:'SubagentStart',agent_id:'child'},{bridge});assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
   await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'TaskOutput',tool_response:{task:{task_id:'old-task',status:'completed'}}},{bridge});assert.equal((await bridge.readThread('child')).turns.at(-1).status,'inProgress');
   const config=join(cwd,'claude'),project=join(config,'projects','native','leader','subagents');await mkdir(project,{recursive:true});const prior=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=config;
-  try{const path=join(project,'agent-child.jsonl'),row=(id,type,content)=>JSON.stringify({uuid:id,sessionId:'leader',agentId:'child',cwd,type,message:{role:type==='assistant'?'assistant':'user',content,stop_reason:type==='assistant'?'end_turn':null}});await writeFile(path,row('new-user','user','new task')+'\n'+row('new-assistant','assistant','new report')+'\n');await bridge.registerClaudeTranscript('child',path);assert.equal((await bridge.readThread('child')).turns.at(-1).status,'unknown');await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_response:{agentId:'child',task_id:'new-task',isAsync:true}},{bridge});await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'TaskOutput',tool_response:{task:{task_id:'new-task',status:'completed'}}},{bridge});assert.equal((await bridge.readThread('child')).turns.at(-1).status,'completed');await writeFile(path,row('third-user','user','later request')+'\n'+row('third-assistant','assistant','later report')+'\n');assert.equal((await bridge.readThread('child')).turns.at(-1).status,'unknown');}finally{if(prior===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=prior;}
+  try{const path=join(project,'agent-child.jsonl'),row=(id,type,content)=>JSON.stringify({uuid:id,sessionId:'leader',agentId:'child',cwd,type,message:{role:type==='assistant'?'assistant':'user',content,stop_reason:type==='assistant'?'end_turn':null}});await writeFile(path,row('new-user','user','new task')+'\n'+row('new-assistant','assistant','new report')+'\n');await bridge.registerClaudeTranscript('child',path);const pending=await bridge.readThread('child');assert.equal(pending.turns.at(-1).status,'inProgress');assert.notEqual(pending.turns.at(-1).statusEvidence?.source,'native-task-receipt');await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'Agent',tool_response:{agentId:'child',task_id:'new-task',isAsync:true}},{bridge});await handleHook({...base,hook_event_name:'PostToolUse',tool_name:'TaskOutput',tool_response:{task:{task_id:'new-task',status:'completed'}}},{bridge});assert.equal((await bridge.readThread('child')).turns.at(-1).status,'completed');await writeFile(path,row('third-user','user','later request')+'\n'+row('third-assistant','assistant','later report')+'\n');assert.equal((await bridge.readThread('child')).turns.at(-1).status,'unknown');}finally{if(prior===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=prior;}
 });

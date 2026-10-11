@@ -55,7 +55,7 @@ export function submitRegistered(team,task,run){
       }
     }
     if(Array.isArray(delivery.changedPaths))delivery.changedPaths=delivery.changedPaths.map(p=>isAbsolute(p)?relative(team.projectPath,p):p);
-    try{a.delivery=assertContractDelivery(task,member,JSON.stringify(delivery),run.commands??[]);}
+    try{a.delivery=assertContractDelivery(task,member,JSON.stringify(delivery),run.commands??[],{projectPath:team.projectPath});}
     catch(error){a.nativeDeliveryValidationError=error.message;}
   }
   a.nativeReportAdaptation={source:'lossless-native-format-adapter',rawHash:hash(raw),normalizedHash:hash(summary),at:now()};

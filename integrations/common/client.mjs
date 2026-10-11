@@ -13,7 +13,7 @@ export async function connectEngine({host,entryUrl,bridgeRoot}){
   const trace=async event=>{if(process.env.TEAM_WORKSPACE_DEBUG_LOG)await appendFile(process.env.TEAM_WORKSPACE_DEBUG_LOG,JSON.stringify({event,host,command,server,execPath:process.execPath,bun:!!process.versions.bun})+'\n');};
   await trace('mcp-start');
   const transport=new StdioClientTransport({command,args:[server],env:{...env,TEAM_WORKSPACE_HOST:host,...(bridgeRoot?{TEAM_WORKSPACE_BRIDGE_ROOT:bridgeRoot}:{})},stderr:'inherit'});
-  const client=new Client({name:`team-workspace-${host}`,version:'0.35.0'});await client.connect(transport);await trace('mcp-connected');
+  const client=new Client({name:`team-workspace-${host}`,version:'0.36.0'});await client.connect(transport);await trace('mcp-connected');
   const listed=await client.listTools();const tools=listed.tools.filter(t=>compactNames.has(t.name)).map(t=>{const inputSchema=structuredClone(t.inputSchema);delete inputSchema.properties?._hostTicket;if(Array.isArray(inputSchema.required))inputSchema.required=inputSchema.required.filter(k=>k!=='_hostTicket');else delete inputSchema.required;return {...t,inputSchema};});
   await trace('mcp-listed-tools');
   if(tools.length!==6){await client.close();throw new Error('The bundled engine did not expose all six compact tools');}
