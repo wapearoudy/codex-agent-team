@@ -29,10 +29,10 @@ try{
   const require=createRequire(join(profile,'package.json')),installed=JSON.parse(await readFile(require.resolve(pack.name+'/package.json'),'utf8'));assert.equal(installed.version,version);
   const native=await import(pathToFileURL(require.resolve(pack.name)).href);assert.equal(typeof native.apply,'function');
   const load=name=>import(pathToFileURL(join(runtime,'node_modules/@deepseek-ai',name,'lib/index.js')).href);
-  const [{Context},{SystemPrompt},{ToolRuntime},{SessionStore},{AgentRegistry}]=await Promise.all(['cordis','dsh-system-prompt','dsh-tools','dsh-session','dsh-agent'].map(load));
+  const [{Context},{SystemPrompt},{ToolRuntime},{SessionStore},{AgentRegistry},{SessionProjectionRegistry}]=await Promise.all(['cordis','dsh-system-prompt','dsh-tools','dsh-session','dsh-agent','dsh-session-projection'].map(load));
   const ctx=new Context(),fibers=[];let tools;
   try{
-    for(const service of [SystemPrompt,SessionStore,AgentRegistry,ToolRuntime]){const fiber=ctx.plugin(service);fibers.push(fiber);await fiber.await();}
+    for(const service of [SystemPrompt,SessionStore,AgentRegistry,ToolRuntime,SessionProjectionRegistry]){const fiber=ctx.plugin(service);fibers.push(fiber);await fiber.await();}
     const fiber=ctx.plugin(native.default,{bridgeRoot:join(fixture,'bridge')});fibers.push(fiber);await fiber.await();
     tools=ctx.tools.schemas().map(t=>t.name).sort();assert.equal(tools.length,6);assert.ok(tools.includes('team_member'));assert.ok(tools.includes('team_leader'));
   }finally{for(const fiber of fibers.reverse())await fiber.dispose();}

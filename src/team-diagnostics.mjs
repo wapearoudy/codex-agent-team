@@ -24,9 +24,14 @@ export function taskQuery(team,{query='',status,memberId,offset=0,limit=50,curso
 export function diagnostics(team,runs=[]) {
   const stages=team.tasks.flatMap(t=>(t.attempts??[]).map(a=>{
     const run=runs.find(r=>r.attemptId===a.id),dispatch=team.events?.find(e=>e.attemptId===a.id&&e.type==='task-dispatched');
-    return {taskId:t.id,attemptId:a.id,reservationToBindMs:elapsed(dispatch?.at??a.startedAt,a.boundAt),executionMs:elapsed(a.startedAt,a.endedAt),snapshotAgeMs:elapsed(run?.observedAt,new Date().toISOString()),status:run?.status??a.runtimeStatus??a.state};
+    const observed=run??a.observation,events=observed?.activity?.events??[],batch=team.goalBatches?.find(b=>b.id===t.batchId)??team.batches?.find(b=>b.id===t.batchId);
+    const added=team.events?.find(e=>e.type==='tasks-added-to-fixed-team'&&e.taskIds?.includes(t.id));
+    const first=events.filter(e=>Number.isFinite(Date.parse(e.at))).sort((x,y)=>Date.parse(x.at)-Date.parse(y.at))[0]?.at;
+    const completion=observed?.statusEvidence?.at??events.filter(e=>['task_complete','task_completed'].includes(e.type)).at(-1)?.at;
+    const accepted=a.acceptance?.at??a.leaderAcceptance?.at;
+    return {taskId:t.id,attemptId:a.id,planningToReservationMs:elapsed(added?.at??batch?.createdAt??t.createdAt,dispatch?.at??a.startedAt),reservationToBindMs:elapsed(dispatch?.at??a.startedAt,a.boundAt),bindToFirstPublicActivityMs:elapsed(a.boundAt,first),executionMs:elapsed(a.startedAt,a.endedAt),nativeCompletionToSettlementMs:elapsed(completion,a.endedAt),submissionToAcceptanceMs:elapsed(a.endedAt,accepted),snapshotAgeMs:elapsed(run?.observedAt,new Date().toISOString()),panelRenderDelayMs:null,observedTokens:observed?.usage?.totalTokens??null,status:run?.status??a.runtimeStatus??a.state};
   }));
-  return {source:'recorded-timestamps',stages,unknown:stages.filter(s=>s.reservationToBindMs===null).length,limits:{members:8,unfinishedTasks:40},notes:['Missing timestamps remain unknown; no timings are invented.','Execution duration includes model and tool time.']};
+  return {source:'recorded-timestamps',stages,unknown:stages.filter(s=>s.reservationToBindMs===null).length,limits:{members:8,unfinishedTasks:40},notes:['Missing timestamps remain unknown; no timings are invented.','Attempt duration includes reservation, coordination, model and tool time; it is not isolated model latency.','First public activity may be truncated; native events can precede plugin binding. Negative intervals stay unknown.','Panel render delay requires a real client receipt and is never inferred from snapshot time.']};
 }
 export function exportTeam(team,{format='markdown',runs=[],usage=null}={}) {
   if(!['markdown','json'].includes(format))throw new Error('Unsupported report format');

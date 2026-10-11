@@ -1,14 +1,95 @@
 import test from 'node:test';
-import {observedNativeTools,observedNativeMembers} from '../integrations/deepseek-harness/index.mjs';
+import {observedNativeTools,observedNativeMembers,publicEvent} from '../integrations/deepseek-harness/index.mjs';
+import {teamWorkspaceSchema,registerTeamProjection,startTeamProjectionSync,projectionEvent} from '../integrations/deepseek-harness/projection.mjs';
 import assert from 'node:assert/strict';
-import {mkdtemp,mkdir,writeFile,stat} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,stat,readFile} from 'node:fs/promises';
+import {runInNewContext} from 'node:vm';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {HostBridge} from '../src/host-bridge.mjs';
-import {sanitizeThread,normalizeDshSession,normalizeOpenCodeSession} from '../src/host-normalize.mjs';
+import {sanitizeThread,normalizeDshSession,normalizeOpenCodeSession,dshCommandExit} from '../src/host-normalize.mjs';
 import {handleHook} from '../integrations/claude-code/hooks/bridge.mjs';
 import {matchesNativeHookTurn} from '../integrations/claude-code/verify-live.mjs';
 const temporary=()=>mkdtemp(join(tmpdir(),'team-host-'));
+test('DSH Desktop actual public fixture preserves text and records nonzero shell render provenance',async()=>{
+  const fixture=JSON.parse(await readFile(new URL('../integrations/deepseek-harness/fixtures/desktop-0.2.0-rc.2-public-events.json',import.meta.url),'utf8'));
+  const session={id:fixture.source.sessionId,header:{cwd:process.cwd(),createdAt:1},inheritedEventCount:0,isOwnSeq:()=>true};
+  const direct=normalizeDshSession(session,fixture.events),observed=normalizeDshSession(session,fixture.events.map(publicEvent).filter(Boolean));
+  assert.deepEqual(observed,direct);
+  const turn=observed.turns[0],command=turn.items.find(item=>item.type==='commandExecution');
+  assert.equal(command.exitCode,3221225794);assert.equal(command.status,'failed');assert.equal(command.exitCodeSource,'native-shell-rendered-marker');
+  assert.equal(turn.status,'completed'); // A failed process does not fail the native model turn.
+  const actualText=fixture.events.find(event=>event.type==='assistant/message'&&event.data.message.content.length).data.message.content[0].text;
+  assert.equal(turn.items.find(item=>item.type==='agentMessage'&&item.text).text,actualText);
+  assert.equal(turn.items.filter(item=>item.type==='agentMessage'&&!item.text).length,1);
+  assert.ok(!JSON.stringify(observed).includes('replayState'));
+});
+test('DSH shell marker cannot establish success and metadata takes precedence',()=>{
+  const result=text=>({message:{content:[{type:'text',text}],isError:false}});
+  assert.deepEqual(dshCommandExit(result('done'),'pwsh'),{exitCode:null});
+  assert.deepEqual(dshCommandExit(result('[exit code: 0]'),'pwsh'),{exitCode:null});
+  assert.deepEqual(dshCommandExit(result('[exit code: 7]'),'run_command'),{exitCode:null});
+  assert.deepEqual(dshCommandExit(result('[exit code: 7]\nmore output'),'bash'),{exitCode:null});
+  assert.deepEqual(dshCommandExit(result('[exit code: 999999999999999999999]'),'bash'),{exitCode:null});
+  assert.deepEqual(dshCommandExit({...result('[exit code: 7]'),meta:{exitCode:0}},'pwsh'),{exitCode:0,source:'native-tool-result-meta'});
+});
+async function nativeUiFixture(dependencies=()=>({})){
+  let entry;runInNewContext(await readFile(new URL('../integrations/deepseek-harness/client.js',import.meta.url),'utf8'),{window:{__ModuleLoader__:{load:value=>{entry=value;}}}});
+  const ui=entry.factory(dependencies),opened=[],slots=[];
+  const state={projectionsBySession:{lead:{values:{agentTeam:{members:[{id:'lead',name:'lead'},{id:'member-id',name:'developer'}],tasks:[{id:'task-1',ownerName:'developer'}]}}}}};
+  let retained=1,bound=true,parent='lead';
+  const ctx={sessions:{list:{getSnapshot:()=>state},binding:()=>bound?{session:{getSnapshot:()=>({subagent:{address:{parentSessionId:parent}}})}}:undefined,retainInfo:()=>({getSnapshot:()=>({retainedBy:{mainView:retained}})})},uiWorkspace:{openSession:target=>opened.push(target)},slots:{inject:(_name,fn)=>fn(),register:(spec,component)=>slots.push({spec,component})}};
+  ui.apply(ctx);return {ui,ctx,state,opened,slot:slots[0],retain:value=>{retained=value;},bind:value=>{bound=value;},parent:value=>{parent=value;}};
+}
+const engineView=()=>({schemaVersion:1,source:'team-workspace-engine',host:'deepseek-harness',sessionId:'lead',observedAt:new Date().toISOString(),team:{id:'fixed-team',revision:7,goal:'Real engine records',state:'running',members:[{id:'dev',name:'developer',role:'developer',nativeSessionId:'native-child',bindingVerified:true}],tasks:[{id:'engine-task',title:'Engine-owned task',status:'running',ownerMemberId:'dev',blockedBy:[]}]}});
+test('DSH header renders engine member status and stable task number without native running state',async()=>{
+  const react={createElement:(type,props,...children)=>typeof type==='function'?type(props):{type,props,children},useState:initial=>[typeof initial==='boolean'?true:initial,()=>{}],useEffect:()=>{}};
+  const f=await nativeUiFixture(()=>react),value=engineView();
+  value.team.members[0].status='submitted';value.team.tasks[0].number=17;
+  const tree=f.ui.TeamWorkspace({sessionId:'lead',useSession:()=>undefined,useSessions:selector=>selector({phase:'ready',projectionsBySession:{lead:{values:{teamWorkspace:value}}}}),useSessionStatus:selector=>selector(new Map()),openMember:()=>true,openOwner:()=>true});
+  const text=JSON.stringify(tree);
+  assert.ok(text.includes('submitted'));assert.ok(!text.includes('状态未知'));assert.ok(text.includes('t17 · Engine-owned task'));
+});
+test('DSH independent engine projection supersedes official tasks and rejects stale identity',async()=>{
+  const f=await nativeUiFixture(),actions=f.slot.spec.inject(),value=engineView();
+  f.state.projectionsBySession.lead.values.teamWorkspace=value;
+  assert.equal(actions.openOwner('lead','task-1'),false);
+  assert.equal(actions.openOwner('lead','engine-task'),true);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.opened)),[{parentSessionId:'lead',childSessionId:'native-child',mode:'continuable'}]);
+  value.observedAt=new Date(Date.now()-21000).toISOString();assert.equal(actions.openOwner('lead','engine-task'),false);
+  value.observedAt=new Date().toISOString();value.team.members[0].bindingVerified=false;assert.equal(actions.openMember('lead','native-child'),false);
+  value.team.members[0].bindingVerified=true;value.sessionId='another-session';assert.equal(actions.openOwner('lead','engine-task'),false);
+});
+test('DSH projection fold owns its schema and excludes official/native model events',()=>{
+  let definition;registerTeamProjection({sessionProjections:{register:value=>{definition=value;}}});
+  const value=engineView(),state=definition.apply(null,{type:projectionEvent,data:value});
+  assert.equal(definition.key,'teamWorkspace');assert.deepEqual(definition.wire.view(state),value);
+  assert.equal(definition.apply(state,{type:'agent-team/state',data:{tasks:['unrelated']}}),state);
+  assert.throws(()=>definition.apply(state,{type:projectionEvent,data:{...value,sessionId:''}}));
+  assert.equal(teamWorkspaceSchema.safeParse({...value,token:'secret'}).success,false);
+});
+test('DSH serialized authenticated projection sync merges unchanged success and does not renew errors',async()=>{
+  const appended=[],session={id:'lead',header:{},append:(type,data)=>appended.push({type,data})},child={id:'child',header:{parentSession:'lead'}},agent={session};
+  let calls=0,inflight=0,maxInflight=0,failure=false;
+  const ctx={sessions:{list:()=>[session,child],get:id=>id==='lead'?session:child},agents:{get:id=>id==='lead'?agent:{session:child}},logger:{warn:()=>{}}};
+  const stop=startTeamProjectionSync({ctx,bridge:{},publish:async()=>{},intervalMs:5,engine:{call:async(_b,id,name)=>{assert.equal(id,'lead');assert.equal(name,'open_team_workspace');calls++;inflight++;maxInflight=Math.max(maxInflight,inflight);await new Promise(r=>setTimeout(r,2));inflight--;if(failure)throw new Error('unavailable');return {nativeProjection:engineView()};}}});
+  try{await new Promise(r=>setTimeout(r,40));assert.ok(calls>1);assert.equal(maxInflight,1);assert.equal(appended.length,1);assert.equal(appended[0].type,projectionEvent);failure=true;const previous=appended[0].data.observedAt;await new Promise(r=>setTimeout(r,25));assert.equal(appended.length,1);assert.equal(appended[0].data.observedAt,previous);}finally{stop();}
+});
+test('DSH native slot resolves current unique task owner to actual member session',async()=>{
+  const f=await nativeUiFixture(),actions=f.slot.spec.inject();
+  assert.equal(f.slot.spec.name,'conversation.session.header.actions');assert.equal(f.slot.spec.id,'team-workspace');
+  assert.equal(actions.openOwner('child','task-1'),true);assert.deepEqual(JSON.parse(JSON.stringify(f.opened)),[{parentSessionId:'lead',childSessionId:'member-id',mode:'continuable'}]);
+  assert.equal(actions.openMember('child','lead'),true);assert.equal(f.opened[1],'lead');
+  f.state.projectionsBySession.lead.values.agentTeam.members.push({id:'other-id',name:'developer'});
+  assert.equal(actions.openOwner('child','task-1'),false);assert.equal(f.opened.length,2);
+});
+test('DSH native navigation revalidates retention, binding and changed team at click time',async()=>{
+  const f=await nativeUiFixture(),actions=f.slot.spec.inject();
+  f.retain(0);assert.equal(actions.openOwner('child','task-1'),false);f.retain(1);
+  f.bind(false);assert.equal(actions.openMember('child','member-id'),false);f.bind(true);
+  f.state.projectionsBySession.lead.values.agentTeam.members=[];assert.equal(actions.openOwner('child','task-1'),false);
+  assert.equal(actions.openMember('child','unresolved'),false);assert.equal(f.opened.length,0);
+});
 async function fixture(host='opencode',options={}){const cwd=await temporary(),bridge=new HostBridge({host,root:join(cwd,'bridge'),...options});await bridge.putThread({id:'leader',cwd,parentThreadId:null,turns:[]});return {cwd,bridge};}
 test('native tickets bind exact session and tool, expire and consume atomically',async()=>{
   let now=100;const {cwd,bridge}=await fixture('opencode',{now:()=>now,ticketTtlMs:10}),other=new HostBridge({host:'opencode',root:bridge.root,now:()=>now});

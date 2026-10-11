@@ -1,0 +1,10 @@
+{
+  "source": "D:/Soft/dsh-desktop/resources/app.asar packed public SDK, read-only",
+  "observations": [
+    {"path":"dsh/node_modules/@deepseek-ai/dsh-tool-pwsh/lib/index.js","lines":"155-175","publicFacts":["renderPwshResult joins stdout and a marked stderr section","line 172: else if (result.exitCode !== 0) markers.push(`[exit code: ${result.exitCode}]`);","line 175: return body + markers.join(\"\\n\");"]},
+    {"path":"dsh/node_modules/@deepseek-ai/dsh-tool-bash/lib/index.js","lines":"150-170","publicFacts":["renderResult uses the same foreground shell exit marker","line 167: else if (result.exitCode !== 0) markers.push(`[exit code: ${result.exitCode}]`);"]},
+    {"path":"dsh/node_modules/@deepseek-ai/dsh-agent-loop/lib/index.js","lines":"690-705","publicFacts":["tool/result message receives result.content and result.isError","meta appears only when result.meta is provided"]},
+    {"path":"dsh/node_modules/@deepseek-ai/dsh-session-persistence-jsonl/lib/index.js","lines":"1300-1362","publicFacts":["scanZstdFrames reads independent complete frame boundaries and stops at a torn final frame","Each complete frame is checksummed and independently decodable"]}
+  ],
+  "limitations": ["Rendered stdout may imitate a marker; exitCodeSource preserves this weaker provenance.","Absence of a marker does not prove an exit code of zero.","Actual captured pwsh event has isError:false, no meta, and '(no output)\\n[exit code: 3221225794]'."]
+}

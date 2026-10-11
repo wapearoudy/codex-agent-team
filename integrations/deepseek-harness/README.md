@@ -6,19 +6,41 @@ and supplies identity from `exec.agent.id` and the exact live `ctx.sessions`
 entry. It does not start a second coordinator.
 
 Install the published npm package through the DSH plugin manager, with dependencies
-`tools`, `sessions`, and `agents` available. For DSH 0.1.7-rc.2, the profile's
+`tools`, `sessions`, `agents`, and `sessionProjections` available. For DSH 0.1.7-rc.2, the profile's
 native delegation tool normally defaults to `subagent`; its exact tool schema
 comes from the active native request header. Team execution requires a profile
 with native subagent delegation and the `send_message` / `interrupt_agent`
 controls. Use the host's configured provider and model defaults.
 
+The `./client` browser export registers **团队工作区** in the native conversation
+header. Its own `teamWorkspace` projection reads the authenticated current
+Leader's engine team, stable task IDs, and verified member session bindings.
+The public SDK folds complete `team-workspace/state` non-surface events; they
+do not enter model history. Live root agents are polled serially every two
+seconds, unchanged states renew at most once per ten seconds, and failed reads
+never renew evidence. A view older than twenty seconds disables navigation.
+Without an engine team, the separately labeled official native `agentTeam`
+view remains available. Clicking a task owner opens the uniquely verified
+current member session; missing or ambiguous owners cannot navigate. Every click
+rechecks the native session binding, current team, freshness, and `mainView` retention.
+This panel performs navigation only; it does not send messages or start turns.
+
+On DSH's durable `spawn_teammate` profile, `provider` selects a registered spawn
+transport (the installed `spawn-in-process`), not an arbitrary model provider.
+Native `send_message` can steer or resume an inactive teammate and can wake the
+Lead; an accepted/queued delivery is not execution completion. The in-process
+spawn provider does not inherit the parent's tool/authority restrictions.
+Native permission presets govern sandbox and approval behavior separately;
+advisory write scopes are not a native filesystem sandbox. No extra transport,
+model route, authority inheritance, or cross-Claude/OpenCode execution is implied.
+
 ## Native installation
 
-In the DSH plugin manager, enter `agent-team-deepseek-harness@0.38.0` after this
+In the DSH plugin manager, enter `agent-team-deepseek-harness@0.39.0` after this
 version is published to npm. For an existing CLI profile:
 
 ```text
-dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.38.0
+dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.39.0
 dsh --profile <existing-profile> --dump-config
 ```
 
@@ -52,8 +74,9 @@ tool calls flush immediately. Only native `turn/end` establishes a terminal
 turn. An interrupt receipt remains a request. A session mounted after its
 historical events have occurred reports unknown history until live events arrive.
 
-There is no MCP App dashboard in this integration. Native tool results provide
-the team view. No project URL, Codex session, or automatic chat message is used.
+The view is mounted through the native conversation header slot. Native tool
+results also provide the team state. No project URL, Codex session, or automatic
+chat message is used.
 
 Protocol tests do not invoke paid models. Native model delegation and full
 interactive workflow require validation in the user's configured DSH profile.

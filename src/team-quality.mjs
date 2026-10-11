@@ -42,7 +42,13 @@ export function qualityBlockers(team,task){
   const ancestors=new Set();function visit(id){if(ancestors.has(id))return;ancestors.add(id);for(const d of team.tasks.find(t=>t.id===id)?.dependencies??[])visit(d.taskId);}for(const d of task.dependencies??[])visit(d.taskId);
   return team.tasks.filter(t=>t.contract?.stage==='requirements'&&!['accepted','cancelled'].includes(t.status)&&!t.supersededBy&&(task.batchId?t.batchId===task.batchId:task.qualityMode?ancestors.has(t.id):true)).map(t=>({code:'requirements-gate',taskId:t.id,message:`等待需求任务 ${t.id} 验收`}));
 }
-export function parseDelivery(text,expectedMarker){return parseStructuredReport(text,{expectedMarker,errorMessage:'Contract task must return a structured JSON delivery'});}
+export function parseDelivery(text,expectedMarker){
+  const report=parseStructuredReport(text,{expectedMarker,errorMessage:'Contract task must return a structured JSON delivery'});
+  // Preserve each concrete citation; arrays of text are a formatting variation,
+  // not a reason to rerun otherwise valid native work. Objects/empty lists fail.
+  if(Array.isArray(report.acceptanceResults))report.acceptanceResults=report.acceptanceResults.map(c=>c&&Array.isArray(c.evidence)&&c.evidence.length&&c.evidence.every(nonempty)?{...c,evidence:c.evidence.join('\n')}:c);
+  return report;
+}
 export function assertContractDelivery(task,member,output,commands=[],{projectPath}={}){
   if(!task.contract||task.kind==='review')return null;
   const delivery=parseDelivery(output,task.attempts?.at(-1)?.marker);

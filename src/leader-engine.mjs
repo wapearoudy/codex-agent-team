@@ -201,7 +201,7 @@ export class LeaderEngine {
     // Waiting needs current terminal identities only. Do not enumerate Leader
     // history, recompute all usage or build dispatch/validation projections.
     const team=await this.native(owner,id),running=team.tasks.filter(t=>t.status==='running'),runs=await this.observations({...team,tasks:running});
-    return {team:{revision:team.revision},workflow:{actions:running.flatMap(t=>{const a=t.attempts.at(-1),run=runs.find(r=>r.attemptId===a?.id);return a&&terminal(run?.status)?[{type:'settle',taskId:t.id,attemptId:a.id,observedStatus:run.status}]:[];})}};
+    return {team:{revision:team.revision},workflow:{actions:running.flatMap(t=>{const a=t.attempts.at(-1),run=runs.find(r=>r.attemptId===a?.id);return a&&terminal(run?.status)&&!(a.continuationRequested?.turnId===run.turnId&&run.status==='interrupted')?[{type:'settle',taskId:t.id,attemptId:a.id,observedStatus:run.status}]:[];})}};
   }
   async accounting(team,{observe=true,fresh=false}={}){
     if(!this.observer.teamUsage||this.observer.supportsTeamUsage===false)return undefined;
@@ -224,6 +224,7 @@ export class LeaderEngine {
     if(task.status!=='running'){if(a.endedAt&&(['submitted','accepted','blocked'].includes(task.status)||task.status==='waiting'&&a.phaseHandoff?.status==='completed')&&['completed','failed','interrupted'].includes(a.observation?.status??a.runtimeStatus))return this.receipt(owner,id);throw new Error('Attempt is already settled');}
     const run=await this.observer.inspect(team.leaderThreadId,team.projectPath,a.agentThreadId,a.marker,{boundTurnId:a.turnId,...registrationOptions(a)});
     if(!terminal(run.status))throw new Error('Native turn has no confirmed terminal record');
+    if(a.continuationRequested?.turnId===run.turnId&&run.status==='interrupted')throw new Error('Continuation awaits a new marked native turn; preserve the existing request');
     try{await this.store.update(id,owner,revision,async t=>{
       const task=t.tasks.find(x=>x.id===taskId),a=task.attempts.at(-1),member=t.members.find(x=>x.id===task.memberId);
       if(a.id!==attemptId||task.status!=='running')throw new Error('Stale or inactive attempt');
@@ -450,6 +451,33 @@ export class LeaderEngine {
     });return this.receipt(owner,id);
   }
   async resume(owner,id,revision,input){const t=await this.native(owner,id);if(!controlRequest(t,'resume',input).saved)try{await this.store.update(id,owner,revision,t=>resumeTeam(t,input));}catch(error){if(!controlRequest(await this.native(owner,id),'resume',input).saved)throw error;}return this.receipt(owner,id);}
+  async continueInterrupted(owner,id,revision,input){
+    const team=await this.native(owner,id),task=team.tasks.find(t=>t.id===input.taskId),a=task?.attempts.at(-1);
+    const hash=createHash('sha256').update(JSON.stringify({taskId:input.taskId,attemptId:input.attemptId,reason:input.reason})).digest('hex');
+    const prior=team.interruptedContinuations?.find(r=>r.requestId===input.requestId);
+    if(prior){if(prior.hash!==hash)throw new Error('Continuation request ID already has different contents');return this.receipt(owner,id);}
+    if(!input.reason?.trim()||! /^[0-9a-f-]{36}$/i.test(input.requestId??''))throw new Error('A stable UUID and a non-empty reason are required');
+    if(team.revision!==revision)throw new Error('Team changed; refresh before continuing');
+    const member=team.members.find(m=>m.id===task?.memberId);
+    if(task?.status!=='blocked'||a?.id!==input.attemptId||a.state!=='interrupted'||!a.turnId||!a.agentThreadId||!a.endedAt||member?.removedAt||member?.agentThreadId!==a.agentThreadId||(member.contextGeneration??1)!==(a.contextGeneration??1)||(task.contractRevision??1)!==(a.contractRevision??1)||(member.goalRevision??1)!==(a.memberGoalSnapshot?.revision??1))throw new Error('Only the current interrupted attempt in its unchanged member context can continue');
+    if(['superseded','archived','delivered'].includes(team.state)||team.dispatchPaused||team.executionControl&&team.executionControl.status!=='active')throw new Error('Resume the stopped team before continuing its interrupted task');
+    const blockers=dispatchBlockers(team,{...task,status:'waiting'}).filter(b=>b.code!=='attempt-limit');
+    if(blockers.length)throw new Error('Continuation is not ready: '+blockers.map(b=>b.message).join('; '));
+    if((a.dependencyAttempts??[]).some(d=>{const upstream=team.tasks.find(t=>t.id===d.taskId);return upstream?.attempts.at(-1)?.id!==d.attemptId||(upstream?.contractRevision??1)!==(d.contractRevision??1);}))throw new Error('Upstream delivery changed; preserve the interrupted attempt and plan new scoped work');
+    const run=await this.observer.inspect(team.leaderThreadId,team.projectPath,a.agentThreadId,a.marker,{boundTurnId:a.turnId,requireIdle:true});
+    assertObservationTurn(a,run);
+    if(run.status!=='interrupted'||run.turnId!==a.turnId||run.latestTurnId!==a.turnId||run.statusEvidence?.status!=='interrupted'||!['persisted-turn-aborted','persisted-native-task-stop'].includes(run.statusEvidence.source))throw new Error('Latest native turn is not a verified interruption');
+    if(team.policy?.tokenLimit)assertBudget(team,await this.observations(team),await this.accounting(team,{fresh:true}));
+    await this.store.update(id,owner,revision,t=>{
+      const current=t.tasks.find(x=>x.id===input.taskId),attempt=current.attempts.at(-1),m=t.members.find(x=>x.id===current.memberId);
+      (attempt.interruptionHistory??=[]).push({turnId:attempt.turnId,endedAt:attempt.endedAt,observation:structuredClone(attempt.observation),reason:input.reason,at:now()});
+      attempt.state='running';attempt.endedAt=null;attempt.continuationRequested={turnId:attempt.turnId,requestId:input.requestId,at:now()};current.status='running';current.blockReason=null;current.updatedAt=now();m.status='running';
+      (t.interruptedContinuations??=[]).push({requestId:input.requestId,hash,taskId:current.id,attemptId:attempt.id,threadId:attempt.agentThreadId,turnId:attempt.turnId,reason:input.reason,at:now()});
+      t.events.push({type:'native-task-continuation-requested',taskId:current.id,attemptId:attempt.id,at:now()});requireTeamVersion(t,'0.39.0');
+    });
+    const saved=await this.native(owner,id);
+    return {...await this.receipt(owner,id),dispatch:this.packet(saved,saved.tasks.find(x=>x.id===input.taskId)),instruction:'Continue this SAME attempt marker in the SAME native member thread. Do not claim, rework, spawn or replay this request. Native continuation remains a Leader action; no model was started.'};
+  }
   async release(owner,id,revision,taskId,attemptId,note){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     const task=t.tasks.find(x=>x.id===taskId),a=task?.attempts.at(-1);if(!a||a.id!==attemptId||a.agentThreadId||a.state!=='reserved')throw new Error('Only an unbound reservation can be released after Leader verifies no member was launched');
     a.state='released';a.summary=note;a.endedAt=now();task.status='waiting';t.members.find(x=>x.id===task.memberId).status='idle';
@@ -474,7 +502,7 @@ export class LeaderEngine {
   async memberBind(owner,id,revision,context,input){const t=await this.native(owner,id),m=assertMember(t,context),task=t.tasks.find(task=>task.id===input.taskId);if(task?.memberId!==m.id)throw new Error('Only your own task may be bound');return this.bind(owner,id,revision,input.taskId,input.attemptId,context.threadId);}
   async checkpointRun(team,input){
     const task=team.tasks.find(t=>t.id===input.taskId),a=task?.attempts.at(-1);
-    if(!['running','submitted'].includes(task?.status)||a?.id!==input.attemptId||!a.agentThreadId||!a.turnId)throw new Error('Checkpoint requires a bound active native attempt');
+    if(!['running','submitted'].includes(task?.status)||a?.id!==input.attemptId||!a.agentThreadId)throw new Error('Checkpoint requires a bound active native attempt');
     const run=await this.observer.inspect(team.leaderThreadId,team.projectPath,a.agentThreadId,a.marker,{boundTurnId:a.turnId});
     assertObservationTurn(a,run);
     if(!run.turnId||!['inProgress','completed'].includes(run.status)||(run.latestTurnId&&run.latestTurnId!==run.turnId))throw new Error('Current checkpoint turn is not verified; emit the attempt marker in the resumed native turn and retry');

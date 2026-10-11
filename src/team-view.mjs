@@ -1,4 +1,4 @@
-import {memberExecutions,orderedMembers,memberHasWork,memberWorkSummary,taskRelationships,dependencyFamily,taskDisplayState,runIsActive,runDisplayState,mergeRunObservation,failedRunObservation} from './team-projection.mjs';
+import {memberExecutions,memberExecutionCounts,orderedMembers,memberHasWork,memberWorkSummary,taskRelationships,dependencyFamily,taskDisplayState,runIsActive,runDisplayState,mergeRunObservation,failedRunObservation} from './team-projection.mjs';
 import {memberName} from './team-naming.mjs';
 import {sendPanelPlanStart} from './panel-plan-start.mjs';
 
@@ -306,7 +306,9 @@ export function setupTeamView(app){
     $('workspaceOmissions').hidden=!omissions.length;$('workspaceOmissions').replaceChildren(node('summary',language.text('历史产物筛选记录 · ')+omissions.length+language.text(' 项')));
     for(const item of omissions)$('workspaceOmissions').append(node('p',item.path+' · '+item.reason));
     $('progressSegments').replaceChildren(...tasks.map(t=>{const b=button('',()=>chooseTask(t.id),'segment '+taskState(t),'progress:'+t.id);b.title=t.id+' '+t.title+' · '+label(taskState(t));b.setAttribute('aria-label',b.title);return b;}));
-    $('progressLegend').replaceChildren(...['reserved','waiting','running','starting','observed','unknown','completed','submitted','blocked','failed','interrupted','cancelled','accepted'].filter(s=>s==='accepted'||tasks.some(t=>taskState(t)===s)).map(s=>{const metric=node('span',undefined,'progress-metric '+s);metric.append(node('strong',String(tasks.filter(t=>taskState(t)===s).length)),node('small',label(s)));return metric;}));
+    const displayCounts=new Map();for(const task of tasks){const state=taskState(task);displayCounts.set(state,(displayCounts.get(state)??0)+1);}
+    const states=[...new Set(['reserved','waiting','running','starting','observed','unknown','settling','completed','submitted','blocked','failed','interrupted','cancelled','accepted',...displayCounts.keys()])];
+    $('progressLegend').replaceChildren(...states.filter(s=>s==='accepted'||displayCounts.has(s)).map(s=>{const metric=node('span',undefined,'progress-metric '+s);metric.append(node('strong',String(displayCounts.get(s)??0)),node('small',label(s)));return metric;}));
     const running=tasks.filter(t=>t.status==='running');$('currentTasks').hidden=!running.length;
     $('currentTasks').textContent=running.map(t=>t.id+' · '+t.title+'（'+label(taskState(t))+'）').join('；');
     const pending=(current.readiness??[]).filter(r=>tasks.find(t=>t.id===r.taskId)?.status==='waiting');
@@ -406,7 +408,7 @@ export function setupTeamView(app){
     if(matching.length>tasks.length)list.append(node('p',language.text('当前仅显示前 100 项，请搜索或筛选更多任务。'),'task-list-empty'));
   }
   function renderMembers(){
-    const {team,runs}=current,ordered=orderedMembers({...team,tasks:visibleTasks()},runs),visible=ui.membersOpen?ordered:ordered.filter(({member})=>memberHasWork(member,team.tasks)||!team.tasks.some(t=>t.memberId===member.id));
+    const {team,runs}=current,scopedTasks=visibleTasks(),ordered=orderedMembers({...team,tasks:scopedTasks},runs),visible=ui.membersOpen?ordered:ordered.filter(({member})=>memberHasWork(member,scopedTasks)||!scopedTasks.some(t=>t.memberId===member.id));
     const hidden=ordered.length-visible.length;
     $('membersHeading').textContent=team.members.filter(m=>!m.removedAt).length+language.text(' 名成员')+(team.members.some(m=>m.removedAt)?language.text(' · 含历史岗位'):'');
     $('toggleMembers').textContent=ui.membersOpen?language.text('收起已结束成员'):hidden?language.text('展开已结束 ')+hidden+language.text(' 名成员'):language.text('展开全部');
@@ -432,12 +434,15 @@ export function setupTeamView(app){
       if(team.mode==='host-leader'&&team.fixedRoster&&!m.removedAt&&!viewingHistory&&team.state!=='cancelled'&&!(team.planReview?.scope==='initial'&&team.planReview.status!=='approved'))actions.append(iconAction('调整角色目标','编辑后用于后续派发，保留当前任务约定','edit',()=>memberGoals.open(m.id,'edit-member-goal:'+m.id),'edit-member-goal:'+m.id));
       const toolbar=node('div',undefined,'member-toolbar'),chips=node('div',undefined,'task-chips');chips.append(node('span',language.text('队长派发')),...assigned.map(t=>chip(t)));toolbar.append(chips,actions);item.append(toolbar);
       const history=node('details',undefined,'member-history');history.dataset.key='member:'+m.id;
-      const summaryNode=node('summary',executions.length+language.text(' 次任务执行 · 查看轮次'));summaryNode.dataset.focusKey='history:'+m.id;history.append(summaryNode);
+      const counts=m.executionCounts??memberExecutionCounts(m,team.tasks,team.activeBatchId),scoped=!!team.activeBatchId&&!ui.showTaskHistory;
+      const historyText=scoped?language.text('本目标 ')+counts.currentGoal+language.text(' 次执行 · 历史 ')+(counts.total-counts.currentGoal)+language.text(' 次 · 查看轮次'):language.text('累计 ')+counts.total+language.text(' 次执行 · 查看轮次');
+      const summaryNode=node('summary',historyText);summaryNode.dataset.focusKey='history:'+m.id;history.append(summaryNode);
+      if(counts.total>executions.length)history.append(node('p',language.text('已加载 ')+executions.length+'/'+counts.total+language.text(' 条执行记录；完整记录按需读取。'),'muted'));
       for(const e of executions.toReversed()){
         const row=button(e.taskId+language.text(' · 第 ')+e.number+language.text(' 轮 · ')+label(e.status),()=>chooseTask(e.taskId,e.attemptId,true),'execution-row','attempt:'+e.attemptId);
         row.setAttribute('aria-pressed',String(ui.attemptId===e.attemptId));history.append(row);
       }
-      if(executions.length)toolbar.append(history);return item;
+      if(counts.total)toolbar.append(history);return item;
     }));
     if(!visible.length)$('memberTree').append(node('p',ui.membersOpen?language.text('团队尚未登记成员'):language.text('所有成员本批工作已结束，展开可回看执行记录。'),'muted'));
   }
@@ -1322,6 +1327,7 @@ export function setupTeamLanguage(){
 });
   Object.assign(dictionary,{'累计处理 ':'Processed total ',' · 缓存输入 ':' · cached input ',' · 新增输入 ':' · uncached input ',' · 输出 ':' · output ','插件连接尚未更新':'Plugin connection needs reloading','执行记录待关联':'Execution records need linking','面板与连接版本不一致，请重新加载插件连接。':'Panel and connection versions differ. Reload the plugin connection.',' 个原生会话尚未关联到任务。面板进度可能不完整，请先核对已有交付，避免重复执行。':' native conversations are not linked to tasks. Progress may be incomplete; check existing deliveries before repeating work.','这些会话只统计用量，尚未登记任务。核对已有交付后补登记，不要重复执行。':'These conversations contribute usage only. Register existing deliveries after verification; do not repeat completed work.','用量未知':'Usage unknown'});
   Object.assign(dictionary,{"重新连接": "Reconnect", "团队跟随当前对话": "The team follows this conversation", "当前主会话担任 Leader，成员接受任务，这里显示团队执行。": "This conversation is the Leader. Members receive tasks; their execution appears here.", "确认只授权执行；任务仍须独立审查与验收。": "Approval authorizes execution. Independent review and acceptance remain required.", "队": "T", "主会话 · Leader": "Current conversation · Leader", "拆解 · 派发 · 汇总": "Plan · dispatch · integrate", "总进度": "Overall progress", "受阻": "Blocked", "用量与运行记录": "Usage and execution records", "查看耗时": "View timings", "查看接续状态": "View recovery", "保存报告": "Save report", "成员": "Members", "收起": "Collapse", "能力说明": "Capability details"});
+  Object.assign(dictionary,{'待 Leader 接收':'Awaiting Leader settlement','本目标 ':'Current goal ',' 次执行 · 历史 ':' executions · history ',' 次 · 查看轮次':' executions · view attempts','累计 ':'Total ',' 次执行 · 查看轮次':' executions · view attempts','已加载 ':'Loaded ',' 条执行记录；完整记录按需读取。':' execution records; full records available on demand.'});
   const reverse=new Map(Object.entries(dictionary).map(([a,b])=>[b,a]));
   let initialized=false,locale='zh-CN';try{locale=localStorage.getItem('team-workspace:locale')==='en'?'en':'zh-CN';}catch{}
   const attributes=[...document.querySelectorAll('[aria-label],[placeholder]')].flatMap(el=>['aria-label','placeholder'].filter(a=>dictionary[el.getAttribute(a)]).map(a=>[el,a,el.getAttribute(a)]));

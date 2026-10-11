@@ -1,9 +1,27 @@
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {realpath} from 'node:fs/promises';
-import {relative,isAbsolute} from 'node:path';
+import {relative,isAbsolute,resolve} from 'node:path';
 import {within} from './team-quality.mjs';
 const run=promisify(execFile);
+export function nativeChangeAudit(team,runs=[]){
+  const receipts=[],unknownAttempts=[];let total=0,scopeViolations=0;
+  for(const task of team.tasks){const attempt=task.attempts?.at(-1);if(!attempt?.agentThreadId)continue;
+    const observed=runs.find(r=>r.attemptId===attempt.id)??attempt.observation,member=team.members.find(m=>m.id===(attempt.memberId??task.memberId));
+    if(!observed||observed.threadId!==attempt.agentThreadId||observed.turnId!==attempt.turnId||observed.activity?.source!=='native-public-rollout'){unknownAttempts.push(attempt.id);continue;}
+    const base=member?.workspace?.path??team.projectPath;
+    for(const event of observed.activity.events??[]){if(event.type!=='file_change')continue;
+      for(const nativePath of event.paths??[]){if(typeof nativePath!=='string'||nativePath.length>4096)continue;const path=relative(base,resolve(base,nativePath)).replaceAll('\\','/'),outsideProject=isAbsolute(path)||path==='..'||path.startsWith('../');
+        const withinScope=!outsideProject&&member?.writeScopes?.some(s=>within(path,s))&&task.contract?.inScope?.some(s=>within(path,s))&&!task.contract?.outOfScope?.some(s=>within(path,s));
+        total++;if(!withinScope)scopeViolations++;
+        if(receipts.length===200)receipts.shift();
+        receipts.push({taskId:task.id,attemptId:attempt.id,memberId:member?.id,threadId:observed.threadId,turnId:observed.turnId,itemId:event.itemId??null,sequence:event.sequence??null,at:event.at??null,path:outsideProject?'[outside-project]':path,status:event.status??'unknown',outsideProject,withinScope:!!withinScope});
+      }
+    }
+    if(observed.activity.truncated||observed.activity.events?.some(e=>e.type==='file_change'&&e.pathsTruncated))unknownAttempts.push(attempt.id);
+  }
+  return {source:'native-public-file-change',attribution:'host-reported-operation-only',total,receipts,truncated:total>200,unknownAttempts:unknownAttempts.slice(-50),unknownAttemptCount:unknownAttempts.length,scopeViolations,scopeIsSandbox:false,notes:['Exact native thread and turn identify the reported operation, not exclusive authorship of the current shared Git diff.','Unknown or truncated native events remain incomplete; scope warnings do not enforce an operating-system sandbox.']};
+}
 export async function projectDiffAudit(team){
   const cwd=await realpath(team.projectPath),git=async args=>(await run('git',args,{cwd,windowsHide:true,timeout:10000,maxBuffer:4*1024*1024})).stdout;
   try{

@@ -18,8 +18,9 @@ for(const host of ['deepseek-harness','claude-code','opencode']){
   await mkdir(`${destination}/dist`,{recursive:true});
   for(const file of ['server.cjs','host.html'])await cp(`${out}/${file}`,`${destination}/dist/${file}`);
   const source=`integrations/${host}`;
+  if(host==='deepseek-harness')await cp(`${source}/client.js`,`${destination}/dist/client.js`);
   for(const entry of await readdir(source,{withFileTypes:true})){
-    if(entry.name.endsWith('.mjs')||entry.name==='hooks')continue;
+    if(entry.name.endsWith('.mjs')||entry.name==='client.js'||entry.name==='hooks')continue;
     await cp(`${source}/${entry.name}`,`${destination}/${entry.name}`,{recursive:true});
   }
   if(host==='claude-code'){

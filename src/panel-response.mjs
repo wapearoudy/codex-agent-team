@@ -2,6 +2,7 @@ import {controlSummary} from './team-control.mjs';
 import {planReviewSummary} from './team-plan-review.mjs';
 import {registrationGap} from './registration-gap.mjs';
 import {deliveryReady} from './team.mjs';
+import {memberExecutionCounts} from './team-projection.mjs';
 // Display previews have a separate budget. Saved observations and full evidence
 // are never rewritten, and remain available through read_team(view=full).
 const pick=(value,keys)=>Object.fromEntries(keys.filter(k=>value?.[k]!==undefined).map(k=>[k,value[k]]));
@@ -48,12 +49,13 @@ export function stateRuns(runs){const budget=previewBudget(24*1024);return runs.
 export function panelResponse(data,detailToken){
   const budget=previewBudget(64*1024),rows=panelTasks(data.team.tasks,data.team.activeBatchId),ids=new Set(rows.map(t=>t.id)),numbers=new Map(data.team.tasks.map((t,i)=>[t.id,t.number??i+1]));
   const team=pick(data.team,['id','revision','mode','state','projectPath','leaderThreadId','dispatchPaused','totalDispatches','maxParallel','memberStartup','taskPlanning','fixedRoster','archival','activeBatchId']);
-  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0'].includes(data.team.requiresTeamWorkspaceVersion);
+  team.coordinationSupported=['0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(data.team.requiresTeamWorkspaceVersion);
   team.goal=budget.text(data.team.goal,3000);
   Object.assign(team,budget.value(pick(data.team,['policy','profile','preparation','finalAcceptance','batches'])));
   if(data.team.executionControl)team.executionControl=controlSummary(data.team);
   if(data.team.planReview)team.planReview=planReviewSummary(data.team);
   team.members=data.team.members.map(m=>({...pick(m,['id','role','goalRevision','goalUpdatedAt','displayName','threadTitle','taskName','status','agentThreadId','agentPath','contextGeneration','rosterVerified','removedAt']),responsibility:budget.text(m.responsibility,2000),writeScopes:(m.writeScopes??[]).slice(0,30).map(p=>budget.text(p,300)),...budget.value(pick(m,['route','routeSnapshot','fallbackRoute','activeRoute','workspace','recoveryControl']))}));
+  for(const m of team.members)m.executionCounts=memberExecutionCounts(m,data.team.tasks,data.team.activeBatchId);
   team.tasks=rows.map(t=>({...pick(t,['id','title','kind','memberId','status','reviewOfTaskId','reviewOfTaskIds','batchId','qualityMode','riskFlags','parentTaskId','priority','supersededBy','repairRootTaskId','repairRound','contractRevision']),deliveryReady:deliveryReady(t),contract:budget.value(t.contract),number:numbers.get(t.id),goal:budget.text(t.goal,3000),acceptance:budget.text(t.acceptance,3000),blockReason:budget.text(t.blockReason,2000),dependencies:(t.dependencies??[]).slice(0,40),acceptanceCriteria:budget.value(t.acceptanceCriteria??[]),attempts:t.attempts.slice(-10).map(a=>pick(a,attemptKeys)),evidence:t.evidence?.slice(-3).map(e=>({...pick(e,['attempt','attemptId','createdAt','status']),summary:budget.text(e.summary,2000)}))??[] }));
   const relevant=data.runs.filter(r=>ids.has(r.taskId));
   const latest=new Set(rows.map(t=>t.attempts.at(-1)?.id));

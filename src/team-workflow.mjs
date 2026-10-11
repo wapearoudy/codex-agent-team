@@ -21,6 +21,7 @@ function deriveWorkflowActions(team,runs=[]) {
     const a=t.attempts.at(-1),run=known.get(a?.id);
     if(t.status==='running') {
       if(a.state==='reserved')actions.push({type:'verify-before-binding',taskId:t.id,attemptId:a.id});
+      else if(a.continuationRequested?.turnId===run?.turnId&&run?.status==='interrupted')actions.push({type:'await-native-continuation',taskId:t.id,attemptId:a.id,threadId:a.agentThreadId,instruction:'Observe the existing native member; do not rework, claim or spawn. The explicit continuation request has not yet produced a new marked turn.'});
       else if(['completed','failed','interrupted'].includes(run?.status)){
         const saved=a.settlementException;
         actions.push(saved?.inputHash===settlementInputHash(team,t,run)?{type:'settlement-exception',taskId:t.id,attemptId:a.id,tool:'settle_team_task',requiresLeaderValidation:true,reason:saved.reason,instruction:'Resolve the saved delivery/contract mismatch and retry registration explicitly; retain the original terminal attempt and do not rerun completed work merely to register it'}:{type:'settle',taskId:t.id,attemptId:a.id,observedStatus:run.status});

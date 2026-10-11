@@ -30,7 +30,7 @@ export class NativePublicFeed {
     if (!f) { f={offset:0,pending:Buffer.alloc(0),discardingRow:false,skippedNonPublicRows:0,skippedPublicRows:0,identity:false,turn:null,totals:null,turns:new Map(),accounting:new UsageWindow(),tail:Promise.resolve()}; this.files.set(key,f); }
     const next=f.tail.catch(()=>{}).then(()=>this.tail(f,path,thread.id)); f.tail=next; await next;
     const t=f.turns.get(turnId);
-    return {events:(t?.events??[]).filter(e=>e.sequence>cursor),cursor:t?.sequence??0,reset:cursor>(t?.sequence??0),truncated:f.skippedPublicRows>0||(cursor>0&&cursor<(t?.events[0]?.sequence??1)-1),skippedPublicRows:f.skippedPublicRows,
+    return {events:(t?.events??[]).filter(e=>e.sequence>cursor),cursor:t?.sequence??0,reset:cursor>(t?.sequence??0),truncated:f.skippedPublicRows>0||((t?.events[0]?.sequence??1)>1&&(cursor===0||cursor<(t?.events[0]?.sequence??1)-1)),skippedPublicRows:f.skippedPublicRows,
       usage:t?.usage??null,source:'native-public-rollout',lastActivity:t?.events.at(-1)??null};
   }
   async usageWindow(thread,window){
@@ -117,7 +117,7 @@ export class NativePublicFeed {
       const item=p.item??{};
       if (['AgentMessage','agentMessage'].includes(item.type)) {event.type='agent_message';event.text=publicText(item).slice(-this.maxText);}
       else if (['CommandExecution','commandExecution'].includes(item.type)) {event.type='exec_command_end';event.command=typeof item.command==='string'?item.command:null;event.text=String(item.aggregatedOutput??item.aggregated_output??'').slice(-this.maxText);event.exitCode=item.exitCode??item.exit_code??null;}
-      else if (['FileChange','fileChange'].includes(item.type)) {event.type='file_change';event.paths=(Array.isArray(item.changes)?item.changes.map(c=>c?.path):item.changes&&typeof item.changes==='object'?Object.keys(item.changes):[]).filter(p=>typeof p==='string').slice(0,100);}
+      else if (['FileChange','fileChange'].includes(item.type)) {event.type='file_change';const paths=(Array.isArray(item.changes)?item.changes.map(c=>c?.path):item.changes&&typeof item.changes==='object'?Object.keys(item.changes):[]).filter(p=>typeof p==='string');event.paths=paths.slice(0,100);if(paths.length>100)event.pathsTruncated=true;event.status=typeof item.status==='string'?item.status:'unknown';if(typeof item.id==='string')event.itemId=item.id;}
       else return;
     } else if (!['task_started','task_complete','turn_aborted'].includes(p.type)) return;
     if (event.text?.startsWith('TEAM_WORKSPACE_')) return;

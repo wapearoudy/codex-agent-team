@@ -23,6 +23,11 @@ for(const host of ['deepseek-harness','claude-code','opencode']){
     if(!hooks.hooks?.PreToolUse||!Object.keys(mcp.mcpServers??{}).length)throw new Error('Claude native hooks/MCP registration missing');
     await readFile(`${root}/hooks/bridge.mjs`);
   }else await readFile(`${root}/dist/index.mjs`);
+  if(host==='deepseek-harness'){
+    if(metadata.exports?.['./client']!=='./dist/client.js'||metadata.dsh?.client?.platform!=='web'||!Array.isArray(metadata.dsh?.client?.inject)||!metadata.dsh.client.inject.length)throw new Error('DSH native browser client registration missing');
+    const client=await readFile(`${root}/dist/client.js`,'utf8');
+    if(!client.includes('__ModuleLoader__')||!client.includes('conversation.session.header.actions'))throw new Error('DSH native header slot bundle missing');
+  }
   checks.push({host,version,status:'PASS',validation:'package-layout-and-version; native-runtime-checks-separate'});
 }
 await mkdir('evidence',{recursive:true});

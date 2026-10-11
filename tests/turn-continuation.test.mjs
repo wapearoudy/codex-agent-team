@@ -31,6 +31,33 @@ async function fixture(){
   return {root,cwd,observer,engine,projects,context,team,threads,lifecycle,usage,calls,saved,set,aborted,claim,bind,work};
 }
 
+test('settled interruption explicitly resumes the same attempt and member without another reservation',async()=>{
+ const f=await fixture(),c=await f.claim('work');f.set('dev',[turn('old',c.dispatch.marker,'inProgress',null)]);await f.bind(c,'dev');
+ f.set('dev',[turn('old',c.dispatch.marker,'interrupted',null,[command('old failed check',1)])]);f.aborted('old');
+ let t=await f.saved();await f.engine.settle('owner',t.id,t.revision,'work',c.dispatch.attemptId);t=await f.saved();await f.engine.start('owner',t.id,t.revision);t=await f.saved();
+ const input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),reason:'Continue the stopped read-only task in the existing member'};
+ const continued=await f.engine.continueInterrupted('owner',t.id,t.revision,input),saved=await f.saved();
+ assert.equal(continued.dispatch.existingThreadId,'dev');assert.equal(continued.dispatch.attemptId,c.dispatch.attemptId);assert.equal(continued.dispatch.marker,c.dispatch.marker);
+ assert.equal(saved.totalDispatches,1);assert.equal(saved.tasks[0].attempts.length,1);assert.equal(saved.tasks[0].status,'running');assert.equal(saved.tasks[0].attempts[0].interruptionHistory[0].observation.commands[0].exitCode,1);validateTeam(saved);
+ await assert.rejects(()=>f.engine.settle('owner',t.id,saved.revision,'work',c.dispatch.attemptId),/awaits a new marked native turn/);assert.deepEqual(await f.saved(),saved);assert.ok((await f.engine.read('owner',t.id)).workflow.actions.some(a=>a.type==='await-native-continuation'));
+ assert.deepEqual((await f.engine.terminalSnapshot('owner',t.id)).workflow.actions,[]);
+ const replay=await f.engine.continueInterrupted('owner',t.id,t.revision,input);assert.equal(replay.dispatch,undefined);assert.deepEqual(await f.saved(),saved);
+ await assert.rejects(()=>f.engine.continueInterrupted('owner',t.id,saved.revision,{...input,reason:'different'}),/different contents/);
+ f.set('dev',[turn('old',c.dispatch.marker,'interrupted',null,[command('old failed check',1)]),turn('new',c.dispatch.marker,'completed','continued delivery',[command('new check')])]);
+ await f.engine.settle('owner',t.id,saved.revision,'work',c.dispatch.attemptId);const final=await f.saved();assert.equal(final.tasks[0].status,'submitted');assert.equal(final.tasks[1].status,'waiting');assert.equal(final.tasks[0].attempts.length,1);assert.deepEqual(final.tasks[0].attempts[0].turnHistory.map(t=>t.turnId),['old','new']);assert.deepEqual(final.tasks[0].attempts[0].observation.commands.map(c=>c.command),['new check']);validateTeam(final);await f.engine.close();
+});
+
+test('explicit continuation rejects stale, unknown, foreign, changed-context and halted observations without writes',async()=>{
+ const f=await fixture(),c=await f.claim('work');f.set('dev',[turn('old',c.dispatch.marker,'inProgress',null)]);await f.bind(c,'dev');f.set('dev',[turn('old',c.dispatch.marker,'interrupted',null)]);f.aborted('old');let t=await f.saved();await f.engine.settle('owner',t.id,t.revision,'work',c.dispatch.attemptId);t=await f.saved();await f.engine.start('owner',t.id,t.revision);const base=await f.saved();
+ const input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),reason:'Continue interrupted task'};
+ for(const [turns,lifecycle] of [[ [turn('old',c.dispatch.marker,'interrupted',null)],null ],[[turn('old',c.dispatch.marker,'completed','already completed')],null],[[turn('old',c.dispatch.marker,'interrupted',null),turn('foreign','other','inProgress',null)],{status:'interrupted',source:'persisted-turn-aborted'}]]){
+  f.set('dev',turns);f.lifecycle.set('old',lifecycle);await assert.rejects(()=>f.engine.continueInterrupted('owner',base.id,base.revision,input));assert.deepEqual(await f.saved(),base);
+ }
+ f.set('dev',[turn('old',c.dispatch.marker,'interrupted',null)]);f.aborted('old');f.threads.get('dev').parentThreadId='foreign-leader';await assert.rejects(()=>f.engine.continueInterrupted('owner',base.id,base.revision,input));assert.deepEqual(await f.saved(),base);f.threads.get('dev').parentThreadId='leader';
+ await assert.rejects(()=>f.engine.continueInterrupted('owner',base.id,base.revision-1,input),/Team changed/);await assert.rejects(()=>f.engine.continueInterrupted('owner',base.id,base.revision,{...input,attemptId:randomUUID()}),/current interrupted/);
+ await f.engine.store.update(base.id,'owner',base.revision,t=>{t.dispatchPaused=true;});t=await f.saved();await assert.rejects(()=>f.engine.continueInterrupted('owner',t.id,t.revision,input),/Resume the stopped team/);assert.deepEqual(await f.saved(),t);await f.engine.close();
+});
+
 test('persisted native task-stop permits same-member continuation, while a stop request remains ambiguous',async()=>{
  const f=await fixture(),c=await f.claim('work'),first=turn('old',c.dispatch.marker,'inProgress',null);f.set('dev',[first]);await f.bind(c,'dev');
  first.status='interrupted';f.set('dev',[first,turn('new',c.dispatch.marker,'completed','continued')]);
@@ -134,6 +161,24 @@ test('old-turn checkpoints survive verified continuation and cannot block settle
  t=await f.saved();assert.equal((await f.engine.read('owner',t.id)).checkpoints[0].stale,true);assert.deepEqual(await f.saved(),t);const settled=await f.engine.settle('owner',t.id,t.revision,'review',c.dispatch.attemptId);assert.equal(settled.team.tasks[1].status,'accepted');assert.equal(settled.team.tasks[1].attempts[0].turnId,'new');assert.equal(settled.team.requiresTeamWorkspaceVersion,'0.24.0');assert.deepEqual(settled.team.checkpoints[0],original);assert.equal(settled.checkpoints[0].stale,true);validateTeam(settled.team);
  const accepted=await f.engine.acceptReview('owner',t.id,settled.team.revision,'review',c.dispatch.attemptId,'accept','Current turn independently verified');assert.ok(accepted.team.tasks.every(t=>t.status==='accepted'));
  const done=await f.engine.finish('owner',t.id,accepted.team.revision,'Final validation',[{name:'checks',status:'PASS',evidence:'Current integrated evidence'}]);const archived=await f.projects.archive('owner',f.context,{teamId:t.id,revision:done.team.revision,requestId:randomUUID(),source:'leader-recorded-user-instruction',reason:'Completed'});assert.equal(archived.kind,'team-archive');assert.equal((await f.saved()).state,'archived');const cold=new LeaderEngine({root:f.engine.root,observer:f.observer});validateTeam(await cold.native('owner',t.id));await f.engine.close();
+});
+
+test('pending native bindings discover the first exact marked turn before recording a checkpoint or member report',async()=>{
+ for(const operation of ['checkpoint','memberReport']){
+  const f=await fixture(),c=await f.claim('work'),marker=c.dispatch.marker;
+  f.set('dev',[turn('startup','opaque collaboration prompt','inProgress',null)]);await f.bind(c,'dev');
+  const t=await f.saved(),input={taskId:'work',attemptId:c.dispatch.attemptId,requestId:randomUUID(),summary:'First native progress'};
+  assert.equal(t.tasks[0].attempts[0].turnId,null);
+  const save=()=>operation==='checkpoint'?f.engine.checkpoint('owner',t.id,t.revision,input):f.engine.memberReport('owner',t.id,t.revision,{threadId:'dev',parentThreadId:'leader',cwd:f.cwd},input);
+  await assert.rejects(save,/identity is not uniquely visible/);assert.deepEqual(await f.saved(),t);
+  f.set('dev',[turn('first',marker,'inProgress',null),turn('latest','another unacknowledged task','inProgress',null)]);
+  await assert.rejects(save,/turn is not verified/);assert.deepEqual(await f.saved(),t);
+  f.set('dev',[turn('first',marker,'completed'),turn('duplicate',marker,'inProgress',null)]);
+  await assert.rejects(save,/identity is not uniquely visible/);assert.deepEqual(await f.saved(),t);
+  f.set('dev',[turn('first',marker,'inProgress',null)]);const result=await save(),saved=await f.saved();
+  assert.equal((result.checkpoint??result.checkpoints[0]).turnId,'first');assert.equal(saved.tasks[0].attempts[0].turnId,'first');
+  assert.equal(saved.tasks[0].status,'running');assert.equal(saved.tasks[1].status,'waiting');validateTeam(saved);await f.engine.close();
+ }
 });
 
 test('new Leader and member checkpoints bind the verified continuation before recording progress',async()=>{

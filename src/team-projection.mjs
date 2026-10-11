@@ -79,6 +79,11 @@ export function memberExecutions(member,tasks,runs){
       connection:run?.connection??attempt.connection,active:task.memberId===member.id&&task.status==='running'&&runIsActive(run),current:task.memberId===member.id&&task.attempts.at(-1).id===attempt.id,startedAt:attempt.startedAt,endedAt:attempt.endedAt};
   }));
 }
+export function memberExecutionCounts(member,tasks,activeBatchId){
+  let total=0,currentGoal=0;
+  for(const task of tasks)for(const a of task.attempts??[])if((a.memberId??task.memberId)===member.id){total++;if(!activeBatchId||task.batchId===activeBatchId)currentGoal++;}
+  return {total,currentGoal};
+}
 export function memberState(member,tasks,runs){
   if(member.removedAt)return 'removed';
   const assigned=tasks.filter(t=>t.memberId===member.id);
@@ -92,7 +97,7 @@ export function memberState(member,tasks,runs){
   }
   if(current.some(e=>e.connection==='snapshot'&&!['completed','failed','interrupted'].includes(e.status)))return 'observed';
   if(current.some(e=>e.status==='unknown'||(!['completed','failed','interrupted'].includes(e.status)&&e.connection!=='connected')))return 'unknown';
-  if(assigned.some(t=>t.status==='running')){const ended=current.find(e=>['completed','failed','interrupted'].includes(e.status));if(ended)return ended.status;}
+  if(assigned.some(t=>t.status==='running')){const ended=current.find(e=>['completed','failed','interrupted'].includes(e.status));if(ended)return ended.status==='completed'?taskDisplayState(assigned.find(t=>t.id===ended.taskId),runs):ended.status;}
   if(assigned.some(t=>t.status==='running'))return current.some(e=>e.status==='inProgress'&&e.connection==='connected')?'running':'starting';
   if(assigned.some(t=>t.status==='blocked'))return 'blocked';
   if(assigned.some(t=>t.status==='submitted'))return 'submitted';

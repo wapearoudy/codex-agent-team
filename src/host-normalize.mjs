@@ -1,6 +1,19 @@
 // Host-owned data only. Model arguments must never enter these normalizers.
 export const publicText=value=>typeof value==='string'?value.replace(/Bearer\s+[A-Za-z0-9._~+\/-]+/gi,'Bearer [redacted]').replace(/(["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret)["']?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;}\]&]+)/gi,(_match,prefix,credential)=>prefix+(credential.startsWith('"')?'"[redacted]"':credential.startsWith("'")?"'[redacted]'":prefix.startsWith('"')?'"[redacted]"':'[redacted]')):'';
 export const textBlocks=blocks=>typeof blocks==='string'?publicText(blocks):(blocks??[]).filter(b=>b.type==='text'&&typeof b.text==='string').map(b=>publicText(b.text)).join('\n');
+// DSH Desktop's public shell renderer reports nonzero process exits in text,
+// while isError describes the tool/infrastructure outcome. Rendered output is
+// not authoritative metadata: preserve its provenance and never infer success.
+export function dshCommandExit(data,toolName){
+  const explicit=data.meta?.exitCode??data.meta?.exit_code;
+  if(Number.isSafeInteger(explicit))return {exitCode:explicit,source:'native-tool-result-meta'};
+  if(['bash','pwsh'].includes(toolName)){
+    const marker=textBlocks(data.message?.content).match(/(?:^|\n)\[exit code: (-?\d+)\]\s*$/);
+    const code=marker?Number(marker[1]):null;
+    if(Number.isSafeInteger(code)&&code!==0)return {exitCode:code,source:'native-shell-rendered-marker'};
+  }
+  return {exitCode:null};
+}
 export function normalizeUsage(value){
   if(!value)return undefined;
   const out={};
@@ -27,7 +40,7 @@ export function sanitizeThread(thread){
       if(i.type==='agentMessage')turn.items.push({type:i.type,...(i.id?{id:i.id}:{}),text:publicText(i.text),phase:i.phase==='final_answer'?'final_answer':'commentary'});
       if(i.type==='userMessage')turn.items.push({type:i.type,...(i.id?{id:i.id}:{}),content:[{type:'text',text:textBlocks(i.content)}]});
       if(i.type==='subAgentActivity'&&i.agentThreadId)turn.items.push({type:i.type,agentThreadId:i.agentThreadId});
-      if(i.type==='commandExecution')turn.items.push({type:i.type,commandId:i.commandId,cwd:i.cwd??thread.cwd,command:publicText(i.command),exitCode:Number.isInteger(i.exitCode)?i.exitCode:null,status:i.status??'unknown',aggregatedOutput:publicText(i.aggregatedOutput)});
+      if(i.type==='commandExecution')turn.items.push({type:i.type,commandId:i.commandId,cwd:i.cwd??thread.cwd,command:publicText(i.command),exitCode:Number.isInteger(i.exitCode)?i.exitCode:null,...(['native-tool-result-meta','native-shell-rendered-marker'].includes(i.exitCodeSource)?{exitCodeSource:i.exitCodeSource}:{}),status:i.status??'unknown',aggregatedOutput:publicText(i.aggregatedOutput)});
     }
     // Only the observer's public activity vocabulary; never opaque host events.
     turn.activity=(t.activity??[]).filter(e=>['message','command','usage'].includes(e.type)).map(e=>({type:e.type,...(e.text?{text:publicText(e.text)}:{}),...(e.at?{at:e.at}:{})}));
@@ -51,8 +64,8 @@ export function createDshAccumulator(session){
     }
     if(e.type==='user/message'){const active=thread.turns.at(-1);if(active)active.items.push({type:'userMessage',id:d.id,content:d.content});}
     if(e.type==='assistant/message'){const t=turn(d.turn);t.items.push({type:'agentMessage',id:d.message?.id,text:textBlocks(d.message?.content),phase:'commentary'});if(d.usage){const u=normalizeUsage(d.usage);t.usage??={};for(const [k,v]of Object.entries(u??{}))t.usage[k]=(t.usage[k]??0)+v;}}
-    if(e.type==='tool/call'&&['bash','pwsh','run_command'].includes(d.name)){let args;try{args=JSON.parse(d.arguments);}catch{return;}const item={type:'commandExecution',commandId:d.callId,cwd:h.cwd,command:args.command??args.cmd??'',status:'inProgress',aggregatedOutput:''};turn(d.turn).items.push(item);calls.set(d.callId,item);}
-    if(e.type==='tool/result'){const item=calls.get(d.message?.source?.callId);if(item){item.status=d.message.isError?'failed':'completed';item.aggregatedOutput=textBlocks(d.message.content);item.exitCode=d.meta?.exitCode??d.meta?.exit_code??null;}}
+    if(e.type==='tool/call'&&['bash','pwsh','run_command'].includes(d.name)){let args;try{args=JSON.parse(d.arguments);}catch{return;}const item={type:'commandExecution',commandId:d.callId,cwd:h.cwd,command:args.command??args.cmd??'',status:'inProgress',aggregatedOutput:''};turn(d.turn).items.push(item);calls.set(d.callId,{item,toolName:d.name});}
+    if(e.type==='tool/result'){const call=calls.get(d.message?.source?.callId);if(call){const {item,toolName}=call,outcome=dshCommandExit(d,toolName);item.status=d.message.isError||outcome.exitCode!==null&&outcome.exitCode!==0?'failed':'completed';item.aggregatedOutput=textBlocks(d.message.content);item.exitCode=outcome.exitCode;if(outcome.source)item.exitCodeSource=outcome.source;}}
   }
   return {append,snapshot(){const h=session.header,route=session.requestContext?.()??{},config=session.requestHeader?.()?.config??{};
     Object.assign(thread,{cwd:h.cwd,parentThreadId:h.parentSession??null,model:route.model??config.model,modelProvider:route.provider??config.provider,reasoningEffort:config.reasoningEffort,nativeTools:session.requestHeader?.()?.tools??[]});return sanitizeThread(thread);},get turnCount(){return thread.turns.length;}};

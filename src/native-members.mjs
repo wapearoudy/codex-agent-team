@@ -91,6 +91,19 @@ export class NativeMembers {
       const ack=i=>i.type==='agentMessage'&&typeof i.text==='string'&&(i.text.trim()===marker||i.text.split(/\r?\n/)[0].trim()===marker||(()=>{try{return parseStructuredReport(i.text,{expectedMarker:marker}).attemptMarker===marker;}catch{return false;}})());
       const prompt=t=>t.items?.some(i=>i.type==='userMessage'&&i.content?.some(c=>c.type==='text'&&c.text?.includes(marker)));
       let matching=turns.filter(t=>prompt(t)||t.items?.some(ack));
+      // A format-only resend cannot replace the bound execution or its commands.
+      // Retain the original exact turn only when every later completed report is
+      // equivalent and contains no native tool execution. Real continuations
+      // still require the interrupted-predecessor identity chain below.
+      let duplicateReportTurnIds;
+      if(!registration&&boundTurnId&&matching.length>1&&matching[0].id===boundTurnId&&matching.at(-1)===turns.at(-1)&&matching.every((t,i)=>!i||turns.indexOf(t)===turns.indexOf(matching[i-1])+1)){
+        const report=t=>{const outputs=t.items.filter(i=>i.type==='agentMessage'&&(!i.phase||i.phase==='final_answer'));if(outputs.length!==1)return null;
+          try{const value=parseStructuredReport(outputs[0].text,{expectedMarker:marker});for(const key of ['acceptanceResults','checks'])if(Array.isArray(value[key]))value[key]=value[key].map(c=>c&&Array.isArray(c.evidence)&&c.evidence.length&&c.evidence.every(v=>typeof v==='string'&&v.trim())?{...c,evidence:c.evidence.join('\n')}:c);return JSON.stringify(value);}catch{return null;}};
+        const original=report(matching[0]);
+        if(original&&(await statusOf(matching[0])).status==='completed'&&matching.slice(1).every(t=>t.items.every(i=>['userMessage','agentMessage'].includes(i.type))&&report(t)===original)&& (await Promise.all(matching.slice(1).map(statusOf))).every(s=>s.status==='completed')){
+          duplicateReportTurnIds=matching.slice(1).map(t=>t.id);matching=matching.slice(0,1);
+        }
+      }
       if(registration){
         // Import is an explicit Leader association, never a name/time heuristic.
         // The exact native turns are checked against host identity and durable
@@ -136,6 +149,7 @@ export class NativeMembers {
         parentThreadId:parent};
       };
       const history=await Promise.all(matching.map(readTurn)),current=history.at(-1);
+      if(duplicateReportTurnIds)current.duplicateReportTurnIds=duplicateReportTurnIds;
       const continuation=history.length>1?{turnHistory:history,turnAssociation:{type:'interrupted-continuation',threadId,marker,turnIds:history.map(r=>r.turnId),links:history.slice(1).map((r,i)=>({fromTurnId:history[i].turnId,toTurnId:r.turnId,source:'native-interrupted-continuation'}))},usage:sumTurnUsage(history)}:{};
       return {...current,latestTurnId:turns.at(-1)?.id??null,agentPath,quiescence,model:thread.model??null,provider:thread.modelProvider??null,reasoningEffort:thread.reasoningEffort??null,...continuation};
   }

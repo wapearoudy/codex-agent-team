@@ -6,7 +6,7 @@ import {spawnSync} from 'node:child_process';
 import {createHash} from 'node:crypto';
 const root=resolve('.'),built=join(root,'artifacts/hosts/deepseek-harness'),output=join(root,'artifacts/npm'),registry='https://registry.npmjs.org';
 const mode=process.argv[2]??'pack',metadata=JSON.parse(await readFile('integrations/deepseek-harness/package.json','utf8'));
-const expected=['README.md','cordis.patch.yml','dist/index.mjs','dist/server.cjs','package.json'];
+const expected=['README.md','cordis.patch.yml','dist/client.js','dist/index.mjs','dist/server.cjs','package.json'];
 assert.equal(metadata.name,'agent-team-deepseek-harness');assert.equal(metadata.version,JSON.parse(await readFile('package.json','utf8')).version);
 let cli;for(const candidate of [process.env.npm_execpath,join(dirname(process.execPath),'node_modules/npm/bin/npm-cli.js'),join(process.env.APPDATA??homedir(),'npm/node_modules/npm/bin/npm-cli.js')].filter(Boolean)){try{await access(candidate);cli=candidate;break;}catch{}}
 assert.ok(cli,'Cannot find the existing npm CLI; run this script through npm run');

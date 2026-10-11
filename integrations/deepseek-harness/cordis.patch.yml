@@ -3,4 +3,4 @@
 - insert:
     - id: team-workspace
       name: 'agent-team-deepseek-harness'
-      inject: [tools, sessions, agents]
+      inject: [tools, sessions, agents, sessionProjections]

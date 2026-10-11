@@ -22,6 +22,28 @@ before(async()=>{const html=(await readFile('src/host.html','utf8')).replace('<s
  await new Promise(r=>server.listen(0,'127.0.0.1',r));url='http://127.0.0.1:'+server.address().port;
  browser=await chromium.launch({channel:'chrome',headless:true});await mkdir(dir,{recursive:true});});
 after(async()=>{await browser.close();await new Promise(r=>server.close(r));});
+
+test('five current-goal tasks reconcile with settling legend and scoped member attempt counts',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>{
+   const dev=window.data.team.members[0],qa=window.data.team.members[1],host=window.data.team.members[2];host.id='host';host.role='宿主适配开发';
+   window.data.team.activeBatchId='current';window.data.team.batches=[{id:'current',title:'当前目标',goal:'统计当前五项任务',state:'active'}];
+   const row=(id,number,memberId,status,attempts=[])=>({id,number,memberId,status,title:id,goal:id,acceptance:id,dependencies:[],attempts,evidence:[],batchId:'current'});
+   const history=(id,memberId,count)=>({...row(id,1,memberId,'accepted',Array.from({length:count},(_,i)=>({id:id+'-'+i,number:i+1,memberId,state:'submitted',agentThreadId:memberId+'-thread',endedAt:new Date().toISOString()}))),batchId:'history'});
+   window.data.team.tasks=[history('old-dev',dev.id,12),history('old-qa',qa.id,15),history('old-host',host.id,4),row('research',23,dev.id,'running',[{id:'current-attempt',number:1,memberId:dev.id,state:'running',agentThreadId:'dev-thread'}]),row('host',24,host.id,'waiting'),row('review',25,qa.id,'waiting'),row('integration',26,dev.id,'waiting'),row('integration-review',27,qa.id,'waiting')];
+   window.data.runs=[{taskId:'research',memberId:dev.id,attemptId:'current-attempt',threadId:'dev-thread',status:'completed',connection:'snapshot',outputs:[],commands:[]}];window.data.readiness=[];
+  });await update(page);
+  await expect(page.locator('#headerSummary')).toHaveText('0/5 已验收');await expect(page.locator('#progressValue')).toHaveText('0%');
+  await expect(page.locator('#progressLegend .settling')).toContainText('1');await expect(page.locator('#progressLegend .waiting')).toContainText('4');
+  assert.equal(await page.locator('#progressLegend strong').evaluateAll(items=>items.reduce((sum,e)=>sum+Number(e.textContent),0)),5);
+  await expect(page.locator('[data-member-id="dev"] .member-count')).toHaveText('0/2 已验收');await expect(page.locator('[data-member-id="qa"] .member-count')).toHaveText('0/2 已验收');await expect(page.locator('[data-member-id="host"] .member-count')).toHaveText('0/1 已验收');
+  await expect(page.locator('[data-member-id="dev"] .member-state')).toContainText('待 Leader 接收');await expect(page.locator('[data-member-id="dev"] .member-history summary')).toHaveText('本目标 1 次执行 · 历史 12 次 · 查看轮次');
+  await expect(page.locator('[data-member-id="qa"] .member-history summary')).toHaveText('本目标 0 次执行 · 历史 15 次 · 查看轮次');
+  await page.screenshot({path:'evidence/panel-counts-current-goal.png',fullPage:true});
+  await page.locator('#teamLocale').selectOption('en');await expect(page.locator('#progressLegend .settling')).toContainText('Awaiting Leader settlement');
+  await page.locator('#taskHistoryToggle').click();await expect(page.locator('#headerSummary')).toHaveText('3/8 accepted');await expect(page.locator('[data-member-id="dev"] .member-history summary')).toHaveText('Total 13 executions · view attempts');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
 test('validated delivery dependencies are distinct from raw submission in the real task detail UI',async()=>{
  const {page,errors}=await open();try{await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t3').dependencies[0].when='delivered';const upstream=window.data.team.tasks.find(t=>t.id==='t2');upstream.status='submitted';upstream.attempts=[{runtimeStatus:'completed'}];upstream.deliveryReady=false;});await update(page);await page.locator('[data-task-id="t3"]').click();await expect(page.locator('#taskDetail')).toContainText('t2 有效交付后');await expect(page.locator('#taskDetail')).toContainText('等待有效交付');await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t2').deliveryReady=true;});await update(page);await expect(page.locator('#taskDetail')).toContainText('前置已满足');assert.deepEqual(errors,[]);}finally{await page.close();}
 });

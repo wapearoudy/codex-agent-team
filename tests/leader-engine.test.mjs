@@ -154,7 +154,7 @@ test('panel separates reservation, persisted activity and completed execution fr
   task.attempts[0].state='running';
   const runs=[{taskId:task.id,memberId:member.id,attemptId:task.attempts[0].id,status:'inProgress',connection:'snapshot'}];
   assert.equal(taskDisplayState(task,runs),'observed');assert.equal(memberState(member,c.team.tasks,runs),'observed');
-  runs[0].status='completed';assert.equal(taskDisplayState(task,runs),'settling');assert.equal(memberState(member,c.team.tasks,runs),'completed');
+  runs[0].status='completed';assert.equal(taskDisplayState(task,runs),'settling');assert.equal(memberState(member,c.team.tasks,runs),'settling');
   runs[0].status='failed';assert.equal(taskDisplayState(task,runs),'failed');assert.equal(memberState(member,c.team.tasks,runs),'failed');
 });
 

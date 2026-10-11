@@ -1,3 +1,111 @@
+# 0.39.2 competitive continuation
+
+The current conversation remains Leader. The existing fixed team performs SDK
+research, native host implementation, independent review and integration checks.
+No second team or background model coordinator is introduced.
+
+## New implementation
+
+- Panel status totals include completed native turns awaiting Leader settlement.
+  Member cards use that same pending-settlement state. Current-goal and historical
+  attempt counts are labeled separately; panel/state responses compute exact
+  member totals before preview truncation. A real Chromium regression reproduces
+  the five-task case: four waiting plus one awaiting settlement, zero accepted;
+  switching to all history changes every task denominator consistently.
+
+- `continue_interrupted_team_task` explicitly resumes a settled interrupted
+  attempt in its unchanged native member context. It preserves the attempt,
+  marker, interruption evidence, contract and budget. Current native identity,
+  latest persisted interruption, dependencies and concurrency are checked before
+  one revision-fenced mutation. Replayed request IDs return no second dispatch.
+  No model is started by the operation. An old interrupted turn cannot settle
+  while the request awaits the new marked turn. Rework remains a new attempt.
+- Pending first-turn bindings can record checkpoints after an exact public
+  marker observation verifies the first turn; absent, ambiguous or foreign
+  observations do not mutate the saved association.
+- Actual packed Desktop shell tools may return `isError: false` even when the
+  process exits nonzero. Explicit nonzero rendered SDK exit markers now produce
+  failed command observations with advisory rendered-output provenance. Rendered
+  zero markers never establish success.
+
+## Actual Desktop verification, 2026-10-12
+
+The local 0.39.0 tarball was installed and enabled through the actual DSH Desktop
+0.2.0-rc.2 plugin manager. The isolated README-only workspace created exactly two
+native child sessions. The own engine header showed the running task; its owner
+link opened the exact reader child. Clicking native Stop persisted an interrupted
+turn. The attempted continuation failed: rework/claim generated a new attempt and
+context, and the existing child could not bind. This is retained failed evidence,
+not a successful closed loop. The independent source-only reviewer returned
+rework, with findings `DSH039-SAME-ATTEMPT-RESUME` and
+`DSH039-INSTALLED-CANDIDATE-STALE`.
+
+0.39.1 addresses the protocol defects and is a separate immutable local candidate.
+Its installation and actual Desktop continuation verification remain pending.
+Regression fixtures and local engine tests do not replace that step. Native
+shell startup also failed once with Windows status 3221225794; subsequent
+README-only model work used the native read tool and did not change shell,
+subscription or model settings.
+
+- DSH ships a public browser client export and a native conversation-header slot.
+  Its separate `teamWorkspace` session projection carries the authenticated
+  current Leader's fixed team and active-batch task records. Serial polling
+  coalesces unchanged data; failed reads never renew freshness. Non-surface
+  events do not add model-visible messages. Member/task navigation requires an
+  exact verified child, a fresh snapshot and a retained native parent address.
+  The official `agentTeam` fallback is explicitly labeled. Actual installed
+  SDK projection tests pass; retained native UI mounting remains under review.
+- Versioned Leader-curated reference decisions retain the exact accepted task,
+  attempt, contract revision and bounded input fingerprint. `knowledge-save`
+  requires the authenticated Leader and the current team revision. Repeated
+  request identities are idempotent. New revisions retire old revisions without
+  deleting history; `knowledge-retire` records a reason. `knowledge-decisions`
+  performs bounded lexical retrieval and rechecks source identity and contents.
+  Changed/inaccessible inputs, replaced attempts and amended contracts never
+  count as fresh verification. This is reference memory, not vector RAG or an
+  independent review of the Leader's wording. Existing `knowledge` stays compatible.
+- Diff audit separates the shared Git inventory from exact native file-change
+  operation receipts. Only verified thread/turn public rollout events identify
+  an operation. Missing/truncated events stay incomplete; reported operations
+  do not prove exclusive authorship of the current shared diff. Scope violations
+  are advisory audit facts, not operating-system sandbox enforcement.
+- Diagnostics separately record planning→reservation, reservation→binding,
+  binding→first public activity, native completion→settlement and submission→
+  acceptance. Unknown timestamps and panel render delay stay null. Observed
+  tokens come from native usage records, never fabricated billing estimates.
+- Nonempty textual evidence arrays are losslessly accepted as citations. A
+  tool-free, consecutive, byte-equivalent structured report resend after a
+  completed bound native turn cannot replace that execution or its commands.
+  Changed evidence, commands, intervening turns or running resends still fail
+  closed. Original public reports and native IDs remain in the audit trail.
+
+## Verification and remaining boundaries
+
+Verification logs and review results are retained locally under `evidence/`.
+The real installed DSH Web runtime boots in an isolated temporary profile with
+an empty credential snapshot and zero model turns. The browser client module
+and navigation/status behavior are also checked using explicit public-SDK
+fixtures; fixture evidence is not evidence of paid agent execution.
+
+DSH's transport provider is not an arbitrary model-provider override. The
+installed in-process implementation expressly does not inherit parent tool
+restrictions or authority. Native host permissions must be configured and
+verified separately. Claude/OpenCode continue using their existing native
+interfaces; no undocumented cross-runtime transport or idle-Leader coordinator
+is invented. Full automatic file-author attribution, OS sandbox enforcement,
+vector RAG, comprehensive billed-token/model latency comparisons and new native
+Claude/OpenCode UI contributions remain unsupported or unverified.
+
+Public npm publication is blocked by `npm whoami: ENEEDAUTH`. The initial anonymous GitHub REST request was rate-limited. The authenticated
+connector subsequently verified run 38147100761: Windows passed; Ubuntu and macOS
+failed the same outdated protocol-test assertion (expected persistence fence
+0.18.0, actual 0.37.0). This release corrects that assertion to the real quality
+policy fence without weakening lifecycle/authorization checks. The new candidate
+still requires an actual CI run. Neither a local tarball nor a configured CI
+matrix is advertised as a public release or a three-platform PASS.
+
+---
+
 # 0.38.0 competitive gap repairs
 
 The current conversation remains Leader. This release was implemented and tested
@@ -47,8 +155,9 @@ Chrome. It is not a complete live Desktop UI or paid cross-host execution test.
 The observer benchmark compares identical local event input and final evidence;
 it excludes disk writes, model latency, host first-frame latency and billed tokens.
 
-DSH's dedicated native team tab and chat-header entry are not included in this
-release. Claude/OpenCode still use their existing native tool/session entrypoints.
+DSH's native chat-header entry is implemented and the 0.39.0 candidate was opened
+in actual Desktop. A separate dedicated native team tab is not included.
+Claude/OpenCode still use their existing native tool/session entrypoints.
 Implementing a new browser contribution requires a versioned host UI contract and
 actual host UI verification; Codex URLs must not be substituted for native links.
 Some hosts still do not expose verified per-child provider/model overrides or

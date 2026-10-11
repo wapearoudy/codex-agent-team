@@ -6,6 +6,13 @@ import {PANEL_MAX_BYTES} from '../src/panel-response.mjs';
 
 import {largeDisplayFixture} from './fixtures/large-display.mjs';
 
+test('member totals are computed from full history before panel and state previews truncate attempts',()=>{
+ const data=largeDisplayFixture(),member=data.team.members[0];data.team.activeBatchId='current';
+ data.team.tasks=[{...data.team.tasks[0],id:'current',memberId:member.id,batchId:'current',attempts:Array.from({length:24},(_,i)=>({id:'current-'+i,number:i+1,memberId:member.id}))},{...data.team.tasks[0],id:'old',memberId:'other-owner',batchId:'old',attempts:Array.from({length:13},(_,i)=>({id:'old-'+i,number:i+1,memberId:member.id}))}];data.runs=[];
+ const frozen=structuredClone(data),panel=teamResponse(data,'panel'),state=teamResponse(data,'state');
+ assert.ok(panel.team.tasks[0].attempts.length<24);assert.deepEqual(panel.team.members[0].executionCounts,{total:37,currentGoal:24});assert.deepEqual(state.team.members[0].executionCounts,{total:37,currentGoal:24});assert.deepEqual(data,frozen);
+});
+
 test('panel previews and state are bounded for multi-megabyte duplicated logs; full evidence stays exact',()=>{
   const data=largeDisplayFixture(),panel=teamResponse(data,'panel'),state=teamResponse(data,'state');
   assert.ok(Buffer.byteLength(JSON.stringify(panel))<=PANEL_MAX_BYTES);
