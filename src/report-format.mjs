@@ -1,7 +1,9 @@
 // Parse the documented public envelope without changing the original report.
 // Marker checks stay outside the JSON catch so an ownership error is explicit.
 export function reportEnvelope(text){
-  const raw=text.trim(),match=raw.match(/^(TEAM_WORKSPACE_ATTEMPT:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\r?\n/i);
+  // A roster acknowledgement may precede the task report when a native host
+  // repeats the member identity. It never substitutes for the task marker.
+  const raw=text.trim().replace(/^TEAM_WORKSPACE_MEMBER:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\r?\n/i,''),match=raw.match(/^(TEAM_WORKSPACE_ATTEMPT:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\r?\n/i);
   return {prefix:match?.[1],body:match?raw.slice(match[0].length).trim():raw};
 }
 export function assertReportMarker(value,expectedMarker,prefix){

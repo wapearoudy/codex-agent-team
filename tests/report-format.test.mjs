@@ -11,6 +11,12 @@ const report={attemptMarker:marker,summary:'Actual delivery',changedPaths:['src/
 const fence=body=>'```json\n'+body+'\n```';
 const parsers=[parseDelivery,parseReview,(text,expectedMarker)=>parseStructuredReport(text,{expectedMarker}),normalizeNativeReport];
 
+test('one native roster prefix preserves exact task ownership and does not authorize another marker',()=>{
+  const roster='TEAM_WORKSPACE_MEMBER:11111111-1111-4111-8111-111111111111\n';
+  for(const parse of parsers){assert.deepEqual(parse(roster+JSON.stringify(report),marker),report);assert.throws(()=>parse(roster+JSON.stringify({...report,attemptMarker:other}),marker),/another task marker/);}
+  assert.throws(()=>parseStructuredReport(roster+roster+JSON.stringify(report),{expectedMarker:marker}),/structured/);
+});
+
 test('all report receivers accept documented marker envelopes and preserve the original object',()=>{
   for(const parse of parsers)for(const wrapper of [body=>body,fence,body=>marker+'\n'+body,body=>marker+'\r\n'+fence(body).replaceAll('\n','\r\n')]){
     const input=' \n'+wrapper(JSON.stringify(report))+'\n ';

@@ -27,5 +27,5 @@ export function recordRecoveryControl(team,{memberId,threadId,status,tool,note})
 export function takeoverBoundary(team,currentThreadId) {
   return {teamId:team.id,originalLeaderThreadId:team.leaderThreadId,requestedLeaderThreadId:currentThreadId,status:team.leaderThreadId===currentThreadId?'same-leader':'blocked-by-host',
     preservesRoster:true,canTransfer:false,reason:'Native members retain their original parent. Transferring a stored owner ID would not transfer real host control.',
-    originalLeaderAction:{tool:'navigate_to_codex_page',threadId:team.leaderThreadId},handoffs:team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).map(t=>buildHandoff(team,t.id))};
+    originalLeaderAction:team.hostId&&team.hostId!=='codex'?{type:'native-session-reference',host:team.hostId,threadId:team.leaderThreadId}:{tool:'navigate_to_codex_page',threadId:team.leaderThreadId},handoffs:team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).map(t=>buildHandoff(team,t.id))};
 }

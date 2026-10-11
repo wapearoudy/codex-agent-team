@@ -32,3 +32,24 @@ with zipfile.ZipFile(archive) as z:
               'packagingInstallsPlugin': False, 'uploaded': False}
 (root / 'evidence' / 'archive.json').write_text(json.dumps(record, ensure_ascii=False, indent=2),encoding='utf-8')
 print(json.dumps(record,ensure_ascii=False,indent=2))
+
+for host in ('deepseek-harness', 'claude-code', 'opencode'):
+    package=output/'hosts'/host
+    if not (package/'dist/server.cjs').is_file():
+        raise RuntimeError(f'Native host package was not built: {host}')
+    archive=output/f'team-workspace-{host}-{version}.zip'
+    with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+        for path in sorted(package.rglob('*')):
+            if path.is_symlink():
+                raise RuntimeError(f'Symlink not allowed: {path}')
+            if path.is_file():
+                entry=zipfile.ZipInfo(path.relative_to(package).as_posix(),date_time=(2020,1,1,0,0,0))
+                entry.compress_type=zipfile.ZIP_DEFLATED
+                entry.external_attr=0o100644 << 16
+                z.writestr(entry,path.read_bytes())
+    with zipfile.ZipFile(archive) as z:
+        assert z.testzip() is None
+        assert 'dist/server.cjs' in z.namelist()
+    checksum=hashlib.sha256(archive.read_bytes()).hexdigest()
+    archive.with_suffix('.zip.sha256').write_text(f'{checksum}  {archive.name}\n',encoding='utf8')
+    print(json.dumps({'host':host,'archive':str(archive),'sha256':checksum,'uploaded':False}))

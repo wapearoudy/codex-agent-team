@@ -6,6 +6,9 @@ plugins/*/dist/
 .env.*
 !.env.example
 .codex/
+.team-workspace-hosts/
+.opencode/
+.claude/
 *.log
 *.zip
 *.tmp
@@ -15,6 +18,8 @@ docs/*
 !docs/ARCHITECTURE.md
 !docs/DEVELOPMENT.md
 !docs/CAPABILITIES.md
+!docs/cross-host-contract.md
+!docs/CROSS-HOST.md
 scripts/*
 !scripts/build.mjs
 !scripts/package.py
@@ -25,3 +30,5 @@ scripts/*
 !scripts/verify-installed-current.mjs
 !scripts/install-plugin.mjs
 !scripts/register-native-work.mjs
+!scripts/install-host.mjs
+!scripts/verify-hosts.mjs

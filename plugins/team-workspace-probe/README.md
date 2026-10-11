@@ -1,4 +1,8 @@
-# Team Workspace 0.32.1
+# Team Workspace 0.33.1
+
+## 0.33.1 多宿主接入
+
+Codex 保留当前原生团队和内嵌面板。仓库另提供 DeepSeekHarness、Claude Code、OpenCode 的原生安装包，各宿主当前会话担任 Leader，使用宿主原生子代理、会话身份和执行记录。新增宿主使用原生工具显示团队状态；安装方式和能力边界见仓库 docs/CROSS-HOST.md。三宿主的付费模型完整团队执行尚未验证。
 
 ## 0.32.1 初始确认直接接续
 

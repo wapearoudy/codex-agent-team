@@ -7,6 +7,7 @@ import {persistedActivity} from './native-lifecycle.mjs';
 import {NativePublicFeed} from './native-public.mjs';
 import {sumTurnUsage} from './turn-association.mjs';
 import {observeTeamUsage,usageKey} from './native-usage.mjs';
+import {parseStructuredReport} from './report-format.mjs';
 
 // Observation only. Never start/resume/fork a model session in the plugin.
 export class NativeMembers {
@@ -86,7 +87,7 @@ export class NativeMembers {
       // A reused member must have received THIS attempt, not merely finished an old task.
       // Some hosts encrypt collaboration input and omit it from thread/read. A public
       // acknowledgement ties the opaque prompt to this attempt without decrypting it.
-      const ack=i=>i.type==='agentMessage'&&typeof i.text==='string'&&(i.text.trim()===marker||i.text.split(/\r?\n/)[0].trim()===marker||(()=>{try{return JSON.parse(i.text).attemptMarker===marker;}catch{return false;}})());
+      const ack=i=>i.type==='agentMessage'&&typeof i.text==='string'&&(i.text.trim()===marker||i.text.split(/\r?\n/)[0].trim()===marker||(()=>{try{return parseStructuredReport(i.text,{expectedMarker:marker}).attemptMarker===marker;}catch{return false;}})());
       const prompt=t=>t.items?.some(i=>i.type==='userMessage'&&i.content?.some(c=>c.type==='text'&&c.text?.includes(marker)));
       let matching=turns.filter(t=>prompt(t)||t.items?.some(ack));
       if(registration){

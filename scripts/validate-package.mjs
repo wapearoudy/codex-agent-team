@@ -11,6 +11,20 @@ for (const kind of ['plugin','mcp']) {
   if (!valid(data)) throw new Error(JSON.stringify(valid.errors));
   checks.push({ file:`${kind}.json`,schema:schema.$id,status:'PASS' });
 }
+const version=JSON.parse(await readFile('package.json','utf8')).version;
+for(const host of ['deepseek-harness','claude-code','opencode']){
+  const root=`artifacts/hosts/${host}`;
+  const metadata=JSON.parse(await readFile(`${root}/${host==='claude-code'?'.claude-plugin/plugin.json':'package.json'}`,'utf8'));
+  if(metadata.version!==version)throw new Error(`Native ${host} package version mismatch`);
+  await readFile(`${root}/dist/server.cjs`);
+  if(host==='claude-code'){
+    const hooks=JSON.parse(await readFile(`${root}/hooks/hooks.json`,'utf8'));
+    const mcp=JSON.parse(await readFile(`${root}/.mcp.json`,'utf8'));
+    if(!hooks.hooks?.PreToolUse||!Object.keys(mcp.mcpServers??{}).length)throw new Error('Claude native hooks/MCP registration missing');
+    await readFile(`${root}/hooks/bridge.mjs`);
+  }else await readFile(`${root}/dist/index.mjs`);
+  checks.push({host,version,status:'PASS',validation:'package-layout-and-version; native-runtime-checks-separate'});
+}
 await mkdir('evidence',{recursive:true});
 await writeFile('evidence/package-validation.json',JSON.stringify({observedAt:new Date().toISOString(),checks,hostInstallation:'NOT_RUN'},null,2));
-console.log('Both manifests pass the published Agent Plugins 1.0 JSON schemas. Host installation remains NOT_RUN.');
+console.log('Codex manifests pass Agent Plugins 1.0 schemas; three native host package layouts/versions match. Runtime checks are separate.');

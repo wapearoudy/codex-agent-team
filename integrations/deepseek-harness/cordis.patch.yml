@@ -1,0 +1,6 @@
+# The installer replaces this entry with the staged dist/index.mjs absolute path.
+# For a manual installation, set name to that absolute path before --patch use.
+- insert:
+    - id: team-workspace
+      name: './dist/index.mjs'
+      inject: [tools, sessions, agents]

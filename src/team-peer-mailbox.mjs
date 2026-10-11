@@ -29,6 +29,7 @@ export function acknowledgePeerMessage(team,{messageId,threadId,turnId,attemptId
   m.status='acknowledged';m.acknowledgedTurnId=turnId??null;m.events.push({at:new Date().toISOString(),source:threadId===team.leaderThreadId?'authenticated-leader-inbox':'authenticated-recipient',turnId:turnId??null,status:'acknowledged'});return m;
 }
 export function peerActions(team) {
+  if(team.hostId&& !['codex','deepseek-harness'].includes(team.hostId))return [];
   return (team.peerMessages??[]).filter(m=>m.kind!=='progress'&&m.status==='queued'&&team.tasks.some(t=>t.id===m.taskId&&t.status==='running'&&t.memberId===m.senderMemberId&&t.attempts.at(-1)?.id===m.attemptId)&&(m.toMemberId==='leader'||team.members.some(x=>x.id===m.toMemberId&&!x.removedAt&&x.agentThreadId===m.recipientThreadId))).map(m=>({messageId:m.id,threadId:m.recipientThreadId,agentPath:team.members.find(x=>x.agentThreadId===m.recipientThreadId)?.agentPath??null,
     text:m.marker+'\nFrom '+m.senderMemberId+': '+m.text+'\nRead your team inbox and acknowledge this exact message ID.',action:m.toMemberId==='leader'?'leader-inbox':'send-native-message',note:'Leader controls delivery; reading this queue never sends or retries a message.'}));
 }

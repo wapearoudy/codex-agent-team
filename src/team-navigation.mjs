@@ -8,8 +8,8 @@ const terminal=new Set(['host-accepted','opened','failed','superseded','expired'
 // The app opens only this verified native conversation through ui/open-link.
 // Legacy host-tool requests remain readable, but direct requests contain no prompt.
 export class TeamNavigation {
-  constructor({root,store,observer,clock=()=>Date.now(),ttlMs=120000}) {
-    this.store=store;this.observer=observer;this.clock=clock;this.ttlMs=ttlMs;
+  constructor({root,store,observer,adapter,clock=()=>Date.now(),ttlMs=120000}) {
+    this.store=store;this.observer=observer;this.adapter=adapter;this.clock=clock;this.ttlMs=ttlMs;
     this.document=new DurableStore(join(root,'team-navigation.json'),{requests:{},latest:{}});
   }
   key(owner,teamId){return createHash('sha256').update(JSON.stringify([owner,teamId])).digest('hex');}
@@ -40,6 +40,7 @@ export class TeamNavigation {
     return {type:'open-native-thread',threadId,url:'codex://threads/'+encodeURIComponent(threadId)};}
   projection(request){const projected=structuredClone(request);if(projected.status==='requested'&&this.clock()>=Date.parse(projected.expiresAt))projected.status='expired';return projected;}
   async request(owner,context,args){
+    if(this.adapter?.id&&this.adapter.id!=='codex')throw new Error('This host has no verified conversation deep link; use its native task output or session selector');
     const transport=args.transport??'host-tool';
     if(!['open-link','host-tool'].includes(transport))throw new Error('未知导航通道');
     const signature=JSON.stringify({teamId:args.teamId,memberId:args.memberId,taskId:args.taskId??null,attemptId:args.attemptId??null,destination:args.destination??'member',...(transport==='open-link'?{transport}:{})});

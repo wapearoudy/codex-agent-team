@@ -22,5 +22,6 @@ export function memberNaming(team,member){
 }
 export function memberTitleAction(team,member){
   if(!member.agentThreadId)return null;
+  if(team.hostId&&team.hostId!=='codex')return null;
   return {type:'set-native-thread-title',tool:'set_thread_title',threadId:member.agentThreadId,title:memberName(team,member),note:'Leader sets this verified existing native thread title; do not spawn, rename agent paths or replace members.'};
 }
