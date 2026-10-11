@@ -1,6 +1,6 @@
-# The installer replaces this entry with the staged dist/index.mjs absolute path.
-# For a manual installation, set name to that absolute path before --patch use.
+# npm installation resolves this entry by package name through the DSH profile.
+# The optional local staging helper rewrites it to the staged absolute entry.
 - insert:
     - id: team-workspace
-      name: './dist/index.mjs'
+      name: 'agent-team-deepseek-harness'
       inject: [tools, sessions, agents]

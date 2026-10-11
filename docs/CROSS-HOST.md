@@ -1,6 +1,6 @@
 # Native hosts
 
-Team Workspace 0.36.0 separates host integration from the existing team engine.
+Team Workspace 0.36.1 separates host integration from the existing team engine.
 The current conversation is Leader in every host. Team persistence, role/task
 identity, versioned approval, independent review, reservations, evidence and
 unknown-state handling stay shared. Existing Codex teams and paths remain intact.
@@ -21,6 +21,25 @@ the three other hosts. Native tools provide task/member state in those hosts.
 Run `npm ci`, `npm run build`, `npm test`, `npm run validate`, `npm run package`.
 Build writes standalone packages to `artifacts/hosts/<host>` and packaging writes
 one checksummed ZIP per host. Source entrypoints live in `integrations`.
+
+DeepSeekHarness uses the npm package `agent-team-deepseek-harness` as its native
+distribution. Once the selected version is published, enter
+`agent-team-deepseek-harness@0.36.1` in Desktop's plugin manager, or run
+`dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.36.1`.
+Its package-name bundle entry resolves through the profile, which registers it
+automatically. No install-time build, absolute entry edit or runtime dependency
+installation is required. Desktop profiles belong to the Desktop application;
+use its manager rather than the CLI. The ZIP/overlay staging below remains a
+developer path and is not a substitute for npm publication.
+
+Maintainers run `npm run package:dsh` after build, then
+`npm run verify:dsh-package` to install the actual tarball through the native DSH
+CLI in an isolated home and mount its six tools without models. The public-registry
+installation remains unverified until publication. `npm run publish:dsh` requires
+the matching successful local installation receipt, preserves an existing npm
+version, and checks the registry's SHA-512 integrity after publication. Complete
+npm account registration, email verification and login first; no credentials go
+into the package or repository.
 
 Stage an existing built package with:
 

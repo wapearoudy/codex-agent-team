@@ -1,1 +1,20 @@
-{"name":"agent-team-deepseek-harness","version":"0.36.0","type":"module","main":"./dist/index.mjs","exports":{".":"./dist/index.mjs","./cordis.patch.yml":"./cordis.patch.yml"},"dsh":{"bundle":{"patch":"./cordis.patch.yml"}}}
+{
+  "name": "agent-team-deepseek-harness",
+  "version": "0.36.1",
+  "description": "Team Workspace: native DSH team delegation, task state and independent review",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "exports": {
+    ".": "./dist/index.mjs",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": ["dist/index.mjs", "dist/server.cjs", "cordis.patch.yml", "README.md"],
+  "engines": {"node": ">=22"},
+  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org/"},
+  "repository": {"type": "git", "url": "git+https://github.com/wapearoudy/codex-agent-team.git", "directory": "integrations/deepseek-harness"},
+  "homepage": "https://github.com/wapearoudy/codex-agent-team#readme",
+  "bugs": {"url": "https://github.com/wapearoudy/codex-agent-team/issues"},
+  "keywords": ["dsh-plugin", "deepseek-harness", "agent-team", "cordis"],
+  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}}
+}

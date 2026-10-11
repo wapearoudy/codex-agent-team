@@ -14,7 +14,7 @@ async function packageFiles(root,prefix=''){
 }
 async function expectedFile(source,host,destination,file){
   const bytes=await readFile(join(source,file));
-  if(host==='deepseek-harness'&&file==='cordis.patch.yml')return Buffer.from(bytes.toString('utf8').replace("'./dist/index.mjs'",JSON.stringify(join(destination,'dist/index.mjs').replaceAll('\\','/'))));
+  if(host==='deepseek-harness'&&file==='cordis.patch.yml')return Buffer.from(bytes.toString('utf8').replace(/'(?:\.\/dist\/index\.mjs|agent-team-deepseek-harness)'/,JSON.stringify(join(destination,'dist/index.mjs').replaceAll('\\','/'))));
   return bytes;
 }
 

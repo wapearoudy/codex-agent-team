@@ -33,3 +33,5 @@ scripts/*
 !scripts/install-host.mjs
 !scripts/verify-hosts.mjs
 !scripts/verify-host-execution.mjs
+!scripts/dsh-npm.mjs
+!scripts/verify-dsh-npm.mjs

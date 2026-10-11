@@ -5,23 +5,41 @@ six compact Team Workspace tools, forwards their calls to `dist/server.cjs`,
 and supplies identity from `exec.agent.id` and the exact live `ctx.sessions`
 entry. It does not start a second coordinator.
 
-Load the staged package as a Cordis plugin in the DSH profile, with dependencies
+Install the published npm package through the DSH plugin manager, with dependencies
 `tools`, `sessions`, and `agents` available. For DSH 0.1.7-rc.2, the profile's
 native delegation tool normally defaults to `subagent`; its exact tool schema
 comes from the active native request header. Team execution requires a profile
 with native subagent delegation and the `send_message` / `interrupt_agent`
 controls. Use the host's configured provider and model defaults.
 
-The native package manifest declares `dsh.bundle.patch: ./cordis.patch.yml`.
-The overlay uses the installed DSH `insert` grammar. The installer rewrites its
-plugin name to the staged `dist/index.mjs` absolute path. Activate that overlay:
+## Native installation
+
+In the DSH plugin manager, enter `agent-team-deepseek-harness@0.36.1` after this
+version is published to npm. For an existing CLI profile:
+
+```text
+dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.36.1
+dsh --profile <existing-profile> --dump-config
+```
+
+DSH reads `dsh.bundle.patch`, adds the bundle to the profile, and resolves the
+plugin by its npm package name. No absolute path editing or install-time build
+is needed. This package includes its compiled native entry and MCP server and
+does not install the DSH runtime or a second model client. Desktop profiles are
+managed by the Desktop application; use its plugin manager rather than the CLI.
+
+## Optional developer staging
+
+A ZIP is a developer staging artifact, not the native npm install route. The
+repository's `scripts/install-host.mjs` helper rewrites the bundle entry to the
+staged `dist/index.mjs` absolute path. Activate the resulting developer overlay:
 
 ```text
 dsh --profile <existing-profile> --patch <staged-package>/cordis.patch.yml
 ```
 
 To verify composition without starting a model, add `--dump-config`. For manual
-staging, first replace the template's `name: './dist/index.mjs'` with the absolute
+staging, first replace `name: 'agent-team-deepseek-harness'` with the absolute
 entry path; profile-relative resolution cannot locate an unrelated staged folder.
 
 `dist/index.mjs` has no DSH runtime package imports. MCP and Node dependencies
