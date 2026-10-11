@@ -3,9 +3,11 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.37.0
+# Team Workspace 0.38.0
 
 当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
+
+诊断与复用：`manage_team(operation=doctor)` 核对运行版本、缓存和宿主边界；按需使用 `diff-audit` 查看项目真实 Git 改动（无法据此归因给某成员），`knowledge` 检索已验收约定（历史参考不能替代当前验证）。标准任务追加可传 `add_team_tasks.batchReviewId` 合并同目标尚未启动的审查；严格或已派发审查保持冻结。策略可设置 providerConcurrency/modelConcurrency，以已保存模型路线限制并发；不得为了绕过上限改变模型。
 
 ## 入口与确认
 

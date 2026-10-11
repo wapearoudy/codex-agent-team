@@ -4,6 +4,7 @@ import {mkdir,realpath,readFile} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
 import {DurableStore} from './durable-store.mjs';
 import {sanitizeThread,textBlocks,normalizeUsage} from './host-normalize.mjs';
+import {TranscriptCache} from './transcript-cache.mjs';
 const hosts=new Set(['deepseek-harness','claude-code','opencode']);
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function claudeTaskReceipt(row,parentId){
@@ -30,7 +31,7 @@ function preserveClaudeTurn(turn,observed,{active=false,terminal=true}={}){
 }
 export class HostBridge{
   constructor({host,root=process.env.TEAM_WORKSPACE_BRIDGE_ROOT??join(homedir(),'.agent-team','bridge',host),ticketTtlMs=30000,now=Date.now}={}){
-    if(!hosts.has(host))throw new Error('Unsupported native host');this.host=host;this.root=root;this.file=join(root,'registry.json');this.now=now;this.ticketTtlMs=ticketTtlMs;
+    if(!hosts.has(host))throw new Error('Unsupported native host');this.host=host;this.root=root;this.file=join(root,'registry.json');this.now=now;this.ticketTtlMs=ticketTtlMs;this.transcriptCache=new TranscriptCache();
     this.store=new DurableStore(this.file,{version:1,host,threads:{},models:[],tickets:{},transcripts:{}},d=>{if(d.version!==1||d.host!==host||!d.threads||!d.tickets)throw new Error('Bridge registry identity mismatch');});
   }
   async ensure(){await mkdir(this.root,{recursive:true});}
@@ -38,8 +39,8 @@ export class HostBridge{
   async readThread(id){let d=await this.store.read();if(this.host==='claude-code'&&d.threads[id]?.parentThreadId){await this.refreshClaudeTaskReceipts(d.threads[id].parentThreadId);d=await this.store.read();}const thread=Object.hasOwn(d.threads,id)?d.threads[id]:null;if(!thread){const error=new Error('Native session is unavailable');error.code='HOST_SESSION_UNAVAILABLE';throw error;}if(this.host==='claude-code'&&d.transcripts[id])return this.refreshClaude(thread,d.transcripts[id]);return structuredClone(thread);}
   async refreshClaudeTaskReceipts(parentId){
     const registry=await this.store.read(),path=registry.transcripts[parentId]?.path;if(!path)return;
-    let body;try{if(await realpath(path)!==path)throw new Error('Claude registered transcript path changed');body=await readFile(path,'utf8');}catch(e){if(e.code==='ENOENT')return;throw e;}
-    const rows=[];for(const line of body.split('\n')){try{const row=claudeTaskReceipt(JSON.parse(line),parentId);if(row){if(row.cwd&&await realpath(row.cwd)!==registry.threads[parentId]?.cwd)throw new Error('Claude task receipt project mismatch');rows.push(row);}}catch(e){if(e instanceof SyntaxError)continue;throw e;}}
+    let parsed;try{if(await realpath(path)!==path)throw new Error('Claude registered transcript path changed');parsed=await this.transcriptCache.rows(path);}catch(e){if(e.code==='ENOENT')return;throw e;}
+    const rows=[];for(const value of parsed){const row=claudeTaskReceipt(value,parentId);if(row){if(row.cwd&&await realpath(row.cwd)!==registry.threads[parentId]?.cwd)throw new Error('Claude task receipt project mismatch');rows.push(row);}}
     if(!rows.length)return;
     await this.store.transaction(d=>{d.claudeTasks??={};for(const row of rows){
       const launch=row.tool_use_id?d.claudeLaunches?.[row.tool_use_id]:null;
@@ -59,8 +60,7 @@ export class HostBridge{
   async authenticate(ticket,toolName){if(typeof ticket!=='string'||!ticket)throw new Error('Native host context ticket is required');return this.store.transaction(d=>{const key=hash(ticket),t=d.tickets[key];if(!t||t.expires<=this.now()||t.toolName!==toolName||!Object.hasOwn(d.threads,t.threadId))throw new Error('Native context ticket expired, replayed or mismatched');delete d.tickets[key];return {threadId:t.threadId};});}
   async registerClaudeTranscript(id,path){if(this.host!=='claude-code')throw new Error('Transcript refresh is Claude-only');let p;try{p=await realpath(path);}catch(e){if(e.code!=='ENOENT'||!isAbsolute(path))throw e;p=join(await realpath(dirname(path)),basename(path));}const d=await this.store.read();if(!Object.hasOwn(d.threads,id))throw new Error('Register native identity first');const expected=join(process.env.CLAUDE_CONFIG_DIR??join(homedir(),'.claude'),'projects'),base=await realpath(expected);if(relative(base,p).startsWith('..')||isAbsolute(relative(base,p)))throw new Error('Transcript is outside Claude project storage');if(![`${id}.jsonl`,`agent-${id}.jsonl`].includes(basename(p)))throw new Error('Transcript native identity mismatch');if(d.transcripts[id]?.path===p)return;await this.store.transaction(s=>{s.transcripts[id]={path:p};});}
   async refreshClaude(thread,record){
-    let body;try{if(await realpath(record.path)!==record.path)throw new Error('Claude registered transcript path changed');body=await readFile(record.path,'utf8');}catch(e){if(e.code==='ENOENT')return thread;throw e;}
-    const rows=[];for(const line of body.split('\n')){if(!line.trim())continue;try{rows.push(JSON.parse(line));}catch{/* asynchronously appended tail */}}
+    let rows;try{if(await realpath(record.path)!==record.path)throw new Error('Claude registered transcript path changed');rows=await this.transcriptCache.rows(record.path);}catch(e){if(e.code==='ENOENT')return thread;throw e;}
     const turns=[];let current;
     for(const r of rows){if(r.agentId&&r.agentId!==thread.id)continue;if(r.sessionId&&r.sessionId!==thread.id&&r.sessionId!==thread.parentThreadId)continue;if(r.cwd&&await realpath(r.cwd)!==thread.cwd)throw new Error('Claude transcript project mismatch');const m=r.message;
       if(r.type==='user'&&m?.role==='user'&&(typeof m.content==='string'||m.content?.some(b=>b.type==='text'))){current={id:r.uuid,status:'unknown',items:[{type:'userMessage',content:m.content}]};turns.push(current);}

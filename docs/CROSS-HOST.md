@@ -1,6 +1,6 @@
 # Native hosts
 
-Team Workspace 0.36.1 separates host integration from the existing team engine.
+Team Workspace 0.38.0 separates host integration from the existing team engine.
 The current conversation is Leader in every host. Team persistence, role/task
 identity, versioned approval, independent review, reservations, evidence and
 unknown-state handling stay shared. Existing Codex teams and paths remain intact.
@@ -24,8 +24,8 @@ one checksummed ZIP per host. Source entrypoints live in `integrations`.
 
 DeepSeekHarness uses the npm package `agent-team-deepseek-harness` as its native
 distribution. Once the selected version is published, enter
-`agent-team-deepseek-harness@0.36.1` in Desktop's plugin manager, or run
-`dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.36.1`.
+`agent-team-deepseek-harness@0.38.0` in Desktop's plugin manager, or run
+`dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.38.0`.
 Its package-name bundle entry resolves through the profile, which registers it
 automatically. No install-time build, absolute entry edit or runtime dependency
 installation is required. Desktop profiles belong to the Desktop application;

@@ -1,16 +1,17 @@
 {
   "name": "codex-agent-team",
-  "version": "0.37.0",
+  "version": "0.38.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "node scripts/build.mjs",
-    "test": "node --test --test-concurrency=4 tests/*.test.mjs",
+    "test": "node --test --test-concurrency=1 tests/*.test.mjs",
     "validate": "node scripts/validate-package.mjs",
     "package": "node scripts/package.mjs",
     "package:dsh": "node scripts/dsh-npm.mjs pack",
     "verify:dsh-package": "node scripts/verify-dsh-npm.mjs",
-    "publish:dsh": "node scripts/dsh-npm.mjs publish"
+    "publish:dsh": "node scripts/dsh-npm.mjs publish",
+    "doctor": "node scripts/doctor.mjs"
   },
   "engines": {
     "node": ">=22"

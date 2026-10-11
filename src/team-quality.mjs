@@ -9,7 +9,7 @@ const stages=new Set(['requirements','implementation','verification','review','r
 const nonempty=v=>typeof v==='string'&&v.trim().length>0;
 const now=()=>new Date().toISOString();
 export const safeQualityPath=p=>nonempty(p)&&!isAbsolute(p)&&!win32.isAbsolute(p)&&!/[\0:*?]/.test(p)&&!p.split(/[\\/]/).some(s=>s==='..'||s==='.git'||s==='.codex');
-const within=(path,scope)=>{const normalize=v=>{const p=posix.normalize(v.replaceAll('\\','/')).replace(/\/$/,'');return ['win32','darwin'].includes(process.platform)?p.toLowerCase():p;};const p=normalize(path),s=normalize(scope);return s==='.'||p===s||p.startsWith(s+'/');};
+export const within=(path,scope)=>{const normalize=v=>{const p=posix.normalize(v.replaceAll('\\','/')).replace(/\/$/,'');return ['win32','darwin'].includes(process.platform)?p.toLowerCase():p;};const p=normalize(path),s=normalize(scope);return s==='.'||p===s||p.startsWith(s+'/');};
 function strings(value,name,{paths=false}={}){
   if(!Array.isArray(value)||value.length>30||value.some(v=>!nonempty(v)||v.length>2000||paths&&!safeQualityPath(v))||new Set(value).size!==value.length)throw new Error(`Invalid quality contract ${name}`);
 }

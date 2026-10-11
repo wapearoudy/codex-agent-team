@@ -35,13 +35,13 @@ export function sanitizeThread(thread){
   }
   return out;
 }
-export function normalizeDshSession(session,events){
+export function createDshAccumulator(session){
   const h=session.header,route=session.requestContext?.()??{},config=session.requestHeader?.()?.config??{};
   const thread={id:session.id,cwd:h.cwd,parentThreadId:h.parentSession??null,createdAt:new Date(h.createdAt).toISOString(),model:route.model??config.model,modelProvider:route.provider??config.provider,reasoningEffort:config.reasoningEffort,nativeTools:session.requestHeader?.()?.tools??[],turns:[]};
   const turns=new Map(),calls=new Map();
   const turn=n=>{const id=String(n);if(!turns.has(id)){const t={id,status:'unknown',items:[]};turns.set(id,t);thread.turns.push(t);}return turns.get(id);};
-  for(const e of events??[]){
-    if(!session.isOwnSeq?.(e.seq)&&e.seq<session.inheritedEventCount)continue;
+  function append(e){
+    if(!session.isOwnSeq?.(e.seq)&&e.seq<session.inheritedEventCount)return;
     const d=e.data??{};
     if(e.type==='turn/start')turn(d.turn).status='inProgress';
     if(e.type==='turn/end'){
@@ -51,11 +51,13 @@ export function normalizeDshSession(session,events){
     }
     if(e.type==='user/message'){const active=thread.turns.at(-1);if(active)active.items.push({type:'userMessage',id:d.id,content:d.content});}
     if(e.type==='assistant/message'){const t=turn(d.turn);t.items.push({type:'agentMessage',id:d.message?.id,text:textBlocks(d.message?.content),phase:'commentary'});if(d.usage){const u=normalizeUsage(d.usage);t.usage??={};for(const [k,v]of Object.entries(u??{}))t.usage[k]=(t.usage[k]??0)+v;}}
-    if(e.type==='tool/call'&&['bash','pwsh','run_command'].includes(d.name)){let args;try{args=JSON.parse(d.arguments);}catch{continue;}const item={type:'commandExecution',commandId:d.callId,cwd:h.cwd,command:args.command??args.cmd??'',status:'inProgress',aggregatedOutput:''};turn(d.turn).items.push(item);calls.set(d.callId,item);}
+    if(e.type==='tool/call'&&['bash','pwsh','run_command'].includes(d.name)){let args;try{args=JSON.parse(d.arguments);}catch{return;}const item={type:'commandExecution',commandId:d.callId,cwd:h.cwd,command:args.command??args.cmd??'',status:'inProgress',aggregatedOutput:''};turn(d.turn).items.push(item);calls.set(d.callId,item);}
     if(e.type==='tool/result'){const item=calls.get(d.message?.source?.callId);if(item){item.status=d.message.isError?'failed':'completed';item.aggregatedOutput=textBlocks(d.message.content);item.exitCode=d.meta?.exitCode??d.meta?.exit_code??null;}}
   }
-  return sanitizeThread(thread);
+  return {append,snapshot(){const h=session.header,route=session.requestContext?.()??{},config=session.requestHeader?.()?.config??{};
+    Object.assign(thread,{cwd:h.cwd,parentThreadId:h.parentSession??null,model:route.model??config.model,modelProvider:route.provider??config.provider,reasoningEffort:config.reasoningEffort,nativeTools:session.requestHeader?.()?.tools??[]});return sanitizeThread(thread);},get turnCount(){return thread.turns.length;}};
 }
+export function normalizeDshSession(session,events){const accumulator=createDshAccumulator(session);for(const event of events??[])accumulator.append(event);return accumulator.snapshot();}
 export function normalizeOpenCodeSession(info,messages,status){
   const thread={id:info.id,cwd:info.directory,parentThreadId:info.parentID??null,createdAt:new Date(info.time.created).toISOString(),turns:[]};let current;const byUser=new Map();
   for(const row of messages??[]){const m=row.info??{},parts=row.parts??[];

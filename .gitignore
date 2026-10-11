@@ -36,3 +36,7 @@ scripts/*
 !scripts/verify-host-execution.mjs
 !scripts/dsh-npm.mjs
 !scripts/verify-dsh-npm.mjs
+
+!docs/COMPETITOR_GAP_FIXES.md
+!scripts/doctor.mjs
+!scripts/benchmark-observers.mjs

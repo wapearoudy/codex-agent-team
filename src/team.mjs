@@ -26,6 +26,7 @@ import {TeamDocument} from './team-document.mjs';
 import {validateQualityPlan,qualityBlockers,assertContractPass} from './team-quality.mjs';
 import {reviewTargetIds,qualityMode,QUALITY_MODES,RISK_FLAGS,validateQualityAttempts} from './quality-policy.mjs';
 import {validateBatches} from './team-batches.mjs';
+import {routeLimitBlockers,concurrencyLimits} from './route-concurrency.mjs';
 const now=()=>new Date().toISOString();
 const allowedStatuses=new Set(['waiting','ready','running','submitted','accepted','blocked','cancelled']);
 
@@ -42,6 +43,7 @@ export function validateMembers(members){
 }
 
 export function validatePlan(plan,{allowEmpty=plan.taskPlanning==='leader'}={}) {
+  concurrencyLimits(plan.policy);
   const {members,tasks}=plan;
   if(!Array.isArray(members)||members.filter(m=>!m.removedAt).length<1||members.filter(m=>!m.removedAt).length>8) throw new Error('A team plan needs 1–8 role-specific members');
   if(!Array.isArray(tasks)||!allowEmpty&&tasks.length<1)throw new Error('A plan needs at most 40 unfinished tasks plus at most one final integration review per goal');
@@ -113,6 +115,7 @@ export function dispatchBlockers(team,task){
   const member=team.members.find(m=>m.id===task.memberId),active=team.tasks.filter(t=>t.status==='running'&&t.id!==task.id);
   if(!member||!['planned','idle'].includes(member.status))add('member-busy','负责成员尚未空闲');
   if(active.length>=team.maxParallel)add('parallel-limit','团队并发名额已满');
+  reasons.push(...routeLimitBlockers(team,task));
   for(const other of active){
     if((other.resources??[]).some(r=>(task.resources??[]).includes(r)))add('resource',`与 ${other.id} 使用同一共享资源`,other.id);
     const owner=team.members.find(m=>m.id===other.memberId);
@@ -163,7 +166,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);validateBatches(team);validateQualityAttempts(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
+export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);validateBatches(team);validateQualityAttempts(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}

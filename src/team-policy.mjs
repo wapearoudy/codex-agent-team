@@ -1,6 +1,7 @@
 import {join} from 'node:path';
 import {DurableStore} from './durable-store.mjs';
 import {validatePlan,validateMembers} from './team.mjs';
+import {concurrencyLimits} from './route-concurrency.mjs';
 
 export function normalizePolicy(input={}) {
   if(input.qualityMode!==undefined&&!['light','standard','strict'].includes(input.qualityMode))throw new Error('Invalid quality mode');
@@ -10,7 +11,7 @@ export function normalizePolicy(input={}) {
   if(!Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)throw new Error('Attempt limit must be 1–10');
   const maxReviewRounds=input.maxReviewRounds??3;
   if(!Number.isInteger(maxReviewRounds)||maxReviewRounds<1||maxReviewRounds>10)throw new Error('Review round limit must be 1–10');
-  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds,...(input.qualityMode?{qualityMode:input.qualityMode}:{})};
+  return {tokenLimit,contextChars,maxAttempts,requireKnownUsage:input.requireKnownUsage===true,autoRepair:input.autoRepair===true,maxReviewRounds,...(input.qualityMode?{qualityMode:input.qualityMode}:{}),...concurrencyLimits(input)};
 }
 export function nativeRoute(member){const route=member.activeRoute??(member.route?.model?member.route:member.routeSnapshot)??{};return {fork_turns:'none',...(route.model?{model:route.model}:{}),...(route.reasoningEffort?{reasoning_effort:route.reasoningEffort}:{})};}
 export function usageReport(team,runs=[],accounting) {

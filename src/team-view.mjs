@@ -917,7 +917,7 @@ function setupTeamExtras({app,call,getData,getTask,getLanguage,accept,switchTeam
   function manage(){
     const data=getData();if(!data||history)return;if(!$('teamManagementPanel').hidden){closeManagement(true);return;}
     $('teamManagementPanel').hidden=false;$('teamManageOpen').setAttribute('aria-expanded','true');
-    const box=$('teamManagement');box.hidden=false;if(box.dataset.teamId===data.team.id&&box.childElementCount)return;box.dataset.teamId=data.team.id;box.replaceChildren();const team=data.team,args=()=>({teamId:team.id,revision:getData().team.revision});
+    const box=$('teamManagement');box.hidden=false;const formVersion=data.team.id+':'+data.team.revision;if(box.dataset.teamId===formVersion&&box.childElementCount)return;box.dataset.teamId=formVersion;box.replaceChildren();const team=data.team,args=()=>({teamId:team.id,revision:getData().team.revision});
     const modes=[['member-goal',text('调整角色目标')],['task',text('调整任务')],['add-task',text('追加交付与审查')],['add-member',text('新增岗位')],['remove-member',text('移除空闲岗位')],['contract',text('修订质量合同')],['revisions',text('查看合同修订')],['fallback',text('首次启动使用备用模型')]];
     const mode=select(box,text('管理操作'),modes.map(([k,v])=>[k,text(v)]),'task'),form=n('div');box.append(form);
     const run=(name,make)=>form.append(btn(text('保存操作'),async()=>{try{await perform(name,{...args(),...make()});}catch{}}));
@@ -938,9 +938,22 @@ function setupTeamExtras({app,call,getData,getTask,getLanguage,accept,switchTeam
         run(mode.value==='fallback'?'manage_team':'remove_team_member',()=>({memberId:member.value,...(mode.value==='fallback'?{operation:'fallback',reason:note.value}:{note:note.value,requestId:crypto.randomUUID()})}));return;
       }
       if(mode.value==='add-task'){
-        const id=field(form,text('交付任务 ID')),title=field(form,text('交付名称')),goal=field(form,text('交付目标'),'',true),acceptance=field(form,text('交付验收条件'),'',true),owner=select(form,text('实施岗位'),roster),reviewer=select(form,text('独立审查岗位'),members.filter(m=>!m.writeScopes.length).map(m=>[m.id,m.role]));
-        const deps=field(form,text('前置验收任务 ID（每行一个）'),'',true),scope=select(form,text('是否扩大已授权范围'),[['false',text(text('沿用已有范围'))],['true',text(text('扩大范围，先确认'))]]);
-        run('add_team_tasks',()=>({note:note.value,scopeChange:scope.value==='true',tasks:[{id:id.value,title:title.value,goal:goal.value,acceptance:acceptance.value,memberId:owner.value,priority:3,kind:'work',dependencies:lines(deps.value).map(taskId=>({taskId,when:'accepted'}))},{id:id.value+'_review',title:title.value+' · Review',goal:'Independently verify: '+goal.value,acceptance:acceptance.value,memberId:reviewer.value,priority:3,kind:'review',reviewOfTaskId:id.value,dependencies:[{taskId:id.value,when:'submitted'}]}]}));return;
+        const batch=team.batches?.find(b=>b.id===team.activeBatchId);
+        if(batch?.state==='delivered'){form.append(n('p',text('当前目标已验收。请在主会话描述下一项任务，Leader 会复用本团队并建立新的目标批次。')));return;}
+        form.append(n('p',text('补充当前已授权目标。新目标由主会话接收；这里无需重新描述整个项目。')));
+        const id=field(form,text('交付任务 ID')),title=field(form,text('交付名称')),goal=field(form,text('交付目标'),'',true),acceptance=field(form,text('交付验收条件'),'',true),owner=select(form,text('实施岗位'),roster);
+        const quality=select(form,text('验收策略'),[['light',text('轻量 · Leader 验收')],['standard',text('标准 · 共享独立审查')],['strict',text('严格 · 单独独立审查')]],batch?.qualityMode??team.policy?.qualityMode??'standard');
+        const advanced=n('details'),advancedSummary=n('summary',text('验证与范围（按需）'));advanced.append(advancedSummary);
+        const risk=field(advanced,text('高风险标记（每行一个：security、data-migration、concurrency、execution-protocol、publication）'),'',true);
+        const criteria=field(advanced,text('验收条目（ID: 描述，每行一个）'),'',true),verify=field(advanced,text('必要验证命令（每行一个）'),'',true);
+        const reviewer=select(form,text('独立审查岗位'),members.filter(m=>!m.writeScopes.length).map(m=>[m.id,m.role]));
+        const eligible=team.tasks.filter(t=>t.kind==='review'&&t.status==='waiting'&&!t.attempts?.length&&!t.supersededBy&&t.batchId&&t.batchId===team.activeBatchId&&(t.reviewOfTaskIds??[t.reviewOfTaskId]).every(id=>team.tasks.find(w=>w.id===id)?.qualityMode==='standard'));
+        const review=select(form,text('审查安排'),[['',text('新增独立审查')],...eligible.map(t=>[t.id,'t'+(t.number??team.tasks.indexOf(t)+1)+' · '+t.title])]);
+        const deps=field(advanced,text('前置依赖（任务 ID: delivered 或 accepted，每行一个）'),'',true),scope=select(advanced,text('是否扩大已授权范围'),[['false',text('沿用已有范围')],['true',text('扩大范围，先确认')]]);form.append(advanced);
+        const hint=n('p');form.append(hint);
+        const update=()=>{const strict=!!risk.value.trim(),mode=strict?'strict':quality.value;review.disabled=mode!=='standard'||scope.value==='true';if(review.disabled)review.value='';reviewer.disabled=mode==='light'||!!review.value;hint.textContent=text(strict?'高风险任务强制严格验收，并要求验收条目与验证命令。':mode==='light'?'执行结束后由 Leader 验收，不创建审查任务。':mode==='standard'?'可并入同目标尚未派发的独立审查。已派发审查不会改动。':'本交付创建单独的独立审查。');};
+        quality.onchange=()=>{if(quality.value==='strict')advanced.open=true;update();};risk.oninput=update;review.onchange=update;scope.onchange=update;update();
+        run('add_team_tasks',()=>buildPanelTaskAppend(team,{id:id.value,title:title.value,goal:goal.value,acceptance:acceptance.value,memberId:owner.value,reviewerId:reviewer.value,qualityMode:quality.value,riskFlags:lines(risk.value),criteria:lines(criteria.value),verify:lines(verify.value),dependencies:lines(deps.value),batchReviewId:review.value,note:note.value,scopeChange:scope.value==='true'}));return;
       }
       const taskSelect=select(form,text('目标任务'),team.tasks.map(t=>[t.id,t.id+' · '+t.title]),getTask()?.id),details=n('div');form.append(details);
       function taskForm(){details.replaceChildren();const task=team.tasks.find(t=>t.id===taskSelect.value);if(!task)return;
@@ -962,7 +975,7 @@ function setupTeamExtras({app,call,getData,getTask,getLanguage,accept,switchTeam
   }
   $('teamManageOpen').onclick=manage;
   async function library(){
-    const box=$('teamLibrary');box.hidden=false;const actions=$('teamLibraryActions');actions.replaceChildren(btn(text('团队历史'),()=>showHistory()),btn(text('团队模板'),()=>showProfiles()),btn(text('返回当前团队'),async()=>{await switchTeam(null);box.hidden=true;}),btn(text('能力说明'),async()=>{try{const data=await call('manage_team',{operation:'capabilities'});const out=n('pre');out.textContent=JSON.stringify(data,null,2);$('teamLibraryContent').replaceChildren(out);}catch(e){message(e.message);}}),btn(text('关闭'),()=>{box.hidden=true;}));await showHistory();
+    const box=$('teamLibrary');box.hidden=false;const actions=$('teamLibraryActions');actions.replaceChildren(btn(text('团队历史'),()=>showHistory()),btn(text('团队模板'),()=>showProfiles()),btn(text('返回当前团队'),async()=>{await switchTeam(null);box.hidden=true;}),btn(text('实际改动'),async()=>{try{const data=await call('manage_team',{operation:'diff-audit',teamId:getData().team.id});const out=n('pre');out.textContent=JSON.stringify(data,null,2);$('teamLibraryContent').replaceChildren(out);}catch(e){message(e.message);}}),btn(text('验收约定'),async()=>{try{const data=await call('manage_team',{operation:'knowledge',teamId:getData().team.id});const out=n('pre');out.textContent=JSON.stringify(data,null,2);$('teamLibraryContent').replaceChildren(out);}catch(e){message(e.message);}}),btn(text('插件诊断'),async()=>{try{const data=await call('manage_team',{operation:'doctor'});const out=n('pre');out.textContent=data.checks.map(c=>c.status+' · '+c.id+' · '+c.detail+(c.action?'\n'+c.action:'')).join('\n\n');$('teamLibraryContent').replaceChildren(out);}catch(e){message(e.message);}}),btn(text('能力说明'),async()=>{try{const data=await call('manage_team',{operation:'capabilities'});const out=n('pre');out.textContent=JSON.stringify(data,null,2);$('teamLibraryContent').replaceChildren(out);}catch(e){message(e.message);}}),btn(text('关闭'),()=>{box.hidden=true;}));await showHistory();
   }
   async function showHistory(offset=0){
     const box=$('teamLibraryContent');if(!offset)box.replaceChildren();try{const data=await call('manage_team',{operation:'history',offset,limit:20});for(const row of data.teams){const b=btn(row.goal+' · '+text(labels[row.state]??row.state),async()=>{try{await switchTeam(row.readOnly?row.id:null);$('teamLibraryFeedback').textContent=text(row.readOnly?text('正在查看历史团队，控制操作已关闭。'):text('已返回当前团队。'));}catch(e){$('teamLibraryFeedback').textContent=e.message;}});b.dataset.chromeText='';b.dataset.historyGoal=row.goal;b.dataset.historyState=row.state;const entry=n('div');entry.className='history-entry';entry.append(b);if(row.archivedAt){const meta=n('p');meta.className='history-meta';meta.dataset.archivedAt=row.archivedAt;meta.dataset.archiveReason=row.archiveReason??'';entry.append(meta);}box.append(entry);}if(data.nextOffset!==null)box.append(btn(text('更多历史'),()=>showHistory(data.nextOffset)));translateHistory();}catch(e){$('teamLibraryFeedback').textContent=e.message;}
@@ -1317,4 +1330,23 @@ export function setupTeamLanguage(){
   while((item=walker.nextNode()))if(!['SCRIPT','STYLE'].includes(item.parentElement?.tagName)&&dictionary[item.textContent.trim()])originals.push([item,item.textContent]);
   const api={get locale(){return locale;},onchange:null,source:value=>locale==='en'?(reverse.get(String(value))??String(value)):String(value),text(value){const source=String(value??'');if(locale!=='en')return source;if(dictionary[source])return dictionary[source];const match=/^(岗位|职责|设置理由|写入范围|模型|思考档位|备用模型|任务名称|任务目标|验收条件|负责岗位) (.+)$/.exec(source);return match?(dictionary[match[1]]+' '+match[2]):source;},set(value){const next=String(value).toLowerCase().startsWith('en')?'en':'zh-CN';if(initialized&&next===locale)return;initialized=true;locale=next;document.documentElement.lang=locale;try{localStorage.setItem('team-workspace:locale',locale);}catch{}for(const [el,source] of originals)el.textContent=locale==='en'?dictionary[source.trim()]:source;for(const [el,a,source] of attributes)el.setAttribute(a,locale==='en'?dictionary[source]:source);const select=document.getElementById('teamLocale');if(select)select.value=locale;api.onchange?.();},close(){}};
   const select=document.getElementById('teamLocale');if(select)select.onchange=()=>api.set(select.value);api.set(locale);return api;
+}
+
+// Keep the UI payload builder deterministic; all authority checks remain server-side.
+export function buildPanelTaskAppend(team,input){
+  const batch=team.batches?.find(b=>b.id===team.activeBatchId);
+  if(batch?.state==='delivered')throw new Error('Use the main conversation for the next goal');
+  const riskFlags=input.riskFlags??[];if(riskFlags.some(x=>!['security','data-migration','concurrency','execution-protocol','publication'].includes(x)))throw new Error('Unknown risk flag');
+  const qualityMode=riskFlags.length?'strict':input.qualityMode??batch?.qualityMode??'standard';
+  const acceptanceCriteria=(input.criteria??[]).map(line=>{const at=line.indexOf(':');if(at<1||!line.slice(at+1).trim())throw new Error('Each criterion needs ID: description');return {id:line.slice(0,at).trim(),description:line.slice(at+1).trim()};});
+  if(riskFlags.length&&(!acceptanceCriteria.length||!input.verify?.length))throw new Error('High-risk changes need criteria and verification commands');
+  const work={id:input.id,title:input.title,goal:input.goal,acceptance:input.acceptance,memberId:input.memberId,priority:3,kind:'work',qualityMode,riskFlags,dependencies:(input.dependencies??[]).map(line=>{const at=line.lastIndexOf(':');const taskId=(at<0?line:line.slice(0,at)).trim(),when=at<0?'accepted':line.slice(at+1).trim();if(!['delivered','accepted'].includes(when))throw new Error('Dependency must be delivered or accepted');return {taskId,when};})};
+  if(acceptanceCriteria.length)work.acceptanceCriteria=acceptanceCriteria;
+  if(input.verify?.length&&!acceptanceCriteria.length)work.acceptanceCriteria=[{id:'AC-1',description:input.acceptance}];
+  if(input.verify?.length||riskFlags.length)work.contract={stage:'implementation',inScope:team.members.find(m=>m.id===input.memberId)?.writeScopes??[],outOfScope:[],verify:input.verify??[],coverageOf:[]};
+  const result={note:input.note,scopeChange:!!input.scopeChange,tasks:[work]};
+  if(qualityMode==='light')return result;
+  if(input.batchReviewId){if(qualityMode!=='standard'||input.scopeChange)throw new Error('Only in-scope standard deliveries can share a review');result.batchReviewId=input.batchReviewId;return result;}
+  if(!input.reviewerId||input.reviewerId===input.memberId)throw new Error('Choose a distinct independent reviewer');
+  result.tasks.push({id:input.id+'_review',title:input.title+' · Review',goal:'Independently verify: '+input.goal,acceptance:input.acceptance,memberId:input.reviewerId,priority:3,kind:'review',qualityMode,reviewOfTaskId:input.id,dependencies:[{taskId:input.id,when:'submitted'}]});return result;
 }

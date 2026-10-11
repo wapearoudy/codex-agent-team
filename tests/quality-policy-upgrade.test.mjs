@@ -50,6 +50,13 @@ async function fixture(t,{mode='standard',autoRepair=false,integrationRequired=f
  const review=async({rework=false,stale=false}={})=>{const t=await engine.native('owner',team.id);return execute('batch-review',{summary:'Reviewed current feature',decision:rework?'rework':'accept',targets:['one','two'].map(id=>({taskId:id,attemptId:stale&&id==='two'?'stale':t.tasks.find(x=>x.id===id).attempts.at(-1).id,...good('AC-'+id),...(rework&&id==='two'?{decision:'rework',reason:'Incorrect second behavior',findings:[{id:'Q1',severity:'high',status:'open',description:'Second behavior contradicts its criterion'}]}:{})}))});};
  return {engine,team,batch,root,deliver,review};
 }
+test('unstarted standard review can expand atomically but frozen or strict reviews cannot',async t=>{
+ const f=await fixture(t),team=await f.engine.native('owner',f.team.id),extra={id:'extra',title:'Extra',goal:'Extra current behavior',acceptance:'Extra works',memberId:'dev',priority:3,kind:'work',qualityMode:'standard',dependencies:[]};
+ const saved=await f.engine.addTasks('owner',team.id,team.revision,[extra],{batchReviewId:'batch-review'});
+ assert.deepEqual(saved.team.tasks.find(x=>x.id==='batch-review').reviewOfTaskIds,['one','two','extra']);assert.equal(saved.team.requiresTeamWorkspaceVersion,'0.38.0');
+ const before=await f.engine.native('owner',team.id);await assert.rejects(f.engine.addTasks('owner',team.id,before.revision,[{...extra,id:'strict',qualityMode:'strict'}],{batchReviewId:'batch-review'}),/standard/);assert.deepEqual(await f.engine.native('owner',team.id),before);
+ const claimed=await f.engine.claim('owner',team.id,before.revision,'one');await assert.rejects(f.engine.addTasks('owner',team.id,claimed.team.revision,[{...extra,id:'invalid'}],{batchReviewId:'missing'}),/unstarted/);
+});
 test('one standard batch review accepts two exact deliveries; new goal closes without changing historical blockers',async t=>{
  const f=await fixture(t);await f.deliver('one');await f.deliver('two');let result=await f.review();assert.equal(result.team.tasks.find(x=>x.id==='one').status,'accepted');assert.equal(result.team.tasks.find(x=>x.id==='two').status,'accepted');assert.equal(result.team.tasks.find(x=>x.id==='batch-review').attempts.length,1);
  const frozen=structuredClone(result.team.tasks.slice(0,2)),done=await f.engine.finish('owner',f.team.id,result.team.revision,'Current goal complete',[],true,'current');assert.equal(done.team.batches[0].state,'delivered');assert.equal(done.team.state,'active');assert.deepEqual(done.team.tasks.slice(0,2),frozen);assert.equal(workflowActions(done.team).stage,'completed');

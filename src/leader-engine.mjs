@@ -56,7 +56,7 @@ export class LeaderEngine {
     return new DurableStore(join(this.root,'leader-plan-requests.json'),{requests:{}}).transaction(async d=>{
       if(d.requests[key]){const existing=await this.store.get(d.requests[key],owner);if(existing.state!=='archived')return existing;}
       const team=await this.store.create({projectId:createHash('sha256').update(context.cwd).digest('hex').slice(0,24),projectPath:context.cwd,goal:args.goal,plan:args.plan,maxParallel:args.maxParallel??3,taskPlanning},owner);
-      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';if(t.tasks.some(x=>x.qualityMode))requireTeamVersion(t,'0.37.0');if(context.hostId){t.hostId=context.hostId;t.nativeTools=context.nativeTools??[];requireTeamVersion(t,'0.33.0');}if(t.members.some(m=>m.routeSnapshot||m.fallbackRoute))requireTeamVersion(t,'0.13.0');t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.policy)t.policy=normalizePolicy(args.policy);if(args.memberStartup){t.memberStartup=args.memberStartup;requireTeamVersion(t,'0.12.0');}if(args.approvalMode||taskPlanning==='leader')setPlanReview(t,{mode:args.approvalMode??'required',execute:args.execute,executionAuthorization:args.executionAuthorization,brief:args.brief});if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
+      const saved=(await this.store.update(team.id,owner,team.revision,t=>{t.mode='host-leader';if(t.tasks.some(x=>x.qualityMode))requireTeamVersion(t,'0.37.0');if(context.hostId){t.hostId=context.hostId;t.nativeTools=context.nativeTools??[];requireTeamVersion(t,'0.33.0');}if(t.members.some(m=>m.routeSnapshot||m.fallbackRoute))requireTeamVersion(t,'0.13.0');t.leaderThreadId=context.threadId;t.dispatchPaused=!args.execute;t.state=args.execute?'active':'planned';t.totalDispatches=0;if(args.policy){t.policy=normalizePolicy(args.policy);if(t.policy.providerConcurrency||t.policy.modelConcurrency)requireTeamVersion(t,'0.38.0');}if(args.memberStartup){t.memberStartup=args.memberStartup;requireTeamVersion(t,'0.12.0');}if(args.approvalMode||taskPlanning==='leader')setPlanReview(t,{mode:args.approvalMode??'required',execute:args.execute,executionAuthorization:args.executionAuthorization,brief:args.brief});if(args.initializeMembers){t.fixedRoster=true;for(const m of t.members){m.rosterMarker=`TEAM_WORKSPACE_MEMBER:${randomUUID()}`;m.rosterVerified=false;}}})).team;
       d.requests[key]=saved.id;return saved;
     });
   }
@@ -349,15 +349,24 @@ export class LeaderEngine {
     }
     return {...await this.receipt(owner,id),memberAddition:{requestId,memberIds:record.memberIds,replayed:false}};
   }
-  async addTasks(owner,id,revision,tasks,{scopeChange=false,note='',batch}={}){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
+  async addTasks(owner,id,revision,tasks,{scopeChange=false,note='',batch,batchReviewId}={}){await this.native(owner,id);await this.store.update(id,owner,revision,t=>{
     if(t.state==='superseded')throw new Error('This is a historical team; use the project’s current team');
     assertPlanMutable(t);
     if(!Array.isArray(tasks)||!tasks.length)throw new Error('Provide concrete tasks with independent reviews');
+    if(batchReviewId&&(scopeChange||t.planReview&&tasks.some(task=>!t.members.some(m=>m.id===task.memberId&&!m.removedAt))))throw new Error('A scope change needs a separate review proposal; an existing review cannot be expanded before approval');
     if(t.profileConstraints)tasks=tasks.map(task=>{const prefix='Template constraints: '+t.profileConstraints,context=task.context?.startsWith(prefix)?task.context:prefix+(task.context?'\n\nTask context: '+task.context:'');if(context.length>12000)throw new Error('Template constraints plus task context exceed 12000 characters');return {...task,context};});
     if(scopeChange||t.planReview&&tasks.some(task=>!t.members.some(m=>m.id===task.memberId&&!m.removedAt))){stageExpansion(t,{tasks,...(batch?{batch}:{})},note||'新增任务需要确认新的职责范围');this.validateExpansion(t);return;}
     const timestamp=now();t.tasks.push(...tasks.map(task=>({...task,status:'waiting',attempt:0,attempts:[],evidence:[],history:[{at:timestamp,type:'added'}],blockReason:null,createdAt:timestamp,updatedAt:timestamp})));
     if(tasks.some(task=>task.contract))t.requiresTeamWorkspaceVersion??='0.10.0';
-    attachBatch(t,t.tasks.filter(x=>tasks.some(n=>n.id===x.id)),batch);requireTeamVersion(t,'0.37.0');validatePlan(t);assertReviewTopology(t);
+    const added=t.tasks.filter(x=>tasks.some(n=>n.id===x.id));attachBatch(t,added,batch);
+    if(batchReviewId){
+      const review=t.tasks.find(x=>x.id===batchReviewId);
+      if(!review||review.kind!=='review'||review.status!=='waiting'||review.attempts.length||review.supersededBy||review.batchId!==t.activeBatchId||added.some(x=>x.kind!=='work'||qualityMode(x)!=='standard'||x.memberId===review.memberId))throw new Error('Only an unstarted independent review in the same standard goal may accept new deliveries');
+      const ids=reviewTargetIds(review);if(ids.some(id=>qualityMode(t.tasks.find(x=>x.id===id))!=='standard'))throw new Error('Strict review targets cannot be merged');
+      review.reviewOfTaskIds=[...ids,...added.map(x=>x.id)];review.dependencies.push(...added.map(x=>({taskId:x.id,when:'submitted'})));review.updatedAt=timestamp;
+      requireTeamVersion(t,'0.38.0');t.events.push({at:timestamp,type:'batch-review-expanded',taskId:review.id,targetTaskIds:added.map(x=>x.id),note});
+    }
+    requireTeamVersion(t,'0.37.0');validatePlan(t);assertReviewTopology(t);
     if(t.finalAcceptance){t.acceptanceHistory??=[];t.acceptanceHistory.push(t.finalAcceptance);delete t.finalAcceptance;}if(t.state==='delivered')t.dispatchPaused=false;if(!t.executionControl||t.executionControl.status==='active')t.state='active';t.events.push({at:timestamp,type:'tasks-added-to-fixed-team',taskIds:tasks.map(t=>t.id)});
   });return this.receipt(owner,id);}
   validateExpansion(team){const candidate=expansionCandidate(team);validatePlan(candidate);assertReviewTopology(candidate);if(!Number.isInteger(candidate.maxParallel)||candidate.maxParallel<1||candidate.maxParallel>8)throw new Error('Parallel member limit must be 1–8');}
@@ -365,7 +374,7 @@ export class LeaderEngine {
   async readPlan(owner,id){return editablePlan(await this.native(owner,id));}
   async revisePlan(owner,id,revision,configuration,brief){await this.store.update(id,owner,revision,t=>{if(t.planReview?.scope==='expansion'){updateExpansionDraft(t,configuration,brief);this.validateExpansion(t);return;}updateDraft(t,configuration,brief);validatePlan(t);assertReviewTopology(t);});return this.readPlan(owner,id);}
   async proposeChange(owner,id,revision,change,brief){await this.store.update(id,owner,revision,t=>{stageExpansion(t,change,brief);this.validateExpansion(t);});return this.receipt(owner,id);}
-  async configurePolicy(owner,id,revision,policy,{reviewExpansion=false}={}){await this.store.update(id,owner,revision,t=>{assertPlanMutable(t);const next=normalizePolicy({...t.policy,...policy});if((t.planReview||reviewExpansion)&&policyExpands(t.policy,next)){stageExpansion(t,{policy:next},'提高执行预算或自动修复额度');this.validateExpansion(t);return;}t.policy=next;if(next.autoRepair)t.requiresTeamWorkspaceVersion??='0.10.0';});return this.receipt(owner,id);}
+  async configurePolicy(owner,id,revision,policy,{reviewExpansion=false}={}){await this.store.update(id,owner,revision,t=>{assertPlanMutable(t);const next=normalizePolicy({...t.policy,...policy});if((t.planReview||reviewExpansion)&&policyExpands(t.policy,next)){stageExpansion(t,{policy:next},'提高执行预算或自动修复额度');this.validateExpansion(t);return;}t.policy=next;if(next.providerConcurrency||next.modelConcurrency)requireTeamVersion(t,'0.38.0');if(next.autoRepair)t.requiresTeamWorkspaceVersion??='0.10.0';});return this.receipt(owner,id);}
   async decidePlan(owner,id,revision,input,action){
     const existing=reviewRequest(await this.native(owner,id),input,action);if(existing.saved)return {...await this.receipt(owner,id),planDecision:{replayed:true,action}};
     let replayed=false;try{await this.store.update(id,owner,revision,t=>{
