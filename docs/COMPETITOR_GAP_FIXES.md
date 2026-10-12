@@ -1,10 +1,45 @@
-# 0.39.2 competitive continuation
+# 0.39.4 competitive continuation
 
 The current conversation remains Leader. The existing fixed team performs SDK
 research, native host implementation, independent review and integration checks.
 No second team or background model coordinator is introduced.
 
 ## New implementation
+
+- Leader weight reduction: `read_team` now defaults to `coordination`. Existing
+  explicit summary/state/panel/full views remain available. Coordination replies
+  link to `manage_team(operation=leader-brief)` rather than copying decision or
+  execution history into every response.
+- The authenticated Leader can page a derived decision brief with current-goal
+  counts, unfinished tasks, all still-running native identities, current
+  checkpoint decision references and explicit original-evidence access. Settled
+  history stays in storage. Each page is capped at 6000 UTF-8 bytes; truncation and
+  next offsets are explicit. Saved summaries never authorize execution or accept
+  work and do not claim fresh native observations.
+- Semantic waits ignore unrelated historical task and batch edits, while current
+  dependency closure, other still-running tasks, global controls, permissions and
+  actionable inbox changes remain relevant. Progress coalescing and plugin-gated
+  ordinary acceptance are retained.
+- The brief supports recovery after host-managed context compaction. This plugin
+  does not erase the host's existing conversation context, create a replacement
+  Leader or rebuild the team. No autonomous delegation threshold or model downgrade
+  is introduced; existing startup/approval/review policies remain authoritative.
+
+- Token optimization: complete initial dispatches carry `dispatchHash`; callers
+  retaining that exact complete packet can opt into `knownDispatchHashes` on
+  reservation retries. A hit returns a reference, never a native spawn/send
+  action. Missing or changed digests return complete instructions. Member claims
+  offer the equivalent `promptHash`/`knownPromptHash` protocol after participant
+  authorization. Existing callers still receive full packets by default.
+- Repeated fixed instructions are shorter without removing task/contract fields,
+  identity markers, write scopes, independent review or evidence requirements.
+  Local identical-task comparison against commit 59a3817: prompt 5231 to 4575
+  characters (12.5% reduction); cached dispatch 5536 to 794 bytes (85.7%). This
+  fixture starts no models and does not measure production token billing.
+- Leader instructions explicitly require single-copy payload forwarding,
+  selected source pages, semantic wait continuation, schema reuse and unchanged
+  verification reuse. These govern caller behavior; arbitrary host tool output
+  is not automatically truncated and required task instructions remain intact.
 
 - Panel status totals include completed native turns awaiting Leader settlement.
   Member cards use that same pending-settlement state. Current-goal and historical

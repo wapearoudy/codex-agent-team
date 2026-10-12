@@ -3,7 +3,7 @@ name: team-workspace
 description: 在当前 Codex 对话中运行或查看原生 subagent 团队，由主会话担任 Leader，管理计划确认、依赖、独立审查和真实执行面板。
 ---
 
-# Team Workspace 0.39.0
+# Team Workspace 0.39.4
 
 当前主会话担任 Leader，沿用项目、用户目标和已有授权。插件只保存协议、校验证据和观察原生执行，不启动协调模型。只查看时调用 open_team_workspace / read_team，不派发。普通工作按下文推进；仅操作恢复、补登记、合同、模板、归档等功能时按标题读取 [协议细则](references/protocol-details.md)，不预先加载整份参考。
 
@@ -21,6 +21,10 @@ description: 在当前 Codex 对话中运行或查看原生 subagent 团队，�
 
 ## 派发与内部通信
 
+派发缓存：首次 claim_team_tasks 保存完整 dispatch 和 dispatchHash；重试且缓存确实存在时传 knownDispatchHashes:{attemptId:dispatchHash}。dispatchUnchanged 只引用旧包，不授权重复 spawn/followup；未知宿主结果先核对原成员。缺少缓存时不传 hash，重新取得完整包。成员 claim_member_team_task 同样可传已保存的 knownPromptHash，命中 promptUnchanged 后使用原完整 prompt。任何身份、路由、目标、权限或内容变化都重新取完整包；新上下文必须收到完整指令。
+
+Leader 输出纪律：不要 text(result) 打印完整 MCP 外壳；只转发 structuredContent ?? content 一次。只需状态时先提取 revision/actions/counts；完整派发包保存到文件后传给指定成员，不再在主会话复述。未知参数才 describe；整版本/整目录/整技能不反复读。rg 先限制匹配数，再按符号读取短片段；单批转发不超过6000字符。出现截断先缩小查询，不重复同一大查询。无变化等待直接沿用 continuationArgs，不再配套 read_team、inbox 或 schema 查询；已通过检查只在输入或范围变化时重跑。
+
 已结算为 blocked/interrupted 的当前任务需保留同一成员、attempt 和上下文时，调用 continue_interrupted_team_task，传当前 taskId、attemptId、revision、稳定 requestId 和原因；按首次返回的 dispatch 给现有成员 followup，并公开原 marker。重复请求不会返回派发包。等待新轮次出现，不接收旧中断轮次。团队已停止时先 resume_team 且不把此任务放进 retryTaskIds。不得用 rework+claim 代替同 attempt 接续：那会生成新 attempt 和上下文。未知、失败、完成、职责或约定已变化的执行不能按中断接续。
 
 claim_team_tasks 或 advance_team_workflow(dispatchReady=true) 批量预留。按返回的 action、taskName、prompt、spawnOptions 调用原生 spawn_agent/followup_task，保存 attemptId，拿到真实 ID/路径立即 bind_team_members；标题按 titleActions 设置。spawn 使用 fork_turns=none。已结算任务的下一任务使用独立上下文与新 generation，不能发给 contextHistory 退役线程；活动、未知或中断续跑保持原 attempt/会话。面板“执行记录待更新”仅表示公开记录延迟，不证明中断或空闲；核对现有原生成员，不重新派发。结果未知先核对，不重复启动，只有确认未启动才 release_team_reservation；批量部分成功只绑定成功部分。
@@ -30,6 +34,10 @@ claim_team_tasks 或 advance_team_workflow(dispatchReady=true) 批量预留。�
 内部通信走原生 send_message、完成通知和 wait_team_event。成员 send_team_peer_message 仅对问题、阻塞和必要完成通知按 nativeAction 送达，记录真实回执；一般进度写检查点或 kind=progress，仅持久保存不触发投递。consume_team_inbox 一次读取并确认当前收件轮次的新消息，沿用 after/cursor；hasMore 时继续取页，不重复读取已确认历史。未知投递不自动重发。不得用 app.sendMessage、send_message_to_thread、thread/injectItems 或用户角色聊天条目协调；主窗口仅给用户必要进度、问题和结果。coordinate_team 的旧通知不授权推进，reserve 不返回聊天发送机会。
 
 ## 推进与等待
+
+Leader 恢复上下文时使用 manage_team(operation=leader-brief,teamId,offset?,limit?)：默认最多8项活跃任务，返回当前目标预览、控制/约束、准确任务/成员执行ID、有效决策引用与历史计数；总载荷不超过6000字节，hasMore 时按 nextOffset 取页。摘要来自保存记录，executionAuthority/acceptanceAuthority 均为 false；目标预览截断或需要任务完整约定时显式读取 read_team_plan/read_team_context。不要把摘要当新执行授权或当前宿主终态。read_team 默认 coordination；需要 summary/state/panel/full 时显式指定 view。恢复后核对当前宿主项目、Leader身份和最新协调状态，沿用原团队/成员/attempt，不通过重建团队或创建替代 Leader 清空上下文。
+
+普通通过项由插件门禁登记，Leader 只处理异常、真实范围/权限变更和本批最终结项。无关历史变更不唤醒当前协调；当前前置依赖、其他目标仍在运行的任务、原生终态和停止控制仍须处理。结束任务只保留历史入口，不继续加入活跃决策摘要。小任务先由 Leader 用确定性工具处理；固定岗位保留，按需启动真正需要的成员，不为只读摘要额外派代理。已批准的 eager 启动、严格审查和模型路线不由节省策略擅自覆盖。
 
 完成通知后 advance_team_workflow 一次接收真实终态、校验审核、预留下一批。默认回执包含 advancement.changes、最新 revision、动作和完整 dispatches；成功后直接执行包/处理异常/等待，不重复读取团队或收件箱。普通审核 PASS 且插件校验通过，同一事务直接登记 target/review accepted 并解锁后续任务。Leader 只处理 review-exception 与团队最终结项，不重复审查或重跑相同测试。相同轮次的接收、已登记审核和最终结项可幂等重试；新增范围或有证据的返工才重执行。
 
