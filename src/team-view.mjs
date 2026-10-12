@@ -8,7 +8,7 @@ export function setupTeamView(app){
   const $=id=>document.getElementById(id);
   let current=null,linked=false,timer=null,expiryTimer=null,loading=false,lastDiscovery=0,connectionGeneration=0,selectionGeneration=0,renderedActivity='';
   let detailsRequest=null,detailsWanted=null,polling=null,wakeRequested=false,navigationRead=null,targetTeamId=null;
-  let ui={},storageKey='',navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
+  let ui={},storageKey='',renderedStorageKey='',navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
   let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',modelCatalogLoaded=false,modelCatalogRefresh=null,controlBusy=false,controlTeamId=null,controlStatus=null,controlFeedback='',controlNotice=null;
   let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='',planExpanded=false;
   let planStartRetry=null;
@@ -273,7 +273,12 @@ export function setupTeamView(app){
   }
   function render(){
     if(current?.team.state==='archived')viewingHistory=true;
-    if(!current)return;renderedActivity=activitySignature();actionTooltips.beforeRender();extras.update(viewingHistory);memberGoals.sync();archiveEditor.sync();
+    if(!current)return;
+    // Scroll events are asynchronous. Capture actual DOM positions before a
+    // same-project render replaces nodes; initial/project-switch renders retain
+    // their own saved positions instead of importing the previous project's.
+    if(renderedStorageKey===storageKey&&!restoring)saveScroll();
+    renderedActivity=activitySignature();actionTooltips.beforeRender();extras.update(viewingHistory);memberGoals.sync();archiveEditor.sync();
     const focused=document.activeElement?.dataset?.focusKey,scrollY=ui.scrollY??window.scrollY;
     restoring=true;
     if(viewingHistory){$('teamControl').hidden=true;}
@@ -326,6 +331,7 @@ export function setupTeamView(app){
     if(focused){const target=[...document.querySelectorAll('[data-focus-key]')].find(e=>e.dataset.focusKey===focused);target?.focus({preventScroll:true});}
     window.scrollTo({top:scrollY,behavior:'instant'});
     restoring=false;
+    renderedStorageKey=storageKey;
     actionTooltips.refresh();
     $('syncState').textContent=language.text('最近同步 ')+new Date(current.observedAt).toLocaleTimeString()+language.text(' · 公开执行记录快照')+(unknown.length?language.text(' · 部分状态待核对'):'');
   }

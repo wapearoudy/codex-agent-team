@@ -6,6 +6,12 @@ No second team or background model coordinator is introduced.
 
 ## New implementation
 
+- Refresh captures actual page and log-container scroll positions before DOM
+  replacement, even when a pending scroll event has not delivered its save.
+  Initial/project-switch renders retain their own storage state. A same-frame
+  browser regression reproduced 350-to-0 before the fix and preserves 350 after
+  it; existing focus, reload and project-isolation assertions remain intact.
+
 - Release CI correction: the POSIX protocol test checks the formation-only
   persistence fence as 0.18.0; task planning and later role edits still assert
   0.37.0. These are distinct phases. No assertion was removed or relaxed.

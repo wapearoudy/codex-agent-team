@@ -23,6 +23,13 @@ before(async()=>{const html=(await readFile('src/host.html','utf8')).replace('<s
  browser=await chromium.launch({channel:'chrome',headless:true});await mkdir(dir,{recursive:true});});
 after(async()=>{await browser.close();await new Promise(r=>server.close(r));});
 
+test('same-frame refresh preserves scrolling before the asynchronous scroll event arrives',async()=>{
+ const {page,errors}=await open();try{
+  const position=await page.evaluate(async()=>{window.scrollTo({top:350,behavior:'instant'});const before=window.scrollY;window.data.team.revision++;await window.view.accept(structuredClone(window.data));return {before,after:window.scrollY};});
+  assert.ok(position.before>0);assert.equal(position.after,position.before);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+
 test('five current-goal tasks reconcile with settling legend and scoped member attempt counts',async()=>{
  const {page,errors}=await open();try{
   await page.evaluate(()=>{
