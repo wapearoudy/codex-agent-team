@@ -1,10 +1,15 @@
-# 0.39.4 competitive continuation
+# 0.39.5 competitive continuation
 
 The current conversation remains Leader. The existing fixed team performs SDK
 research, native host implementation, independent review and integration checks.
 No second team or background model coordinator is introduced.
 
 ## New implementation
+
+- Release CI correction: the POSIX protocol test checks the formation-only
+  persistence fence as 0.18.0; task planning and later role edits still assert
+  0.37.0. These are distinct phases. No assertion was removed or relaxed.
+  The failed v0.39.4 release workflow was stopped; its pushed tag is preserved.
 
 - Leader weight reduction: `read_team` now defaults to `coordination`. Existing
   explicit summary/state/panel/full views remain available. Coordination replies
