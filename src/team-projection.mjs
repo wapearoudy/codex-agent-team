@@ -6,7 +6,7 @@ export function runIsActive(run,nowMs=Date.now()){
   if(run.connection!=='snapshot')return false;
   const until=Date.parse(run.statusEvidence?.freshUntil??'');
   if(Number.isFinite(until))return nowMs<until;
-  return run.source==='native-thread-persisted-snapshot'&&Number.isFinite(Date.parse(run.observedAt))&&nowMs-Date.parse(run.observedAt)<60000;
+  return ['native-thread-persisted-snapshot','native-leader-checkpoint'].includes(run.source)&&Number.isFinite(Date.parse(run.observedAt))&&nowMs-Date.parse(run.observedAt)<60000;
 }
 // Observation health is separate from execution state. A failed read cannot
 // renew the evidence clock or prove an interruption, completion or new turn.
@@ -57,8 +57,8 @@ export function mergeRunObservation(previous,incoming,{saved=false}={}){
 export function taskDisplayState(task,runs=[]){
   if(task.status!=='running')return task.status;
   const attempt=task.attempts.at(-1);
-  if(attempt?.state==='reserved')return 'reserved';
   const run=runs.find(r=>r.attemptId===attempt?.id&&r.taskId===task.id);
+  if(attempt?.state==='reserved')return run?.startupOnly&&(['completed','failed','interrupted'].includes(run.status)||run.startupTerminal)?'blocked':'reserved';
   const display=runDisplayState(run);
   if(display==='inProgress')return 'running';
   if(display==='observed')return 'observed';

@@ -12,7 +12,7 @@ import {evidencePage} from '../src/team-evidence.mjs';
 import {validateTeam} from '../src/team.mjs';
 
 const hash=s=>createHash('sha256').update(s).digest('hex');
-async function fixture(t,{history=false,criterion='PASS',complex=false,prepared=false,manifest=false,whitespace=false,initialized=false,outerShell=false}={}){
+async function fixture(t,{history=false,criterion='PASS',complex=false,prepared=false,manifest=false,whitespace=false,initialized=false,outerShell=false,compound=false,compactReceipt=false}={}){
   const root=await mkdtemp(join(tmpdir(),'verification-reconciliation-')),cwd=join(root,'project');
   await mkdir(join(cwd,'src'),{recursive:true});await writeFile(join(cwd,'src/a.mjs'),'candidate');await writeFile(join(cwd,'checks.json'),'fixture config');
   const runs=new Map(),observer={calls:0,async inspect(parent,project,thread,marker){this.calls++;assert.equal(parent,'leader');assert.equal(project,cwd);const run=runs.get(marker);assert.equal(run.threadId,thread);return structuredClone(run);}};
@@ -25,19 +25,23 @@ async function fixture(t,{history=false,criterion='PASS',complex=false,prepared=
   const run={threadId:thread,turnId:oldId,parentThreadId:'leader',status:'inProgress',source:'native-thread-persisted-snapshot',outputs:[],commands:[],observedAt:new Date().toISOString()};runs.set(a.marker,run);
   s=await engine.bind('owner',team.id,s.team.revision,'work',a.attemptId,thread);
   let preparation;
+  if(compound)await writeFile(join(cwd,'src/a.mjs'),'before command');
+  if(compound)preparation=await prepareTeamCommand(engine.root,s.team,{cwd,threadId:thread,parentThreadId:'leader'},{taskId:'work',attemptId:a.attemptId,requestId:randomUUID(),command:"python3 -c 'print(1)' && npm test",verificationInputs:['checks.json']});
+  if(compound)await writeFile(join(cwd,'src/a.mjs'),'candidate');
   if(prepared)preparation=await prepareTeamCommand(engine.root,s.team,{cwd,threadId:thread,parentThreadId:'leader'},{taskId:'work',attemptId:a.attemptId,requestId:randomUUID(),command:'npm test',verificationInputs:['checks.json']});
   const setup=['. /tmp/exact.env','node checks/bootstrap.mjs'];
   const baseCommand=preparation?.nativeCommand??(initialized?`. /tmp/exact.env && node checks/bootstrap.mjs && npm test > "$LOG" 2>&1`:complex?`/bin/zsh -lc 'set -e\nsource setup.env\nnpm test > "$LOG" 2>&1'`:'/bin/zsh -lc \'npm test > check.log 2>&1\'');
   const command=outerShell?"/bin/zsh -lc '"+baseCommand.replaceAll("'","'\\''")+"'":baseCommand;
   const oldCommand={turnId:oldId,command,status:'inProgress',exitCode:null,output:'Original saved output'};
   const map={'src/a.mjs':hash('candidate'),'checks.json':hash('fixture config')};
-  const report={attemptMarker:a.marker,summary:'Original delivery is immutable',changedPaths:['src/a.mjs'],verificationInputs:['src'],acceptanceResults:[{criterionId:'AC',status:criterion,evidence:criterion==='PASS'?'Original result':'Original host exit was unknown'}],commandsRun:[{command:'npm test',cwd,exitCode:criterion==='PASS'?0:null}],frozenInputs:{files:map}};
+  const report={attemptMarker:a.marker,summary:'Original delivery is immutable',changedPaths:['src/a.mjs'],verificationInputs:compound?['src','checks.json']:['src'],acceptanceResults:[{criterionId:'AC',status:criterion,evidence:criterion==='PASS'?'Original result':'Original host exit was unknown'}],commandsRun:[{command:'npm test',cwd,exitCode:criterion==='PASS'?0:null}],frozenInputs:{files:map}};
   if(initialized)report.commandsRun[0].command=baseCommand;
   if(manifest){const body=JSON.stringify({files:map});await writeFile(join(cwd,'input-manifest.json'),body);report.verificationInputManifest='input-manifest.json';report.verificationInputManifestSha256=hash(body);}
   const raw=a.marker+'\n'+JSON.stringify(report)+(whitespace?'\n\n':'');
   const current={...run,turnId:currentId,status:'completed',outputs:[{text:raw,turnId:currentId}],commands:history?[]:[oldCommand]};
   if(history){const predecessor={...run,status:'interrupted',statusEvidence:{status:'interrupted',source:'persisted-turn-aborted'},commands:[oldCommand]};current.turnHistory=[predecessor,{...current}];current.turnAssociation={type:'interrupted-continuation',threadId:thread,marker:a.marker,turnIds:[oldId,currentId],links:[{fromTurnId:oldId,toTurnId:currentId,source:'native-interrupted-continuation'}]};}
   runs.set(a.marker,current);s=await engine.settle('owner',team.id,s.team.revision,'work',a.attemptId);
+  if(compactReceipt){const {deliveryHash}=await import('../src/delivery-preflight.mjs');s=await engine.store.update(team.id,'owner',s.team.revision,t=>{const attempt=t.tasks[0].attempts[0];attempt.memberSubmission={source:'authenticated-member',turnId:currentId,contractRevision:1,text:raw,deliveryHash:deliveryHash(raw),preflightVersion:1};attempt.observation.outputs[0].text=JSON.stringify({kind:'team-saved-delivery'});});s={team:s.team};current.outputs[0].text=JSON.stringify({kind:'team-saved-delivery'});}
   const fresh=structuredClone(current),receipt={...oldCommand,commandId,cwd,status:'completed',exitCode:0};
   if(history)fresh.turnHistory[0].commands=[receipt];else fresh.commands=[receipt];runs.set(a.marker,fresh);
   const input={taskId:'work',attemptId:a.attemptId,requestId:randomUUID(),note:'Associate the exact saved host receipt; do not execute tests',dryRun:false,commands:[{turnId:oldId,commandId}],inputProof:prepared?{kind:'prepared-command',requestId:preparation.requestId}:history?{kind:'report-file-map',field:'frozenInputs.files',basePath:'.',roots:['src','checks.json']}:{kind:'submitted-candidate'}};
@@ -160,4 +164,20 @@ test('prepared proof accepts an additional host shell wrapper and legacy metadat
  const g=await fixture(t,{history:true,prepared:true}),before=await g.saved(),path=join(g.engine.root,'command-logs',before.id,g.input.attemptId,g.preparation.requestId+'.json'),p=JSON.parse(await readFile(path,'utf8'));
  delete p.inputSnapshot;delete p.nativeCommand;delete p.requestHash;const bytes=JSON.stringify(p);await writeFile(path,bytes);
  await assert.rejects(()=>g.engine.reconcileVerification('owner',before.id,before.revision,g.input),/Legacy prepared command.*original report/);assert.equal(await readFile(path,'utf8'),bytes);assert.deepEqual(await g.saved(),before);
+});
+
+
+test('compound evidence repair reuses one saved independent review, retains changed preparation truth, and rejects stale candidates',async t=>{
+  const f=await fixture(t,{compound:true,outerShell:true,compactReceipt:true});await f.reviewWork();const before=await f.saved();
+  assert.equal(before.tasks[0].status,'submitted');assert.ok(before.tasks[1].attempts[0].acceptanceException);
+  const metaPath=join(f.engine.root,'command-logs',f.team.id,f.input.attemptId,f.preparation.requestId+'.json'),meta=await readFile(metaPath);
+  await assert.rejects(()=>f.engine.reconcileVerification('owner',f.team.id,before.revision,{...f.input,inputProof:{kind:'prepared-command',requestId:f.preparation.requestId}}),/Prepared verification inputs changed/);
+  const preview=await f.engine.reconcileVerification('owner',f.team.id,before.revision,{...f.input,dryRun:true});assert.equal(preview.verifiedChecks[0].observed,true);assert.deepEqual(await f.saved(),before);
+  await f.engine.reconcileVerification('owner',f.team.id,before.revision,f.input);const after=await f.saved();
+  assert.equal(after.tasks[0].status,'accepted');assert.equal(after.tasks[1].status,'accepted');assert.equal(after.tasks[0].attempts.length,1);assert.equal(after.tasks[1].attempts.length,1);
+  assert.deepEqual(after.tasks[0].attempts[0].observation,before.tasks[0].attempts[0].observation);assert.deepEqual(after.tasks[1].evidence,before.tasks[1].evidence);assert.ok((await readFile(metaPath)).equals(meta));
+  assert.equal(after.tasks[0].attempts[0].delivery.verifiedCommands[0].match,'direct-compound');validateTeam(after);
+  const cold=new LeaderEngine({root:join(f.root,'records'),observer:f.observer});t.after(()=>cold.close());assert.equal((await cold.native('owner',f.team.id)).tasks[0].status,'accepted');
+  assert.equal((await cold.reconcileVerification('owner',f.team.id,1,f.input)).replayed,true);
+  const g=await fixture(t,{compound:true});await writeFile(join(g.cwd,'src/a.mjs'),'later change');const old=await g.saved();await assert.rejects(()=>g.engine.reconcileVerification('owner',g.team.id,old.revision,g.input),/changed after submission/);assert.deepEqual(await g.saved(),old);
 });

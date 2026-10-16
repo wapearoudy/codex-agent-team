@@ -54,7 +54,7 @@ export function buildHandoff(team,taskId){
     contract:task.contract??null,repairFindingIds:task.repairFindingIds??[],member:{id:task.memberId,role:member?.role??'',responsibility:(['running','submitted','accepted'].includes(task.status)?task.attempts.at(-1)?.memberGoalSnapshot?.goal:null)??member?.responsibility??'',writeScopes:member?.writeScopes??[]},
     dependencies:(task.dependencies??[]).map(d=>{
       const upstream=team.tasks.find(t=>t.id===d.taskId),attemptId=upstream?.attempts.at(-1)?.id??null;
-      return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,candidate:upstream?.attempts.at(-1)?.candidate??null,workspace:team.members.find(m=>m.id===upstream?.memberId)?.workspace??null,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};
+      return {taskId:d.taskId,when:d.when,status:upstream?.status??'unknown',attemptId,...(upstream?.attempts.at(-1)?.acceptance?{acceptanceReference:{tool:'read_team_context',view:'evidence',taskId:d.taskId,attemptId,section:'acceptance'}}:{}),candidate:upstream?.attempts.at(-1)?.candidate??null,workspace:team.members.find(m=>m.id===upstream?.memberId)?.workspace??null,evidence:(upstream?.evidence??[]).filter(e=>attemptId!==null&&e.attemptId===attemptId)};
     }),checkpoint,requiresLeaderDispatch:true});
 }
 
@@ -72,7 +72,7 @@ export function validateCheckpoints(team){
     if(requests.has(data.requestId)||JSON.stringify(data)!==JSON.stringify({taskId:c.taskId,attemptId:c.attemptId,requestId:c.requestId,summary:c.summary,decisions:c.decisions,remainingWork:c.remainingWork,validation:c.validation,evidence:c.evidence}))throw new Error('Invalid checkpoint normalized payload');
     const task=team.tasks.find(t=>t.id===c.taskId),attempt=task?.attempts.find(a=>a.id===c.attemptId);
     if(!attempt||!c.threadId||!c.turnId||attempt.agentThreadId!==c.threadId||!attemptTurnIds(attempt).includes(c.turnId)||(attempt.memberId??task.memberId)!==c.memberId||!team.members.some(m=>m.id===c.memberId))throw new Error('Checkpoint identity mismatch');
-    if(attempt.turnId!==c.turnId&&!['0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Historical checkpoints require Team Workspace 0.21.0');
+    if(attempt.turnId!==c.turnId&&!['0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.48','0.40.49','0.40.50','0.40.51','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Historical checkpoints require Team Workspace 0.21.0');
     ids.add(c.id.toLowerCase());requests.add(data.requestId);
   }
 }

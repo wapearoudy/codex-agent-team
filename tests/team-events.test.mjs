@@ -38,7 +38,7 @@ test('stop and resume wake saved-state waits and stop takes priority over dispat
 
 test('event waits time out without mutating, approving or reading historical/native evidence',async()=>{
   const f=await fixture(),before=await f.engine.native('owner',f.team.id);
-  const event=await waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:before.revision,timeoutMs:20});assert.equal(event.status,'timeout');assert.equal(event.nextTool,'wait_team_event');assert.equal(event.readRequired,false);
+  const event=await waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:before.revision,timeoutMs:20});assert.equal(event.status,'timeout');assert.equal(event.nextTool,'team_leader');assert.equal(event.readRequired,false);
   assert.equal((await waitTeamEvent(f.engine.store,'owner',f.team.id,{revision:before.revision,timeoutMs:0})).status,'timeout');
   assert.deepEqual(await f.engine.native('owner',f.team.id),before);assert.equal(f.nativeReads(),0);
 });

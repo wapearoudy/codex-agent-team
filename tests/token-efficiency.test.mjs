@@ -12,6 +12,7 @@ import {teamResponse,advancementResponse,detailToken} from '../src/team-response
 import {COORDINATION_MAX_BYTES} from '../src/team-coordination-response.mjs';
 import {largeDisplayFixture} from './fixtures/large-display.mjs';
 import {evidencePage} from '../src/team-evidence.mjs';
+import {settlementInputHash} from '../src/settlement-exception.mjs';
 
 const time=n=>`2026-10-10T03:${String(n).padStart(2,'0')}:00.000Z`;
 const u=n=>({totalTokens:n,inputTokens:n-10,cachedInputTokens:Math.max(0,n-20),outputTokens:10});
@@ -88,11 +89,30 @@ test('terminal waits observe only active attempts and never enumerate Leader acc
  const result=await engine.terminalSnapshot('owner','team');assert.deepEqual(inspections,['child']);assert.deepEqual(result,{team:{revision:4},workflow:{actions:[{type:'settle',taskId:'active',attemptId:'current',observedStatus:'completed'}]}});assert.ok(JSON.stringify(result).length<300);
 });
 
+test('unchanged rejected terminal evidence does not repeatedly wake settlement, while new evidence can',async t=>{
+ const root=await mkdtemp(join(tmpdir(),'rejected-wake-'));let run={threadId:'child',turnId:'turn',status:'completed',outputs:[{text:'Original mismatched report'}],commands:[]};
+ const engine=new LeaderEngine({root,observer:{async inspect(){return structuredClone(run);},async teamUsage(){throw Error('No accounting in terminal wait');}}});t.after(async()=>{await engine.close();await rm(root,{recursive:true,force:true});});
+ const task={id:'work',memberId:'dev',status:'running',contractRevision:1,contract:{stage:'implementation'},acceptanceCriteria:[{id:'AC',description:'Behavior correct'}],attempts:[{id:'attempt',state:'running',agentThreadId:'child',turnId:'turn',marker:'MARK'}]},team={revision:4,leaderThreadId:'leader',projectPath:root,members:[{id:'dev',workspace:{path:root}}],tasks:[task]};
+ task.attempts[0].settlementException={inputHash:settlementInputHash(team,task,run),reason:'Missing required check'};const before=structuredClone(team);engine.native=async()=>team;
+ assert.deepEqual((await engine.terminalSnapshot('owner','team')).workflow.actions,[]);
+ assert.deepEqual((await engine.terminalSnapshot('owner','team')).workflow.actions,[]);assert.deepEqual(team,before);
+ run={...run,outputs:[{text:'Corrected actual report'}]};assert.equal((await engine.terminalSnapshot('owner','team')).workflow.actions[0].type,'settle');
+ run={...run,outputs:before.tasks[0].attempts[0].observation?.outputs??[{text:'Original mismatched report'}]};task.contractRevision++;assert.equal((await engine.terminalSnapshot('owner','team')).workflow.actions[0].type,'settle');
+});
+
+test('known Leader exceptions return their action without an automatic wait continuation',()=>{
+ for(const type of ['settlement-exception','review-exception','reconcile-review','plan-repair','accept-light-delivery']){
+  const data=largeDisplayFixture();data.workflow={stage:'verify',actions:[{type,taskId:data.team.tasks[0].id,attemptId:data.team.tasks[0].attempts.at(-1).id,requiresLeaderValidation:true,reason:'Original actionable mismatch'}]};
+  const response=advancementResponse(data);assert.equal(response.requiresLeaderAction,true);assert.equal(response.nextAction,'resolve-exception');assert.equal(response.continuationArgs,undefined);assert.equal(response.actions[0].type,type);assert.equal(response.actions[0].reason,'Original actionable mismatch');
+ }
+ const data=largeDisplayFixture();data.workflow={stage:'observe',actions:[]};assert.equal(advancementResponse(data).continuationArgs.wait,true);
+});
+
 test('coordination cursors ignore logs and usage ticks but catch stop, terminal, new attempts and inbox changes',()=>{
  const data=largeDisplayFixture();data.team.leaderThreadId='leader';data.workflow={stage:'observe',actions:[]};data.usage={totalTokens:100};const first=teamResponse(data,'coordination');assert.ok(Buffer.byteLength(JSON.stringify(first))<COORDINATION_MAX_BYTES);assert.equal(first.runs,undefined);assert.equal(first.team,undefined);assert.equal(first.detailToken,undefined);
  const changed=structuredClone(data);changed.runs[0].observedAt='2030-01-01T00:00:00Z';changed.runs[0].commands[0].output+='Updated long log';changed.usage.totalTokens=200;assert.equal(teamResponse(changed,'coordination','team-summary',{cursor:first.cursor}).kind,'team-unchanged');assert.ok(JSON.stringify(teamResponse(changed,'coordination','team-summary',{cursor:first.cursor})).length<350);
  const tick=structuredClone(data);tick.team.revision++;assert.equal(teamResponse(tick,'coordination','team-summary',{cursor:first.cursor}).kind,'team-unchanged');
- for(const mutate of [d=>d.team.goal='Changed approved goal',d=>d.runs.at(-1).observationIssue={kind:'verification-failed',at:'2030-01-01'},d=>d.team.executionControl={status:'stopping'},d=>d.runs.at(-1).status='completed',d=>d.runs.at(-1).turnId='new',d=>d.team.peerMessages=[{id:'message',recipientThreadId:'leader',status:'queued'}]]){const next=structuredClone(data);mutate(next);assert.notEqual(teamResponse(next,'coordination','team-summary',{cursor:first.cursor}).kind,'team-unchanged');}
+ for(const mutate of [d=>d.team.goal='Changed approved goal',d=>d.team.tasks[0].attempts.at(-1).settlementException={inputHash:'new-rejected-evidence'},d=>d.team.tasks[0].attempts.at(-1).acceptanceException={inputHash:'new-review-exception'},d=>d.runs.at(-1).observationIssue={kind:'verification-failed',at:'2030-01-01'},d=>d.team.executionControl={status:'stopping'},d=>d.runs.at(-1).status='completed',d=>d.runs.at(-1).turnId='new',d=>d.team.peerMessages=[{id:'message',recipientThreadId:'leader',status:'queued'}]]){const next=structuredClone(data);mutate(next);assert.notEqual(teamResponse(next,'coordination','team-summary',{cursor:first.cursor}).kind,'team-unchanged');}
  assert.equal(teamResponse({...data,team:{...data.team,peerMessages:[{id:'m',recipientThreadId:'leader',status:'queued'}]}},'coordination').inbox.readRequired,true);
  assert.equal(teamResponse(data,'full').runs[0].commands[0].output.length,data.runs[0].commands[0].output.length);
 });
@@ -140,4 +160,27 @@ test('panel evidence tokens ignore historical logs and activity but detect same-
  const data=largeDisplayFixture(),token=detailToken(data);data.runs[0].commands[0].output='historical change';data.runs.at(-1).usage={totalTokens:400};data.runs.at(-1).progress=[{text:'New activity'}];assert.equal(detailToken(data),token);
  const current=data.runs.at(-1);current.commands[0].output=current.commands[0].output.replace('中文','变化');assert.notEqual(detailToken(data),token);
  const team={id:'team',tasks:[{id:'work',contractRevision:1,attempts:[{id:'a',turnId:'turn',observation:{commands:[{command:'check',status:'completed',exitCode:0,output:'PASS'}]}}]}]},list=evidencePage(team,{taskId:'work',section:'commands'});team.tasks[0].attempts[0].observation.commands[0].output='FAIL';assert.throws(()=>evidencePage(team,{taskId:'work',section:'commands',cursor:list.cursor}),/different native results/);
+});
+
+test('authenticated native fork skips inherited parent counters/events until its own settings boundary',async t=>{
+ const f=await nativeFixture(t),path=f.records.get('member').path;
+ const row=(type,payload)=>JSON.stringify({timestamp:time(20),type,payload})+'\n';
+ const header=row('session_meta',{id:'member',source:{subagent:{thread_spawn:{parent_thread_id:'leader'}}}});
+ const inherited=row('session_meta',{id:'leader'})+row('event_msg',{type:'task_started',turn_id:'parent-turn'})+event('leader',900000,time(20))+row('event_msg',{type:'agent_message',turn_id:'parent-turn',message:'Parent delivery must not become child evidence'});
+ await writeFile(path,header+inherited);const thread=f.records.get('member'),feed=new NativePublicFeed({sessionsRoot:f.root});
+ assert.equal((await feed.usageWindow(thread,{since:time(10)})).complete,false);assert.equal((await feed.read(thread,'parent-turn')).events.length,0);
+ await appendFile(path,row('event_msg',{type:'thread_settings_applied',thread_id:'member'})+row('event_msg',{type:'task_started',turn_id:'turn'})+event('member',70,time(25))+row('event_msg',{type:'agent_message',turn_id:'turn',message:'Child delivery'}));
+ const result=await feed.usageWindow(thread,{since:time(10)}),own=await feed.read(thread,'turn');assert.equal(result.usage.totalTokens,70);assert.equal(result.complete,true);assert.equal(own.usage.totalTokens,70);assert.equal(own.events.at(-1).text,'Child delivery');assert.equal(own.contextIsolation.inheritedParentContext,true);assert.equal(own.contextIsolation.ownBoundaryVerified,true);assert.equal((await feed.read(thread,'parent-turn')).events.length,0);
+ // An identity record appearing after native child work is never a new fork.
+ await appendFile(path,row('session_meta',{id:'leader'}));for(let i=0;i<2;i++)await assert.rejects(()=>feed.read(thread,'turn'),/identity mismatch/);
+});
+
+test('parent-prefix recognition requires matching canonical and host parents and the exact child boundary',async t=>{
+ const f=await nativeFixture(t),thread=f.records.get('member'),row=(type,payload)=>JSON.stringify({type,payload})+'\n';
+ for(const nativeParent of ['foreign',undefined]){
+  await writeFile(thread.path,row('session_meta',{id:'member',source:{subagent:{thread_spawn:{parent_thread_id:'leader'}}}})+row('session_meta',{id:'leader'}));
+  await assert.rejects(()=>new NativePublicFeed({sessionsRoot:f.root}).read({...thread,parentThreadId:nativeParent},'turn'),/identity mismatch/);
+ }
+ await writeFile(thread.path,row('session_meta',{id:'member',source:{subagent:{thread_spawn:{parent_thread_id:'leader'}}}})+row('session_meta',{id:'leader'})+row('event_msg',{type:'thread_settings_applied',thread_id:'foreign'})+event('member',999,time(20)));
+ const result=await new NativePublicFeed({sessionsRoot:f.root}).usageWindow(thread,{since:time(10)});assert.equal(result.complete,false);assert.equal(result.usage,null);
 });

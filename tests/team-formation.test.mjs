@@ -26,7 +26,7 @@ test('formation edits invalidate old confirmations, reject embedded tasks and pr
  const invalid={...configuration,plan:{...configuration.plan,tasks}};await assert.rejects(()=>f.engine.revisePlan('owner',t.id,t.revision,invalid),/formation does not confirm/);assert.equal((await f.saved()).revision,t.revision);assert.equal(planHash((await f.engine.readPlan('owner',t.id)).configuration),t.planReview.hash);t.requiresTeamWorkspaceVersion='0.17.0';assert.throws(()=>validateTeam(t),/formation requires/);
 });
 test('formation workflow uses native internal coordination with no panel chat offer',async()=>{
- const f=await fixture(),data=await f.approve(),coordination=new TeamCoordination(f.root);assert.equal((await coordination.reserve('owner',data)).firstOffer,false);assert.equal(data.workflow.communication.chatMessages,false);assert.equal(data.workflow.communication.waitTool,'wait_team_event');assert.equal(data.workflow.actions[0].requiresUserConfirmation,false);
+ const f=await fixture(),data=await f.approve(),coordination=new TeamCoordination(f.root);assert.equal((await coordination.reserve('owner',data)).firstOffer,false);assert.equal(data.workflow.communication.chatMessages,false);assert.equal(data.workflow.communication.waitTool,'team_leader');assert.equal(data.workflow.actions[0].requiresUserConfirmation,false);
  const added=await f.engine.addTasks('owner',f.team.id,data.team.revision,tasks);assert.equal(added.workflow.actions.some(a=>a.type==='plan-tasks'),false);assert.equal((await coordination.reserve('owner',added)).firstOffer,false);
 });
 test('pending legacy plans can switch to formation-only while retaining the original task plan in history',async()=>{

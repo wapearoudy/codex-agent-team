@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {assertContractDelivery} from '../src/team-quality.mjs';
-import {verificationCommandMatches,contractCommandEvidence,initializationBinding} from '../src/verification-command.mjs';
+import {verificationCommandMatches,contractCommandEvidence,initializationBinding,compoundVerificationBinding} from '../src/verification-command.mjs';
 
 const observed=(command,expected='npm run typecheck',record={})=>assertContractDelivery(
   {kind:'work',acceptanceCriteria:[{id:'check'}],contract:{verify:[expected]}},
@@ -120,4 +120,63 @@ test('declared initialization preserves exact argv, cwd and failure semantics wi
   assert.equal(initializationBinding(command,required,{cwd:'/project',workspace:'/project',initializationCommands:['. /other.env','python3 audit/warm.py']}),null);
   assert.equal(initializationBinding(command,required.replace('LegacyTest','OtherTest'),{cwd:'/project',workspace:'/project'}),null);
   for(const bad of [{status:'failed',exitCode:1},{status:'completed',exitCode:null},{status:'inProgress',exitCode:null}])assert.equal(contractCommandEvidence([required],[row,{...row,...bad,verificationBinding:undefined}],{workspace:'/project'})[0].observed,false);
+});
+
+
+test('direct edit then verification chains preserve terminal argv, native cwd, outcomes and full evidence',()=>{
+  const required='python3 -m unittest discover -s . -p "test*.py" -v';
+  const chain="python3 -c 'p=\"test_extra.py\"; s=open(p).read().replace(\"old\", \"new\"); open(p,\"w\").write(s)' && "+required;
+  const wrap=s=>"/bin/zsh -lc "+JSON.stringify("/bin/zsh -c '"+s.replaceAll("'","'\\''")+"' > '/project/log.txt' 2>&1");
+  const options={cwd:'/project',workspace:'/project'};
+  for(const actual of [chain,wrap(chain),"cd /project && "+chain,"node -e 'require(\"fs\").writeFileSync(\"a\",\"b\")' && "+required]){
+    assert.ok(compoundVerificationBinding(actual,required,options),actual);
+    const row={command:actual,cwd:'/project',commandId:'native',turnId:'own',status:'completed',exitCode:0};
+    const evidence=contractCommandEvidence([required],[row],options)[0];
+    assert.equal(evidence.observed,true);assert.equal(evidence.match,'direct-compound');assert.equal(evidence.hostCommand,actual);assert.equal(evidence.commandId,'native');assert.equal(evidence.turnId,'own');
+    for(const bad of [{status:'failed',exitCode:1},{status:'completed',exitCode:null},{status:'inProgress',exitCode:null}]){
+      assert.equal(contractCommandEvidence([required],[row,{...row,...bad}],options)[0].observed,false);
+      assert.equal(contractCommandEvidence([required],[{...row,...bad},row],options)[0].observed,true);
+    }
+    for(const cwd of [undefined,'relative','/other'])assert.equal(compoundVerificationBinding(actual,required,{cwd,workspace:'/other-target'}),null);
+  }
+  for(const bad of [chain+' && true',chain+'; true',chain+' || true',chain+' | cat',chain+' &',chain.replace(' && ','; '),chain.replace(' && ',' || '),"python3 -c 'print(\""+required+"\")'", "sh -c 'true' && "+required,"source /tmp/setup && "+required,"export PATH=/evil && "+required,"python3 -c \"$CODE\" && "+required,"python3 -c 'pass' && cd /other && "+required,"python3 -c 'pass' && echo '"+required+"'",chain.replace(' -v',' -q')])assert.equal(compoundVerificationBinding(bad,required,options),null,bad);
+});
+
+test('literal test-runner argv accepts quote spelling, never expansion, a different cwd or a hidden failure',()=>{
+ const required='python3 -m unittest discover -s . -p "test*.py" -v',actual="python3 -m unittest discover -s . -p 'test*.py' -v",options={cwd:'/project',workspace:'/project'};
+ assert.equal(verificationCommandMatches(actual,required,options),true);
+ const quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
+ const wrapped='/bin/zsh -lc '+quote('/bin/zsh -c '+quote(actual)+" > '/tmp/verification.log' 2>&1");
+ assert.equal(verificationCommandMatches(wrapped,required,options),true);
+ assert.equal(contractCommandEvidence([required],[{command:wrapped,cwd:'/project',status:'completed',exitCode:0}],{workspace:'/project'})[0].observed,true);
+ for(const exitCode of [1,null])assert.equal(contractCommandEvidence([required],[{command:wrapped,cwd:'/project',status:'completed',exitCode}],{workspace:'/project'})[0].observed,false);
+ for(const bad of [actual.replace("'test*.py'",'test*.py'),actual.replace("'test*.py'",'"$pattern"'),actual+' || true','echo '+actual,actual.replace('python3',"'python3 -m unittest'"),actual.replace("'test*.py'","'test_store.py'")])assert.equal(verificationCommandMatches(bad,required,options),false,bad);
+ assert.equal(verificationCommandMatches(actual,required,{cwd:'/other',workspace:'/project'}),false);
+ assert.equal(verificationCommandMatches(actual,required),false,'unknown cwd cannot gain inferred equivalence');
+ assert.equal(verificationCommandMatches(actual,required,{cwd:'C:\\project',workspace:'C:\\project'}),false,'POSIX equivalence must not infer Windows shell rules');
+ assert.equal(verificationCommandMatches("'X=1' python3 -V",'X=1 python3 -V',options),false);
+});
+
+test('literal all-unittest AND chains authenticate every covered command only on an actual terminal zero',()=>{
+ const required='python3 -m unittest test_store -v',extra='python3 -m unittest test_extra_store -v',chain=required+' && '+extra,options={cwd:'/project',workspace:'/project'},quote=s=>"'"+s.replaceAll("'","'\\''")+"'";
+ for(const actual of [chain,extra+' && '+required,'/bin/zsh -lc '+quote('/bin/zsh -c '+quote(chain)+" > '/project/original.log' 2>&1")]){
+  for(const expected of [required,extra]){assert.ok(compoundVerificationBinding(actual,expected,options));const row={command:actual,cwd:'/project',commandId:'saved-native',turnId:'actual',status:'completed',exitCode:0};assert.equal(contractCommandEvidence([expected],[row],options)[0].observed,true);
+   for(const bad of [{status:'failed',exitCode:1},{status:'completed',exitCode:null},{status:'inProgress',exitCode:null}])assert.equal(contractCommandEvidence([expected],[row,{...row,...bad}],options)[0].observed,false);
+  }
+ }
+ for(const bad of [chain+' || true',chain+'; true',chain+' | cat',chain+' && echo PASS',required+' && cd /other && '+extra,required+' && python3 -c '+quote('raise SystemExit(0)'),required+' && '+required,required+' && python3 -m unittest "$SUITE" -v'])assert.equal(compoundVerificationBinding(bad,required,options),null,bad);
+ assert.equal(compoundVerificationBinding(chain,required,{cwd:'/other',workspace:'/project'}),null);
+});
+
+test('one successful named unittest command covers its explicit original module without rerunning it',()=>{
+ const required='python3 -m unittest test_http -v',actual='python3 -m unittest test_http test_extra_http -v',options={cwd:'/project',workspace:'/project'};
+ const binding=compoundVerificationBinding(actual,required,options);assert.deepEqual(binding.coverage,{requiredModules:['test_http'],executedModules:['test_http','test_extra_http']});
+ for(const command of [actual,"/bin/zsh -lc '"+actual+"'",actual+" > '/saved/log' 2>&1","cd '/project' && "+actual]){
+  const record={command,cwd:'/project',commandId:'original-host-command',turnId:'original-turn',status:'completed',exitCode:0};
+  const evidence=contractCommandEvidence([required],[record],options)[0];assert.equal(evidence.observed,true);assert.equal(evidence.hostCommand,command);assert.equal(evidence.commandId,'original-host-command');
+  for(const newer of [{status:'completed',exitCode:1},{status:'completed',exitCode:null},{status:'inProgress',exitCode:null}])assert.equal(contractCommandEvidence([required],[record,{...record,...newer,commandId:'newer'}],options)[0].observed,false);
+ }
+ for(const bad of [actual.replace('test_http ','other '),actual+' -k smoke',actual+' -f',actual.replace(' -v',' -q'),actual.replace('python3','python'),actual.replace('test_extra_http','"$SUITE"'),actual.replace('test_extra_http','test_http'),actual+' || true',actual+'; true','echo '+actual,'python3 -m unittest discover -v'])assert.equal(compoundVerificationBinding(bad,required,options),null,bad);
+ assert.equal(compoundVerificationBinding(actual,required,{cwd:'/other',workspace:'/project'}),null);
+ assert.equal(compoundVerificationBinding(actual,required,{workspace:'/project'}),null);
 });

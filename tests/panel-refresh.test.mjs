@@ -180,8 +180,61 @@ test('panel surfaces registration gaps and cache breakdown, clears repaired gaps
   });
   await expect(page.locator('#executionNotice')).toBeVisible();await expect(page.locator('#executionNotice')).toContainText('避免重复执行');await expect(page.locator('#usageSummary')).toContainText('缓存输入 100');await expect(page.locator('#usageSummary')).toContainText('新增输入 40');
   await page.locator('#showRegistration').click();await expect(page.locator('#recordOutput')).toContainText('fallback');await expect(page.locator('#recordOutput')).not.toContainText('leader');assert.deepEqual(await page.evaluate(()=>window.calls.map(c=>c.name)),['read_team_usage']);
+  await page.evaluate(async()=>{await window.view.accept({...window.data,kind:'team-state',registrationGap:{count:0,pendingCount:1,pendingTasks:[{taskId:'work',status:'starting'}]},observedAt:new Date().toISOString()});});
+  await expect(page.locator('#executionNotice')).toContainText('成员正在关联任务');await expect(page.locator('#showRegistration')).toBeHidden();
+  await page.evaluate(async()=>{await window.view.accept({...window.data,kind:'team-state',registrationGap:{count:1,pendingCount:0,records:[{taskId:'work',status:'startup-overdue'}]},observedAt:new Date().toISOString()});});
+  await expect(page.locator('#executionNotice')).toContainText('work · 启动关联超时');
   await page.evaluate(async()=>{await window.view.accept({kind:'team-state',team:{id:'team',revision:2},runs:[],detailToken:'same',pluginVersion:'0.25.0',registrationGap:null,usage:window.data.usage,observedAt:new Date().toISOString()});});await expect(page.locator('#executionNotice')).toBeHidden();await expect(page.locator('#taskList')).toContainText('待执行');
   await page.evaluate(async()=>{await window.view.accept({kind:'team-state',team:{id:'team',revision:2},runs:[],detailToken:'same',pluginVersion:'0.24.0',registrationGap:null,usage:window.data.usage,observedAt:new Date().toISOString()});});await expect(page.locator('#executionNotice')).toContainText('面板与连接版本不一致');await expect(page.locator('#showRegistration')).toBeHidden();
   await page.screenshot({path:'evidence/v5-connection-version-notice.png'});await page.evaluate(()=>window.view.close());
+ }finally{await browser.close();await new Promise(r=>server.close(r));}
+});
+
+test('panel sync key only permits exact terminal registration on an active authorized current team',async()=>{
+ const {panelProgressKey}=await import('../src/team-view.mjs'),data={panelProgressSync:true,team:{id:'team',revision:3,mode:'host-leader',state:'active',dispatchPaused:false,planReview:{status:'approved'}},workflow:{actions:[{type:'settle',taskId:'work',attemptId:'attempt'},{type:'claim-batch',taskIds:['next']}]}};
+ assert.ok(panelProgressKey(data));assert.equal(panelProgressKey({...data,observedAt:'later'}),panelProgressKey(data));
+ for(const mutate of [d=>d.panelProgressSync=false,d=>d.team.state='archived',d=>d.team.state='delivered',d=>d.team.dispatchPaused=true,d=>d.team.executionControl={status:'stopping'},d=>d.team.planReview.status='pending',d=>d.workflow.actions=[{type:'settlement-exception'}],d=>d.workflow.actions=[{type:'claim-batch'}]]){const copy=structuredClone(data);mutate(copy);assert.equal(panelProgressKey(copy),null);}
+});
+test('panel receives and registers completed review internally without a Leader model turn, duplicate sync or dispatch',async()=>{
+ const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>',''),server=createServer(async(req,res)=>{if(!['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'].includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch({channel:'chrome',headless:true});try{
+  const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);await page.evaluate(async()=>{
+   const {setupTeamView}=await import('/team-view.mjs');window.syncCalls=[];
+   const team={id:'team',mode:'host-leader',projectPath:'/fixture',leaderThreadId:'leader',goal:'Completed independent review',revision:2,state:'active',dispatchPaused:false,members:[{id:'qa',role:'Reviewer',writeScopes:[],responsibility:'Independent review',agentThreadId:'child'}],tasks:[{id:'review',title:'Review',memberId:'qa',kind:'review',status:'running',dependencies:[],attempts:[{id:'attempt',state:'running',agentThreadId:'child',turnId:'turn'}],evidence:[]}]};
+   window.original={kind:'team-detail',panelProgressSync:true,team,runs:[{taskId:'review',memberId:'qa',attemptId:'attempt',threadId:'child',turnId:'turn',status:'completed',connection:'snapshot',outputs:[{text:'Retained independent PASS'}]}],detailToken:'same',workflow:{actions:[{type:'settle',taskId:'review',attemptId:'attempt'}]},observedAt:new Date().toISOString()};
+   window.view=setupTeamView({async callServerTool({name,arguments:args}){
+    if(name==='open_team_workspace')return {structuredContent:{kind:'team-workspace',context:{cwd:'/fixture'},teams:[{id:'team'}]}};
+    if(name==='sync_team_progress'){window.syncCalls.push({name,args});return new Promise(resolve=>window.releaseSync=()=>{const updated=structuredClone(window.original);updated.team.revision=3;updated.team.tasks[0].status='accepted';updated.workflow.actions=[{type:'final-validation'}];resolve({structuredContent:updated});});}
+    if(name==='read_team')return {structuredContent:structuredClone(window.original)};
+    throw new Error('Unexpected model, chat, command or dispatch operation '+name);
+   }});await window.view.connect();await window.view.accept(structuredClone(window.original));
+  });
+  await expect.poll(()=>page.evaluate(()=>window.syncCalls.length)).toBe(1);await expect(page.locator('[data-task-id="review"]')).toContainText('待 Leader 接收');
+  await page.evaluate(()=>window.releaseSync());await expect(page.locator('[data-task-id="review"]')).toContainText('已验收');assert.deepEqual(await page.evaluate(()=>window.syncCalls),[{name:'sync_team_progress',args:{teamId:'team',revision:2}}]);
+  await page.evaluate(async()=>{const blocked=structuredClone(window.original);blocked.team.revision=4;blocked.team.tasks[0].attempts[0].settlementException={reason:'Exact original contract mismatch'};blocked.workflow.actions=[{type:'settlement-exception',taskId:'review',attemptId:'attempt'}];await window.view.accept(blocked);window.blocked=blocked;});
+  await expect(page.locator('[data-task-id="review"]').first()).toContainText('阻塞');await page.locator('[data-task-id="review"]').first().click();await expect(page.locator('#taskDetail')).toContainText('Exact original contract mismatch');
+  await page.evaluate(async()=>{const reopened=structuredClone(window.blocked);reopened.team.revision=5;reopened.team.tasks[0].status='waiting';reopened.team.tasks[0].attempts[0].acceptance={source:'old-independent-review'};await window.view.accept(reopened);});await expect(page.locator('#taskDetail')).toContainText('保留历史验收记录，当前任务尚未验收');await expect(page.locator('#taskDetail')).not.toContainText('独立审核通过 · 插件校验已登记');
+  await page.evaluate(async()=>{await window.view.accept(structuredClone(window.original));window.view.close();});assert.equal(await page.evaluate(()=>window.syncCalls.length),1);
+ }finally{await browser.close();await new Promise(r=>server.close(r));}
+});
+test('startup blocker is prominent and clears when a verified binding makes dispatch ready',async()=>{
+ const html=(await readFile('src/host.html','utf8')).replace('<script>/*__BUNDLE__*/</script>','');
+ const routes=['/','/team-view.mjs','/team-projection.mjs','/team-naming.mjs','/panel-plan-start.mjs'];
+ const server=createServer(async(req,res)=>{if(!routes.includes(req.url)){res.statusCode=404;res.end();return;}res.setHeader('Content-Type',req.url==='/'?'text/html':'text/javascript');res.end(req.url==='/'?html:await readFile('src'+req.url,'utf8'));});await new Promise(r=>server.listen(0,'127.0.0.1',r));
+ const browser=await chromium.launch({channel:'chrome',headless:true});try{
+  const page=await browser.newPage();await page.goto('http://127.0.0.1:'+server.address().port);
+  await page.evaluate(async()=>{
+   const {setupTeamView}=await import('/team-view.mjs');
+   const team={id:'startup',mode:'host-leader',projectPath:'/project',leaderThreadId:'leader',goal:'Startup diagnostic fixture',revision:2,state:'active',memberStartup:'eager',members:[{id:'dev',role:'Developer',responsibility:'Implement',writeScopes:['keys.py'],status:'planned',rosterVerified:false}],tasks:[{id:'work',title:'Normalize keys',memberId:'dev',kind:'work',goal:'Implement behavior',acceptance:'Pass',status:'waiting',dependencies:[],attempts:[],evidence:[]}]};
+   window.startupData={kind:'team-detail',team,runs:[],observedAt:new Date().toISOString(),readiness:[{taskId:'work',ready:false,blockers:[{code:'member-initialization',message:'预先初始化模式尚未完成原生成员绑定：Developer'}]}],workflow:{stage:'startup-blocked',waitBlocked:true,actions:[],startupBlockers:[{code:'member-initialization',message:'预先初始化模式尚未完成原生成员绑定：Developer'}]}};
+   window.mutations=[];window.view=setupTeamView({async callServerTool({name,arguments:args}){
+    if(name==='open_team_workspace')return {structuredContent:{kind:'team-workspace',context:{cwd:'/project'},teams:[{id:'startup'}]}};
+    if(name!=='read_team')window.mutations.push(name);
+    return {structuredContent:structuredClone(window.startupData)};
+   }});await window.view.connect();
+  });
+  await expect(page.locator('#overviewHeadline')).toHaveText('团队启动受阻');await expect(page.locator('#overviewStatus')).toHaveAttribute('data-state','blocked');await expect(page.locator('#overviewBlocker')).toContainText('Developer');await expect(page.locator('#overviewBlocker')).toBeVisible();
+  assert.deepEqual(await page.evaluate(()=>window.mutations),[]);
+  await page.evaluate(()=>{const d=window.startupData;d.team.revision++;d.team.members[0].agentThreadId='verified-child';d.team.members[0].rosterVerified=true;d.workflow={stage:'execute',actions:[{type:'claim-batch',taskIds:['work']}],startupBlockers:[]};d.readiness=[{taskId:'work',ready:true,blockers:[]}];window.view.accept(d);});
+  await expect(page.locator('#overviewBlocker')).toBeHidden();await expect(page.locator('#overviewHeadline')).toContainText('已就绪');assert.deepEqual(await page.evaluate(()=>window.mutations),[]);
  }finally{await browser.close();await new Promise(r=>server.close(r));}
 });

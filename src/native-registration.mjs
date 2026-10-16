@@ -15,6 +15,7 @@ const uuid=v=>{const h=hash(v);return h.slice(0,8)+'-'+h.slice(8,12)+'-5'+h.slic
 const terminal=s=>['completed','failed','interrupted'].includes(s);
 const text=v=>typeof v==='string'?v:Array.isArray(v)?v.map(text).join('\n'):v==null?'':JSON.stringify(v);
 export function registrationOptions(attempt){
+  if(attempt?.bootstrapSource==='authenticated-member-native-observation'&&attempt.bootstrapTurnId&&!attempt.nativeRegistration)return {bootstrapTurnId:attempt.bootstrapTurnId};
   return attempt?.nativeRegistration?{registration:{...attempt.nativeRegistration,turnIds:attemptTurnIds(attempt)}}:{};
 }
 // Format adaptation is lossless: raw public delivery and the exact transform

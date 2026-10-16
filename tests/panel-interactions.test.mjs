@@ -23,6 +23,15 @@ before(async()=>{const html=(await readFile('src/host.html','utf8')).replace('<s
  browser=await chromium.launch({channel:'chrome',headless:true});await mkdir(dir,{recursive:true});});
 after(async()=>{await browser.close();await new Promise(r=>server.close(r));});
 
+test('idle execution blocker is visible with exact task prerequisites and clears on resumed progress',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>{window.data.workflow={stage:'workflow-blocked',waitBlocked:true,actions:[],idleBlockers:[{taskId:'t3',code:'no-progress-path',message:'没有运行中的成员或可执行任务',reasons:[{code:'dependency',taskId:'t2',message:'等待 t2 验收'}]}]};});await update(page);
+  await expect(page.locator('#overviewHeadline')).toContainText('团队执行受阻');await expect(page.locator('#overviewBlocker')).toBeVisible();await expect(page.locator('#overviewBlocker')).toContainText('t3：');await expect(page.locator('#overviewBlocker')).toContainText('等待 t2 验收');
+  await page.screenshot({path:'evidence/delivery-blocker-0.40.42.png'});
+  await page.evaluate(()=>{window.data.workflow={stage:'execute',actions:[{type:'claim-batch',taskIds:['t3']}]};});await update(page);await expect(page.locator('#overviewBlocker')).toBeHidden();assert.equal(await page.evaluate(()=>window.sent.length),0);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+
 test('same-frame refresh preserves scrolling before the asynchronous scroll event arrives',async()=>{
  const {page,errors}=await open();try{
   const position=await page.evaluate(async()=>{window.scrollTo({top:350,behavior:'instant'});const before=window.scrollY;window.data.team.revision++;await window.view.accept(structuredClone(window.data));return {before,after:window.scrollY};});
@@ -55,6 +64,33 @@ test('validated delivery dependencies are distinct from raw submission in the re
  const {page,errors}=await open();try{await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t3').dependencies[0].when='delivered';const upstream=window.data.team.tasks.find(t=>t.id==='t2');upstream.status='submitted';upstream.attempts=[{runtimeStatus:'completed'}];upstream.deliveryReady=false;});await update(page);await page.locator('[data-task-id="t3"]').click();await expect(page.locator('#taskDetail')).toContainText('t2 有效交付后');await expect(page.locator('#taskDetail')).toContainText('等待有效交付');await page.evaluate(()=>{window.data.team.tasks.find(t=>t.id==='t2').deliveryReady=true;});await update(page);await expect(page.locator('#taskDetail')).toContainText('前置已满足');assert.deepEqual(errors,[]);}finally{await page.close();}
 });
 
+test('cancelled tasks leave the board and progress while execution history remains readable',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>{
+   const original=window.data.team.tasks[0];window.data.team.activeBatchId='current';window.data.team.taskPlanning='leader';window.data.team.batches=[{id:'current',goal:'取消任务不计入进度',state:'active'}];
+   window.data.team.tasks=Array.from({length:12},(_,i)=>({...structuredClone(original),id:'work-'+i,number:i+1,title:'任务 '+(i+1),batchId:'current',status:i<3?'cancelled':'accepted',dependencies:[],attempts:i===0?[{...original.attempts[0],state:'interrupted'}]:[],evidence:i===0?[{summary:'取消前的原报告和审查记录'}]:[]}));
+   window.data.runs=[{...window.data.runs[0],taskId:'work-0',status:'interrupted'}];window.data.readiness=[];
+   window.data.displayLimits={preview:true,totalTasks:12};window.originalCancelled=structuredClone(window.data.team.tasks[0]);
+  });await update(page);
+  await expect(page.locator('#headerSummary')).toHaveText('9/9 已验收');await expect(page.locator('#progressValue')).toHaveText('100%');await expect(page.locator('#progressSegments button')).toHaveCount(9);await expect(page.locator('#progressLegend .cancelled')).toHaveCount(0);
+  await expect(page.locator('#taskList .task-row')).toHaveCount(9);await expect(page.locator('#dependencyGraph .dependency-node')).toHaveCount(9);await expect(page.locator('[data-member-id="dev"] .task-chips .chip')).toHaveCount(9);await expect(page.locator('[data-member-id="dev"] .member-count')).toHaveText('9/9 已验收');await expect(page.locator('[data-focus-key="chip:work-3"]')).toHaveText('t4');
+  await expect(page.locator('#taskStatusFilter option[value="cancelled"]')).toHaveCount(0);await expect(page.locator('#workspacePreparation')).not.toContainText('9/12');
+  await page.screenshot({path:'evidence/panel-cancelled-tasks-0.40.32.png',fullPage:true});
+  await page.locator('#taskHistoryToggle').click();await expect(page.locator('#taskList .task-row')).toHaveCount(9);await expect(page.locator('#headerSummary')).toHaveText('9/9 已验收');
+  await page.locator('[data-focus-key="history:dev"]').click();await page.locator('[data-focus-key="attempt:old-attempt"]').click();await expect(page.locator('#taskDetail')).toContainText('已取消');await expect(page.locator('#taskDetail')).toContainText('取消前的原报告和审查记录');await expect(page.locator('#memberDetail')).toContainText('第一轮公开结果');
+  await update(page);await expect(page.locator('#taskDetail')).toContainText('已取消');assert.deepEqual(await page.evaluate(()=>window.data.team.tasks[0]),await page.evaluate(()=>window.originalCancelled));
+  await page.keyboard.press('Escape');await page.locator('[data-list-task-id="work-3"]').click();await page.evaluate(()=>{window.data.team.tasks[3].status='cancelled';});await update(page);
+  await expect(page.locator('[data-list-task-id="work-3"]')).toHaveCount(0);await expect(page.locator('#taskDetail')).toBeHidden();await expect(page.locator('#headerSummary')).toHaveText('8/8 已验收');
+  await page.evaluate(()=>{window.data.team.tasks.forEach(task=>task.status='cancelled');});await update(page);await expect(page.locator('#headerSummary')).toHaveText('0/0 已验收');await expect(page.locator('#progressValue')).toHaveText('0%');await expect(page.locator('#overviewHeadline')).toHaveText('任务已结束，等待收尾');await expect(page.locator('#progressSegments button')).toHaveCount(0);await expect(page.locator('#taskList .task-row')).toHaveCount(0);assert.equal(await page.evaluate(()=>window.data.team.tasks.length),12);assert.equal(await page.evaluate(()=>window.sent.length),0);assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
+test('hidden cancelled prerequisites keep their real blockers without leaving empty graph columns',async()=>{
+ const {page,errors}=await open();try{
+  await page.evaluate(()=>{const [cancelled,waiting]=window.data.team.tasks;cancelled.status='cancelled';waiting.dependencies=[{taskId:cancelled.id,when:'accepted'}];window.data.team.tasks=[cancelled,waiting];window.data.readiness=[{taskId:waiting.id,ready:false,blockers:[{message:'前置任务 t1 已取消，需要调整依赖'}]}];window.data.runs=[];});await update(page);
+  await expect(page.locator('#headerSummary')).toHaveText('0/1 已验收');await expect(page.locator('#overviewHeadline')).toHaveText('等待前置条件');await expect(page.locator('#dependencyGraph .dependency-node')).toHaveCount(1);await expect(page.locator('#dependencyGraph')).toHaveClass(/parallel/);
+  await page.locator('[data-list-task-id="t2"]').click();await expect(page.locator('#taskDetail')).toContainText('前置任务 t1 已取消，需要调整依赖');assert.equal(await page.evaluate(()=>window.data.team.tasks[1].status),'waiting');assert.deepEqual(errors,[]);
+ }finally{await page.close();}
+});
 test('current goal view separates execution and acceptance, scopes history and preserves navigation without chat',async()=>{
  const {page,errors}=await open();try{
   await page.evaluate(()=>{window.data.team.activeBatchId='feature';window.data.team.batches=[{id:'feature',title:'本次功能',goal:'验收本次功能',qualityMode:'standard',state:'active'}];for(const id of ['t1','t2']){const task=window.data.team.tasks.find(t=>t.id===id);task.batchId='feature';task.qualityMode='standard';}window.data.qualityMetrics={reviewDispatches:1};});await update(page);

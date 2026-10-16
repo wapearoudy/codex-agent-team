@@ -1,53 +1,31 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp} from 'node:fs/promises';
-import {join} from 'node:path';
-import {tmpdir} from 'node:os';
-import {randomUUID} from 'node:crypto';
-import {TeamCoordination,coordinationSignal} from '../src/team-coordination.mjs';
-import {LeaderEngine} from '../src/leader-engine.mjs';
-import {ModelCatalog} from '../src/model-catalog.mjs';
-import {nativeRoute,TeamProfiles} from '../src/team-policy.mjs';
+import {completionReceipt,COMPLETION_MAX_BYTES} from '../src/team-completion.mjs';
+import {advancementResponse,operationResponse} from '../src/team-responses.mjs';
 
-const member=(id,writeScopes=[])=>({id,role:id,responsibility:'Scoped role',reason:'Independent delivery',writeScopes});
-const plan=()=>({members:[member('dev',['src']),member('qa')],tasks:[{id:'work',title:'Implement',goal:'Implement scoped changes',acceptance:'Verified behavior',memberId:'dev',kind:'work',priority:3,dependencies:[]},{id:'review',title:'Review',goal:'Verify independently',acceptance:'Verified behavior',memberId:'qa',kind:'review',reviewOfTaskId:'work',priority:3,dependencies:[{taskId:'work',when:'submitted'}]}]});
-const packet=()=>({team:{id:randomUUID(),state:'active',dispatchPaused:false},workflow:{actions:[{type:'settle',taskId:'work',attemptId:randomUUID(),observedStatus:'completed'}]}});
-
-test('legacy coordination clients never obtain a chat offer, including enabled and changed workflows',async()=>{
- const root=await mkdtemp(join(tmpdir(),'coordination-')),a=new TeamCoordination(root),b=new TeamCoordination(root),data=packet();
- await a.store.transaction(d=>{d.teams[a.key('owner',data.team.id)]={enabled:true,notifications:[]};});
- for(const changed of [data,{...data,workflow:{actions:[...data.workflow.actions,{type:'claim-batch',taskIds:['new-task']}]}}]){
-   const offers=await Promise.all([a.reserve('owner',changed),b.reserve('owner',changed,{retryId:randomUUID()})]);for(const offer of offers){assert.equal(offer.firstOffer,false);assert.equal(offer.message,undefined);assert.equal(offer.chatMessages,false);}
- }
- assert.equal((await a.enable('owner',data,true)).enabled,false);const state=await new TeamCoordination(root).read('owner',data);assert.equal(state.enabled,false);assert.equal(state.delivery,'native-agent-messages');assert.equal(state.requiresOpenPanel,false);assert.equal(state.panelWakeWithoutWaiter,false);assert.equal(state.waitTool,'wait_team_event');assert.deepEqual(state.notifications,[]);assert.equal(state.signal.actions.length,1);
+function fixture(){
+ const work={id:'work',batchId:'current',kind:'work',status:'accepted',contract:{verify:['python3 -m unittest -v']},attempts:[{id:'attempt',agentThreadId:'worker',turnId:'turn',evidenceSnapshot:{workspace:'/tmp/project'},acceptance:{source:'independent-reviewer',gate:'plugin-quality-checks',reviewTaskId:'review',reviewAttemptId:'review-attempt'},observation:{commands:[{command:'python3 -m unittest -v',cwd:'/tmp/project',turnId:'turn',status:'completed',exitCode:0,output:'Original full log'}]}}],evidence:[{attemptId:'attempt',summary:JSON.stringify({summary:'Implemented behavior',changedPaths:['source.py']})}]};
+ return {id:'team',revision:9,state:'active',projectPath:'/tmp/project',activeBatchId:'current',members:[],batches:[{id:'old',state:'delivered',finalAcceptance:{at:'old'}},{id:'current',goal:'Current authorized goal',state:'delivered',finalAcceptance:{at:'now',reusedEvidence:[{taskId:'work'}]}}],tasks:[work,{id:'review',batchId:'current',kind:'review',status:'accepted',attempts:[{id:'review-attempt',agentThreadId:'qa',turnId:'review-turn'}]},{id:'old-work',batchId:'old',kind:'work',status:'accepted',attempts:[],evidence:[{summary:'Historical record'}]}]};
+}
+test('closure receipts carry exact current task identities, validation and artifacts without historical logs',()=>{
+ const team=fixture(),before=structuredClone(team),r=completionReceipt(team);
+ assert.deepEqual(r.counts,{accepted:2,cancelled:0,independentReviews:1,contractCommands:1});assert.equal(r.tasks[0].attemptId,'attempt');assert.equal(r.tasks[0].threadId,'worker');assert.equal(r.tasks[0].acceptance.reviewTaskId,'review');assert.equal(r.commands[0].exitCode,0);assert.equal(r.commands[0].verifiedAtAcceptance,true);assert.deepEqual(r.changedPaths,['source.py']);assert.equal(r.reusedEvidenceCount,1);assert.equal(r.currentFilesRechecked,false);assert.doesNotMatch(JSON.stringify(r),/Original full log|Historical record/);assert.deepEqual(team,before);
+ for(const fn of [data=>advancementResponse(data),data=>operationResponse(data,{operation:'finish_team'})]){const result=fn({team,runs:[],workflow:{stage:'completed',actions:[]}});assert.equal(result.terminal,true);assert.equal(result.continuationArgs,undefined);assert.deepEqual(result.completion,r);assert.match(result.completion.instruction,/no routine history/);}
 });
-test('native signals do not unlock unapproved, paused, halted, delivered or stale work',async()=>{
- const data=packet();for(const change of [{dispatchPaused:true},{executionControl:{status:'stopping'}},{finalAcceptance:{}},{state:'superseded'},{planReview:{scope:'initial',status:'pending'}}])assert.equal(coordinationSignal({...data,team:{...data.team,...change}}),null);
+test('no completion claim from submitted/pending/reopened/cancelled-only or another batch acceptance',()=>{
+ for(const alter of [t=>delete t.batches[1].finalAcceptance,t=>t.tasks[0].status='submitted',t=>t.tasks[0].status='waiting',t=>t.activeBatchId='new',t=>{t.batches.push({id:'new'});t.activeBatchId='new';},t=>t.tasks[0].status='cancelled']){const team=fixture();alter(team);assert.equal(completionReceipt(team),null);}
 });
-test('return-to-chat preserves the pending plan identity and does not approve, spawn or discard it',async()=>{
- const root=await mkdtemp(join(tmpdir(),'feedback-')),engine=new LeaderEngine({root}),team=await engine.planOnce('owner',{cwd:root,threadId:'leader'},{goal:'Implement the current scoped request',execute:true,initializeMembers:true,approvalMode:'required',plan:plan()});
- const input={requestId:randomUUID(),note:'Please revise the staffing',planVersion:team.planReview.version,planHash:team.planReview.hash};
- const result=await engine.requestPlanFeedback('owner',team.id,team.revision,input);assert.equal(result.review.status,'pending');assert.equal(result.review.feedback.status,'awaiting-user-feedback');assert.equal(result.review.hash,input.planHash);assert.equal((await engine.native('owner',team.id)).members.every(m=>!m.agentThreadId),true);
- const replay=await engine.requestPlanFeedback('owner',team.id,team.revision,input);assert.equal(replay.revision,result.revision);
- await assert.rejects(()=>engine.requestPlanFeedback('owner',team.id,result.revision,{...input,requestId:randomUUID(),planHash:'0'.repeat(64)}),/version changed/);
- const revised=await engine.revisePlan('owner',team.id,result.revision,{...result.configuration,goal:'Updated scoped request for this same team'});assert.equal(revised.teamId,team.id);assert.equal(revised.review.feedback,undefined);assert.equal(revised.review.version,2);
+test('legacy closure is supported, missing/failed commands remain unknown/failed and source-only work claims no test',()=>{
+ const team=fixture();delete team.activeBatchId;team.batches=[];team.tasks=team.tasks.slice(0,2);team.finalAcceptance={at:'now'};
+ team.tasks[0].attempts[0].observation.commands[0].exitCode=1;let r=completionReceipt(team);assert.equal(r.commands[0].verifiedAtAcceptance,false);assert.equal(r.commands[0].exitCode,1);
+ team.tasks[0].attempts[0].observation.commands=[];r=completionReceipt(team);assert.equal(r.commands[0].verifiedAtAcceptance,false);assert.equal(r.commands[0].exitCode,null);
+ team.tasks[0].contract.verify=[];r=completionReceipt(team);assert.deepEqual(r.commands,[]);assert.equal(r.counts.contractCommands,0);
 });
-test('inherited routes snapshot the host model/provider/effort; native creation stays on that snapshot after host defaults change',async()=>{
- const calls=[],catalog=new ModelCatalog({async connect(){return {async call(method){calls.push(method);return {data:[{model:'host-a',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium']}]};}};}}),members=[member('dev'),{...member('qa'),route:{model:'host-a'},fallbackRoute:{model:'host-a',reasoningEffort:'low'}}];
- await catalog.freeze(members,{modelRoute:{model:'host-a',provider:'provider-a',reasoningEffort:'low'}});
- assert.deepEqual(nativeRoute(members[0]),{fork_turns:'none',model:'host-a',reasoning_effort:'low'});assert.equal(members[0].routeSnapshot.provider,'provider-a');assert.equal(members[1].route.reasoningEffort,'medium');assert.equal(members[1].fallbackRoute.reasoningEffort,'low');
- assert.deepEqual(calls,['model/list']);assert.equal(nativeRoute({...members[0],route:{}}).model,'host-a');
+test('large histories and long command declarations stay bounded with explicit detail references',()=>{
+ const team=fixture(),template=team.tasks[0];team.tasks=Array.from({length:100},(_,i)=>({...structuredClone(template),id:'t'+i}));for(const task of team.tasks)task.contract.verify=['node '+('x'.repeat(2000))];
+ const before=structuredClone(team),r=completionReceipt(team);assert.ok(Buffer.byteLength(JSON.stringify(r))<=COMPLETION_MAX_BYTES);assert.equal(r.truncated,true);assert.equal(r.counts.accepted,100);assert.equal(r.counts.contractCommands,100);assert.equal(r.detailAccess.explicitDetailOnly,true);assert.deepEqual(team,before);
 });
-test('project history summaries are scoped and profile deletion rejects a changed record',async()=>{
- const root=await mkdtemp(join(tmpdir(),'library-')),engine=new LeaderEngine({root});await engine.planOnce('owner',{cwd:root,threadId:'leader'},{goal:'First project scoped implementation',execute:false,plan:plan()});await engine.planOnce('owner',{cwd:root+'-other',threadId:'leader'},{goal:'Another project scoped implementation',execute:false,plan:plan()});
- assert.equal((await engine.store.summaries('owner',root)).length,1);assert.equal((await engine.store.summaries('foreign',root)).length,0);
- const profiles=new TeamProfiles(root),saved=await profiles.save('dynamic',{members:plan().members},{},'Reusable',{taskPlanning:'leader'});
- await assert.rejects(()=>profiles.remove('dynamic','stale'),/changed/);assert.equal((await profiles.read()).length,1);await profiles.remove('dynamic',saved.updatedAt);assert.equal((await profiles.read()).length,0);
-});
-
-
-test('legacy notifications remain bounded historical evidence; retries and consumes cannot reissue work',async()=>{
- const root=await mkdtemp(join(tmpdir(),'coordination-history-')),c=new TeamCoordination(root),data=packet(),notifications=Array.from({length:12},()=>({id:randomUUID(),status:'reserved',fingerprint:coordinationSignal(data).fingerprint,createdAt:new Date(0).toISOString()}));
- await c.store.transaction(d=>{d.teams[c.key('owner',data.team.id)]={enabled:true,notifications};});const state=await c.read('owner',data);assert.equal(state.notifications.length,10);assert.ok(state.notifications.every(n=>n.legacy&&!n.retryable));assert.equal((await c.read('foreign',data)).notifications.length,0);assert.equal((await c.reserve('owner',data,{retryId:notifications[0].id})).firstOffer,false);
- const result=await c.consume('owner',data,notifications[0].id);assert.equal(result.stale,true);assert.deepEqual(result.actions,[]);assert.equal((await c.store.read()).teams[c.key('owner',data.team.id)].notifications[0].status,'superseded');assert.equal((await c.store.read()).teams[c.key('owner',data.team.id)].notifications.length,12);
+test('bounded output keeps final integration command even when per-task command previews are omitted',()=>{
+ const team=fixture(),template=team.tasks[0];team.batches[1].integrationRequired=true;team.tasks=Array.from({length:25},(_,i)=>({...structuredClone(template),id:'t'+i}));const integration=team.tasks.at(-1);integration.id='final-integration';integration.contract.stage='integration';integration.contract.verify=['node --test integration.mjs'];integration.attempts[0].observation.commands=[{command:'node --test integration.mjs',cwd:team.projectPath,status:'completed',exitCode:0}];
+ const before=structuredClone(team),r=completionReceipt(team);assert.ok(Buffer.byteLength(JSON.stringify(r))<=COMPLETION_MAX_BYTES);assert.equal(r.validation.integrationRequired,true);assert.equal(r.validation.finalVerification.taskId,'final-integration');assert.equal(r.validation.finalVerification.command,'node --test integration.mjs');assert.equal(r.validation.finalVerification.exitCode,0);assert.equal(r.validation.declaredCommands,25);assert.equal(r.validation.verifiedCommands,25);assert.equal(r.truncated,true);assert.deepEqual(team,before);
 });

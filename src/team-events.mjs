@@ -9,14 +9,14 @@ export function waitTeamEvent(store,owner,teamId,{revision,waitCursor,timeoutMs=
   if(waitCursor!==undefined&&!/^[a-f0-9]{64}$/.test(waitCursor))throw new Error('Use the semantic wait cursor returned by the preceding wait');
   const names=new Set([basename(store.path(teamId)),teamId+'.v2.json']);
   return new Promise((resolve,reject)=>{
-    let finished=false,reading=false,pending=false,expired=false,nativeDirty=!!observe,lastNativeAt=0,watcher,timer,fallback,nativeTimer,unsubscribe,signature=waitCursor,currentRevision=revision;
+    let finished=false,reading=false,pending=false,expired=false,nativeDirty=!!observe,lastNativeAt=0,watcher,timer,fallback,nativeTimer,unsubscribe,subscriptionKey,signature=waitCursor,currentRevision=revision;
     const finish=(error,value)=>{
       if(finished)return;finished=true;watcher?.close();clearTimeout(timer);clearInterval(fallback);clearTimeout(nativeTimer);unsubscribe?.();signal?.removeEventListener('abort',abort);
-      if(error)reject(error);else resolve({kind:'team-event',teamId,...value,...(signature?{waitCursor:signature}:{}),chatMessages:false,nextTool:value.status==='timeout'?'wait_team_event':value.status==='cancelled'?null:'read_team',...(value.status==='timeout'?{unchanged:true,readRequired:false,continuationArgs:{teamId,revision:value.revision,waitCursor:signature,timeoutMs:55000}}:{} )});
+      if(error)reject(error);else resolve({kind:'team-event',teamId,...value,...(signature?{waitCursor:signature}:{}),chatMessages:false,nextTool:value.status==='timeout'?'team_leader':value.status==='cancelled'?null:'read_team',...(value.status==='timeout'?{unchanged:true,readRequired:false,nextOperation:'wait_team_event',continuationArgs:{teamId,revision:value.revision,waitCursor:signature,timeoutMs:55000}}:{} )});
     };
     const abort=()=>finish(null,{status:'cancelled',revision:currentRevision});
     const check=async(timedOut=false)=>{
-      if(finished)return;expired ||= timedOut;
+      if(finished)return;expired ||= timedOut;if(timedOut&&observe)nativeDirty=true;
       if(reading){pending=true;return;}
       reading=true;
       try {
@@ -25,6 +25,11 @@ export function waitTeamEvent(store,owner,teamId,{revision,waitCursor,timeoutMs=
         const saved=await store.document(teamId).read();
         if(saved.ownerId!==owner)throw new Error('Team not found in this Desktop conversation');
         if(saved.revision<currentRevision)throw new Error('Team revision moved backwards; refresh before waiting');
+        if(saved.revision!==currentRevision)nativeDirty=!!observe;
+        if(subscribe){
+          const key=JSON.stringify((saved.tasks??[]).filter(t=>t.status==='running').map(t=>{const a=t.attempts?.at(-1);return [t.id,a?.agentThreadId,a?.turnId,...(!a?.agentThreadId&&a?.bootstrap?[a.bootstrap.taskName,Math.floor(Date.now()/10000)]:[])];}));
+          if(key!==subscriptionKey){unsubscribe?.();unsubscribe=undefined;const stop=await subscribe(()=>{nativeDirty=true;void check();},saved);if(finished){stop();return;}unsubscribe=stop;subscriptionKey=key;nativeDirty=!!observe;}
+        }
         const nextSignature=coordinationSignature(saved);
         const changed=signature===undefined?saved.revision!==revision:signature!==nextSignature;
         signature=nextSignature;
@@ -35,9 +40,11 @@ export function waitTeamEvent(store,owner,teamId,{revision,waitCursor,timeoutMs=
           if(nativeDirty&&observe){
             const delay=1000-(Date.now()-lastNativeAt);
             if(delay>0&&!expired){clearTimeout(nativeTimer);nativeTimer=setTimeout(()=>void check(),delay);}
-            else {nativeDirty=false;lastNativeAt=Date.now();const snapshot=await observe();const attempts=(snapshot.workflow?.actions??[]).filter(a=>a.type==='settle').map(a=>({taskId:a.taskId,attemptId:a.attemptId,status:a.observedStatus}));
+            else {nativeDirty=false;lastNativeAt=Date.now();const snapshot=await observe();const attempts=(snapshot.workflow?.actions??[]).filter(a=>a.type==='settle').map(a=>({taskId:a.taskId,attemptId:a.attemptId,status:a.observedStatus})),startupFailures=(snapshot.workflow?.actions??[]).filter(a=>a.type==='startup-failed'),unconfirmed=(snapshot.workflow?.actions??[]).filter(a=>a.type==='verify-before-binding'&&a.requiresLeaderValidation);
               if(snapshot.team.revision!==currentRevision){pending=true;}
               else if(attempts.length)finish(null,{status:'member-terminal',revision:currentRevision,attempts,automaticAcceptance:false});
+              else if(startupFailures.length)finish(null,{status:'startup-blocked',revision:currentRevision,startupFailures,waitBlocked:true,automaticAcceptance:false});
+              else if(unconfirmed.length)finish(null,{status:'startup-unconfirmed',revision:currentRevision,startupFailures:unconfirmed,waitBlocked:true,automaticAcceptance:false});
             }
           }
           if(!finished&&(expired||timeoutMs===0))finish(null,{status:'timeout',revision:saved.revision});
@@ -51,6 +58,6 @@ export function waitTeamEvent(store,owner,teamId,{revision,waitCursor,timeoutMs=
     if(signal?.aborted){abort();return;}
     timer=setTimeout(()=>void check(true),timeoutMs);
     fallback=setInterval(()=>void check(),2000);
-    void (async()=>{try{if(subscribe){const stop=await subscribe(()=>{nativeDirty=true;void check();});if(finished){stop();return;}unsubscribe=stop;}void check();}catch(error){finish(error);}})();
+    void check();
   });
 }

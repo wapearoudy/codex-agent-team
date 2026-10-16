@@ -19,7 +19,7 @@ function turn(id,marker,status='completed',output='交付',commands=[]){return {
 async function fixture(){
   const root=await mkdtemp(join(tmpdir(),'turn-continuation-')),cwd=join(root,'project');await mkdir(cwd);
   const threads=new Map(),lifecycle=new Map(),usage=new Map(),calls=[];
-  const observer=new NativeMembers({rpcFactory:()=>({async connect(){},async close(){},async call(method,args){calls.push({method,args});assert.equal(method,'thread/read');return {thread:structuredClone(threads.get(args.threadId))};}}),lifecycleReader:async(_thread,id)=>lifecycle.get(id)??null,publicFeed:{async read(_thread,id){return {events:[],cursor:0,usage:usage.get(id)??{totalTokens:10},source:'native-public'};}}});
+  const observer=new NativeMembers({rpcFactory:()=>({async connect(){},async close(){},async call(method,args){calls.push({method,args});assert.equal(method,'thread/read');return {thread:structuredClone(threads.get(args.threadId))};}}),lifecycleReader:async(_thread,id)=>lifecycle.get(id)??null,publicFeed:{async read(_thread,id){return {events:[],cursor:0,usage:usage.get(id)??{totalTokens:10},source:'native-public',contextIsolation:{source:'authenticated-native-session-header',identityVerified:true,parentThreadId:'leader',forkedFromId:null,inheritedParentContext:false,ownBoundaryVerified:true}};}}});
   const engine=new LeaderEngine({root:join(root,'records'),observer}),projects=new ProjectTeams(engine),context={cwd,threadId:'leader'};
   const team=(await projects.plan('owner',context,{goal:'验证任务中断后的同会话续跑机制',execute:true,memberStartup:'on-demand',plan:plan()})).team;
   const saved=()=>engine.native('owner',team.id);

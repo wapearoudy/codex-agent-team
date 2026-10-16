@@ -17,7 +17,7 @@ export function coordinationSignal(data){
 export class TeamCoordination {
   constructor(root){this.store=new DurableStore(join(root,'coordination.json'),{teams:{}});}
   key(owner,id){return digest([owner,id]);}
-  async read(owner,data){const saved=(await this.store.read()).teams[this.key(owner,data.team.id)];return {enabled:false,signal:coordinationSignal(data),notifications:(saved?.notifications??[]).slice(-10).map(n=>({...n,retryable:false,legacy:true})),execution:'existing-native-Leader',delivery:'native-agent-messages',chatMessages:false,requiresOpenPanel:false,panelWakeWithoutWaiter:false,waitTool:'wait_team_event'};}
+  async read(owner,data){const saved=(await this.store.read()).teams[this.key(owner,data.team.id)];return {enabled:false,signal:coordinationSignal(data),notifications:(saved?.notifications??[]).slice(-10).map(n=>({...n,retryable:false,legacy:true})),execution:'existing-native-Leader',delivery:'native-agent-messages',chatMessages:false,requiresOpenPanel:false,panelWakeWithoutWaiter:false,waitTool:(data.team.hostId??'codex')==='codex'?'team_leader':'wait_team_event',...((data.team.hostId??'codex')==='codex'?{waitOperation:'next_team_step'}:{})};}
   async enable(owner,data,enabled){if(data.team.state==='archived')throw new Error('Archived team is read-only');return {enabled:false,reason:'native-internal-only',chatMessages:false};}
   // Retain the old operation so already-loaded panels cannot obtain another
   // outgoing message. Old saved offers remain historical evidence only.

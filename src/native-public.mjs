@@ -14,6 +14,9 @@ function usage(info) {
   return totalTokens===null ? null : {inputTokens, outputTokens, totalTokens, cachedInputTokens:count(info.cached_input_tokens??info.cachedInputTokens)};
 }
 const publicText = item => typeof item.text==='string' ? item.text : Array.isArray(item.content) ? item.content.filter(c=>c&&['text','output_text'].includes(c.type)).map(c=>c.text??'').join('') : '';
+const parentId=t=>t?.parentThreadId??t?.parent_thread_id??t?.source?.subAgent?.thread_spawn?.parent_thread_id??t?.source?.subagent?.thread_spawn?.parent_thread_id;
+const identityState=()=>({identity:false,parent:null,forkedFrom:null,inheritedContext:false,awaitingOwnBoundary:false,ownEventSeen:false,skippedInheritedRows:0});
+const isolation=f=>({source:'authenticated-native-session-header',identityVerified:f.identity,parentThreadId:f.parent,forkedFromId:f.forkedFrom,inheritedParentContext:f.inheritedContext||!!f.forkedFrom,ownBoundaryVerified:f.identity&&!f.awaitingOwnBoundary,skippedInheritedRows:f.skippedInheritedRows});
 
 // Tail only the already-authorized child's rollout. No resume, model request,
 // prompt, tool arguments, credentials or reasoning is exposed through this feed.
@@ -27,17 +30,17 @@ export class NativePublicFeed {
     if (!rel || isAbsolute(rel) || rel==='..' || rel.startsWith('../') || rel.startsWith('..\\')) throw new Error('Public feed is outside the host session directory');
     const key=thread.id+':'+path;
     let f=this.files.get(key);
-    if (!f) { f={offset:0,pending:Buffer.alloc(0),discardingRow:false,skippedNonPublicRows:0,skippedPublicRows:0,identity:false,turn:null,totals:null,turns:new Map(),accounting:new UsageWindow(),tail:Promise.resolve()}; this.files.set(key,f); }
-    const next=f.tail.catch(()=>{}).then(()=>this.tail(f,path,thread.id)); f.tail=next; await next;
+    if (!f) { f={offset:0,pending:Buffer.alloc(0),discardingRow:false,skippedNonPublicRows:0,skippedPublicRows:0,...identityState(),turn:null,totals:null,turns:new Map(),accounting:new UsageWindow(),tail:Promise.resolve()}; this.files.set(key,f); }
+    const next=f.tail.catch(()=>{}).then(()=>this.tail(f,path,thread)); f.tail=next; await next;
     const t=f.turns.get(turnId);
     return {events:(t?.events??[]).filter(e=>e.sequence>cursor),cursor:t?.sequence??0,reset:cursor>(t?.sequence??0),truncated:f.skippedPublicRows>0||((t?.events[0]?.sequence??1)>1&&(cursor===0||cursor<(t?.events[0]?.sequence??1)-1)),skippedPublicRows:f.skippedPublicRows,
-      usage:t?.usage??null,source:'native-public-rollout',lastActivity:t?.events.at(-1)??null};
+      usage:t?.usage??null,source:'native-public-rollout',lastActivity:t?.events.at(-1)??null,contextIsolation:isolation(f)};
   }
   async usageWindow(thread,window){
     if(!thread.path)return {source:'unavailable',usage:null,complete:false,reason:'Native session file unavailable'};
     await this.read(thread,'public-accounting-only');
     const path=await realpath(thread.path),f=this.files.get(thread.id+':'+path);
-    return {...f.accounting.read(window),skippedNonPublicRows:f.skippedNonPublicRows,skippedPublicRows:f.skippedPublicRows};
+    return {...f.accounting.read(window),...(f.awaitingOwnBoundary?{usage:null,complete:false,reason:'Inherited parent prefix has no verified native child boundary'}:{}),skippedNonPublicRows:f.skippedNonPublicRows,skippedPublicRows:f.skippedPublicRows,contextIsolation:isolation(f)};
   }
   emit(f,turnId,event) {
     if (!turnId) return;
@@ -46,9 +49,9 @@ export class NativePublicFeed {
     if (t.events.length>this.maxEvents) t.events.splice(0,t.events.length-this.maxEvents);
     if (f.turns.size>64) {const oldest=[...f.turns.keys()].find(k=>k!==f.turn);if(oldest) f.turns.delete(oldest);}
   }
-  async tail(f,path,id) {
+  async tail(f,path,thread) {
     const s=await stat(path);
-    if (s.size<f.offset) { f.offset=0;f.pending=Buffer.alloc(0);f.discardingRow=false;f.skippedNonPublicRows=0;f.skippedPublicRows=0;f.identity=false;f.turn=null;f.totals=null;f.turns.clear();f.accounting=new UsageWindow(); }
+    if (s.size<f.offset) { f.offset=0;f.pending=Buffer.alloc(0);f.discardingRow=false;f.skippedNonPublicRows=0;f.skippedPublicRows=0;Object.assign(f,identityState());f.turn=null;f.totals=null;f.turns.clear();f.accounting=new UsageWindow(); }
     if (s.size===f.offset) return;
     const fd=await open(path,'r');
     try {
@@ -57,7 +60,7 @@ export class NativePublicFeed {
         f.offset+=bytesRead;let incoming=bytes.subarray(0,bytesRead);
         if(f.discardingRow){const end=incoming.indexOf(10);if(end===-1)continue;incoming=incoming.subarray(end+1);f.discardingRow=false;}
         const body=Buffer.concat([f.pending,incoming]); let start=0,at;
-        while ((at=body.indexOf(10,start))!==-1) {const row=body.subarray(start,at);if(at-start>8*1024*1024)this.skipLargeRow(f,row);else if(!nonPublic.has(envelopeType(row)))this.row(f,row.toString('utf8'),id);start=at+1;}
+        while ((at=body.indexOf(10,start))!==-1) {const row=body.subarray(start,at);if(at-start>8*1024*1024)this.skipLargeRow(f,row);else if(!nonPublic.has(envelopeType(row)))this.row(f,row.toString('utf8'),thread);start=at+1;}
         f.pending=body.subarray(start);
         // A corrupt/unbounded row is not a reason to retain arbitrary private data.
         if (f.pending.length>8*1024*1024){this.skipLargeRow(f,f.pending);f.pending=Buffer.alloc(0);f.discardingRow=true;}
@@ -65,10 +68,11 @@ export class NativePublicFeed {
     } catch(error){
       // A failed row cannot leave the byte offset beyond unparsed records.
       // Identity failures must also remain failures on the next read.
-      f.offset=0;f.pending=Buffer.alloc(0);f.discardingRow=false;f.skippedNonPublicRows=0;f.skippedPublicRows=0;f.identity=false;f.turn=null;f.totals=null;f.turns.clear();f.accounting=new UsageWindow();throw error;
+      f.offset=0;f.pending=Buffer.alloc(0);f.discardingRow=false;f.skippedNonPublicRows=0;f.skippedPublicRows=0;Object.assign(f,identityState());f.turn=null;f.totals=null;f.turns.clear();f.accounting=new UsageWindow();throw error;
     } finally {await fd.close();}
   }
   skipLargeRow(f,bytes){
+    if(f.awaitingOwnBoundary){f.skippedInheritedRows++;return;}
     // Native envelopes place the top-level type before payload. Do not parse
     // megabytes of private response items just to reach the following counters.
     const type=envelopeType(bytes);
@@ -81,12 +85,31 @@ export class NativePublicFeed {
       if(type!=='event_msg'||!nonAccountingEvents.has(eventType))f.accounting.unlocated=true;
     }
   }
-  row(f,line,id) {
+  row(f,line,thread) {
     let row;try {row=JSON.parse(line);}catch {return;}
     if(!row||typeof row!=='object'||Array.isArray(row))return;
     const p=row.payload??{};
-    if (row.type==='session_meta') {if(p.id!==id) throw new Error('Public feed session identity mismatch'); f.identity=true;return;}
+    const id=thread.id;
+    if (row.type==='session_meta') {
+      if(!f.identity){
+        if(p.id!==id)throw new Error('Public feed session identity mismatch');
+        f.identity=true;f.forkedFrom=p.forked_from_id??null;const nativeParent=parentId(thread),headerParent=parentId(p);
+        f.parent=nativeParent&&nativeParent===headerParent?nativeParent:null;return;
+      }
+      // A native fork can replay its parent's header and events after the
+      // canonical child header. Accept that prefix only with an independently
+      // authenticated parent, before any child activity, and skip it entirely.
+      if(p.id===f.parent&&!f.ownEventSeen&&!f.inheritedContext){f.inheritedContext=true;f.awaitingOwnBoundary=true;return;}
+      if(p.id!==id||f.awaitingOwnBoundary)throw new Error('Public feed session identity mismatch');
+      return;
+    }
+    if(f.awaitingOwnBoundary){
+      if(row.type==='event_msg'&&p.type==='thread_settings_applied'&&p.thread_id===id){f.awaitingOwnBoundary=false;f.ownEventSeen=true;}
+      else f.skippedInheritedRows++;
+      return;
+    }
     if (!f.identity || row.type!=='event_msg' || (p.thread_id&&p.thread_id!==id)) return;
+    f.ownEventSeen=true;
     if(p.type==='token_count')f.accounting.record(row.timestamp,usage(p.info?.total_token_usage??p.tokenUsage?.total),usage(p.info?.last_token_usage));
     if (p.type==='task_started' && typeof p.turn_id==='string') {f.turn=p.turn_id;if(!f.turns.has(f.turn)) f.turns.set(f.turn,{sequence:0,events:[],usage:null,baseline:f.totals});}
     const turnId=p.turn_id??(p.type==='token_count'?f.turn:null);

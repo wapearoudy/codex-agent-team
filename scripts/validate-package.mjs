@@ -4,6 +4,9 @@ import addFormats from 'ajv-formats';
 const validator = new Ajv2020({ allErrors: true, strict: false });
 addFormats(validator);
 const checks = [];
+const leaderEntry=await readFile('plugins/team-workspace-probe/dist/leader-entry.js','utf8');
+new (Object.getPrototypeOf(async function(){}).constructor)('tools','ALL_TOOLS','text','store','load','notify','exit',leaderEntry);
+checks.push({file:'dist/leader-entry.js',status:'PASS',validation:'standalone async syntax; runtime serializable-store behavior tested separately'});
 for (const kind of ['plugin','mcp']) {
   const schema = JSON.parse((await readFile(`schemas/${kind}.schema.json`,'utf8')).replace(/^\uFEFF/,''));
   const data = JSON.parse(await readFile(`plugins/team-workspace-probe/${kind}.json`,'utf8'));

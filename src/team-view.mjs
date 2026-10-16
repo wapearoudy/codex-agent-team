@@ -4,10 +4,17 @@ import {sendPanelPlanStart} from './panel-plan-start.mjs';
 
 const labels={settling:'待 Leader 接收',archived:'已归档',delivered:'已完成',superseded:'已替换',removed:'岗位已移除',reserved:'待 Leader 派发',observed:'执行记录待更新',waiting:'待执行',running:'工作中',submitted:'待审查',accepted:'已验收',blocked:'阻塞',cancelled:'已取消',planned:'待创建',starting:'关联中',idle:'待命',unknown:'状态未知',completed:'执行已结束',inProgress:'执行中',failed:'执行失败',interrupted:'已中断'};
 const storagePrefix='team-workspace:interaction:v1:';
+export function panelProgressKey(data){
+  const team=data?.team;
+  if(!data?.panelProgressSync||team?.mode!=='host-leader'||team.state!=='active'||team.dispatchPaused||team.executionControl&&team.executionControl.status!=='active'||team.planReview&&team.planReview.status!=='approved')return null;
+  const actions=(data.workflow?.actions??[]).filter(a=>['settle','accept-review'].includes(a.type));
+  return actions.length?JSON.stringify([team.id,team.revision,actions.map(a=>[a.type,a.taskId,a.attemptId])]):null;
+}
 export function setupTeamView(app){
   const $=id=>document.getElementById(id);
   let current=null,linked=false,timer=null,expiryTimer=null,loading=false,lastDiscovery=0,connectionGeneration=0,selectionGeneration=0,renderedActivity='';
   let detailsRequest=null,detailsWanted=null,polling=null,wakeRequested=false,navigationRead=null,targetTeamId=null;
+  let progressSyncRequest=null,progressSyncKey=null;
   let ui={},storageKey='',renderedStorageKey='',navigation=null,navigationBusy=false,restoring=false,taskNumbers=new Map();
   let modelCatalogModels=[],modelCatalogLoading=false,modelCatalogError='',modelCatalogLoaded=false,modelCatalogRefresh=null,controlBusy=false,controlTeamId=null,controlStatus=null,controlFeedback='',controlNotice=null;
   let planKey='',planDocument=null,planBusy=false,planDirty=false,planLoading=null,planFeedback='',planExpanded=false;
@@ -51,7 +58,10 @@ export function setupTeamView(app){
   const selectedTask=()=>current?.team.tasks.find(t=>t.id===ui.taskId);
   const selectedMember=()=>current?.team.members.find(m=>m.id===ui.memberId);
   const taskState=t=>taskDisplayState(t,current?.runs??[]);
-  const visibleTasks=()=>current?.team.activeBatchId&&!ui.showTaskHistory?current.team.tasks.filter(t=>t.batchId===current.team.activeBatchId):current?.team.tasks??[];
+  const scopedTasks=()=>current?.team.activeBatchId&&!ui.showTaskHistory?current.team.tasks.filter(t=>t.batchId===current.team.activeBatchId):current?.team.tasks??[];
+  // Cancellation removes current work, not its recorded attempts or evidence.
+  // Member execution history deliberately reads current.team.tasks directly.
+  const visibleTasks=()=>scopedTasks().filter(t=>t.status!=='cancelled');
   const qualityLabel=mode=>language.text(({light:'轻量验收',standard:'标准验收',strict:'严格验收'})[mode]??'严格验收');
   const pollDelay=()=>document.hidden?10000:1000;
   const liveFields=['status','statusEvidence','observedAt','connection','source','attemptIdentitySource','observationError','observationIssue','model','progress','activity','usage'];
@@ -71,7 +81,7 @@ export function setupTeamView(app){
   const saveScroll=()=>{if(!current||restoring)return;ui.scrollY=window.scrollY;ui.graphX=$('dependencyGraph').parentElement.scrollLeft;ui.graphY=$('dependencyGraph').parentElement.scrollTop;
     ui.innerScroll=Object.fromEntries([...Object.entries(ui.innerScroll??{}),...[...document.querySelectorAll('[data-scroll-key]')].map(e=>[e.dataset.scrollKey,{x:e.scrollLeft,y:e.scrollTop}])].slice(-200));storeState();};
   async function call(name,args={}){
-    let r;try{r=await app.callServerTool({name,arguments:args},{timeout:name==='read_team'?(args.view==='state'?8000:15000):60000});}catch(error){throw Object.assign(new Error(error?.message??String(error)),{observationIssueKind:'transport-unavailable'});}
+    let r;try{r=await app.callServerTool({name,arguments:args},{timeout:name==='sync_team_progress'?15000:name==='read_team'?(args.view==='state'?8000:15000):60000});}catch(error){throw Object.assign(new Error(error?.message??String(error)),{observationIssueKind:'transport-unavailable'});}
     if(r.isError)throw Object.assign(new Error(r.content?.find(c=>c.type==='text')?.text??language.text('状态读取失败')),{observationIssueKind:'verification-failed'});
     if(!r.structuredContent)throw Object.assign(new Error(language.text('宿主没有返回有效数据')),{observationIssueKind:'verification-failed'});return r.structuredContent;
   }
@@ -120,7 +130,7 @@ export function setupTeamView(app){
     const lines=value=>value.split('\n').map(s=>s.trim()).filter(Boolean);
     const unique=prefix=>prefix+'_'+crypto.randomUUID().slice(0,8);
     const change=fn=>{try{fn();markDirty();renderPlanDocument();}catch(e){planStatus(e.message);}};
-    if(initial){field(box,language.text(formation?'团队目标':'任务目标'),c.goal,value=>c.goal=value,true);select(box,language.text('成员启动方式'),c.memberStartup??'eager',[['on-demand',language.text('首个任务就绪时创建')],['eager',language.text('先初始化全部成员')]],v=>c.memberStartup=v);}
+    if(initial){field(box,language.text(formation?'团队目标':'任务目标'),c.goal,value=>c.goal=value,true);select(box,language.text('成员启动方式'),c.memberStartup??'on-demand',[['on-demand',language.text('首个任务就绪时创建')],['eager',language.text('先初始化全部成员')]],v=>{c.memberStartup=v;c.startupProtocol=v==='eager'?'roster-bound':'task-bound';});}
     box.append(node('p',members.length+language.text(' 个')+(initial?language.text('岗位'):language.text('新增岗位'))+(formation?'':' · '+tasks.length+language.text(' 项')+(initial?language.text('任务'):language.text('新增任务')))));
     if(initial&&pending&&!formation)box.append(button(language.text('改为只确认成员和目标'),()=>change(()=>{c.taskPlanning='leader';tasks.splice(0);doc.review.confirmation='team';}),'subtle-button','plan-formation'));
     if(formation)box.append(node('p',language.text('具体任务由 Leader 在组建确认后拆分，每项交付仍保留独立审查。'),'muted'));
@@ -263,13 +273,15 @@ export function setupTeamView(app){
       innerScroll:Object.fromEntries(Object.entries(saved.innerScroll??{}).filter(([k,v])=>typeof k==='string'&&Number.isFinite(v?.x)&&Number.isFinite(v?.y)).slice(-200)),
       navigationId:typeof saved.navigationId==='string'?saved.navigationId:null,navigationError:typeof saved.navigationError==='string'?saved.navigationError:null,
       query:typeof saved.query==='string'?saved.query.slice(0,200):'',status:typeof saved.status==='string'?saved.status:''};
+    if(ui.status==='cancelled')ui.status='';
     $('taskSearch').value=ui.query;$('taskStatusFilter').value=ui.status;
     validateSelection(team);
   }
   function validateSelection(team){
-    const task=team.tasks.find(t=>t.id===ui.taskId);if(!task){ui.taskId=null;ui.attemptId=null;}
+    const task=team.tasks.find(t=>t.id===ui.taskId);
+    if(!task||task.status==='cancelled'&&!ui.memberView){ui.taskId=null;ui.attemptId=null;if(task)ui.memberId=null;}
     if(!team.members.some(m=>m.id===ui.memberId))ui.memberId=null;
-    if(task){if(!task.attempts.some(a=>a.id===ui.attemptId))ui.attemptId=null;ui.memberId=task.attempts.find(a=>a.id===ui.attemptId)?.memberId??task.memberId;}
+    if(task&&ui.taskId){if(!task.attempts.some(a=>a.id===ui.attemptId))ui.attemptId=null;ui.memberId=task.attempts.find(a=>a.id===ui.attemptId)?.memberId??task.memberId;}
   }
   function render(){
     if(current?.team.state==='archived')viewingHistory=true;
@@ -292,10 +304,10 @@ export function setupTeamView(app){
     $('currentProject').textContent=language.text('当前主会话的固定团队 · ')+(team.state==='delivered'?language.text('已完成本批验收'):language.text('任务与成员执行'));
     const batch=team.batches?.find(b=>b.id===team.activeBatchId);
     $('goalDetails').querySelector('.eyebrow').textContent=language.text(viewingHistory?'历史目标':'当前目标');$('teamGoalText').textContent=batch?.goal??team.goal;$('teamGoalTitle').textContent=batch?.title??team.goal;$('goalDetails').hidden=false;
-    const batchSummary=$('teamBatchSummary');if(batchSummary){batchSummary.hidden=!batch;batchSummary.textContent=batch?qualityLabel(batch.qualityMode)+' · '+language.text(batch.state==='delivered'?'本目标已验收':'本目标执行中')+(current.qualityMetrics?' · '+language.text('审查执行 ')+current.qualityMetrics.reviewDispatches:''):'';}
+    const batchSummary=$('teamBatchSummary');if(batchSummary){batchSummary.hidden=!batch;batchSummary.textContent=batch?qualityLabel(batch.qualityMode)+' · '+language.text(batch.state==='delivered'?'本目标已验收':current.workflow?.waitBlocked?(current.workflow?.idleBlockers?.length?'团队执行受阻':'团队启动受阻'):'本目标执行中')+(current.qualityMetrics?' · '+language.text('审查执行 ')+current.qualityMetrics.reviewDispatches:''):'';}
     const historyToggle=$('taskHistoryToggle');if(historyToggle){historyToggle.hidden=!batch;historyToggle.textContent=language.text(ui.showTaskHistory?'仅看本次目标':'查看历史任务');historyToggle.onclick=()=>{ui.showTaskHistory=!ui.showTaskHistory;storeState();render();};historyToggle.setAttribute('aria-pressed',String(!!ui.showTaskHistory));}
     const memberCount=team.members.filter(m=>!m.removedAt).length;
-    $('headerSummary').textContent=team.taskPlanning==='leader'&&!tasks.length?language.text(team.planReview?.status==='pending'?'待确认团队':'待拆分任务'):tasks.filter(t=>t.status==='accepted').length+'/'+tasks.length+language.text(' 已验收');
+    $('headerSummary').textContent=team.taskPlanning==='leader'&&!scopedTasks().length?language.text(team.planReview?.status==='pending'?'待确认团队':'待拆分任务'):tasks.filter(t=>t.status==='accepted').length+'/'+tasks.length+language.text(' 已验收');
     $('progressValue').textContent=(tasks.length?Math.round(tasks.filter(t=>t.status==='accepted').length/tasks.length*100):0)+'%';
     $('captainSummary').textContent=language.text('已派发 ')+tasks.filter(t=>t.attempts.some(a=>a.agentThreadId)).length+language.text(' 项任务');
     $('activeCount').textContent=active.length?active.length+language.text(' 人执行中'):unknown.length?unknown.length+language.text(' 项状态待核对'):observed.length?observed.length+language.text(' 项记录待更新'):language.text('当前无执行中的成员');
@@ -305,7 +317,7 @@ export function setupTeamView(app){
     $('collapsedSummary').hidden=!ui.overviewCollapsed;$('teamBoard').hidden=!!ui.overviewCollapsed;
     $('emptyState').hidden=true;$('loadingState').hidden=true;
     const prep=team.preparation,omissions=prep?.omissions??prep?.excludedGeneratedLogs??[];
-    $('workspacePreparation').textContent=prep?.status==='blocked'?language.text('工作区准备失败：')+prep.message:prep?.issues?.length?language.text('验证限制：')+prep.issues.map(i=>i.path+' — '+i.message).join('；'):current.displayLimits?.preview?language.text('面板显示有限预览')+(current.displayLimits.totalTasks>tasks.length?'（'+tasks.length+'/'+current.displayLimits.totalTasks+language.text(' 项任务）'):'')+language.text('；完整交付和命令请打开原生成员会话，验收时按任务读取原始证据。'):'';
+    $('workspacePreparation').textContent=prep?.status==='blocked'?language.text('工作区准备失败：')+prep.message:prep?.issues?.length?language.text('验证限制：')+prep.issues.map(i=>i.path+' — '+i.message).join('；'):current.displayLimits?.preview?language.text('面板显示有限预览')+(current.displayLimits.totalTasks>team.tasks.length?'（'+team.tasks.length+'/'+current.displayLimits.totalTasks+language.text(' 项任务）'):'')+language.text('；完整交付和命令请打开原生成员会话，验收时按任务读取原始证据。'):'';
     const preparationWarning=prep?.status==='blocked'||prep?.issues?.length;
     $('panelNotes').hidden=!$('workspacePreparation').textContent&&!omissions.length;$('panelNotes').dataset.severity=preparationWarning?'warning':'info';$('panelNotesLabel').textContent=language.text(preparationWarning?'运行限制':'运行说明');
     $('workspaceOmissions').hidden=!omissions.length;$('workspaceOmissions').replaceChildren(node('summary',language.text('历史产物筛选记录 · ')+omissions.length+language.text(' 项')));
@@ -339,14 +351,15 @@ export function setupTeamView(app){
     const b=button(long?task.id+' · '+task.title:taskNumbers.get(task.id),()=>chooseTask(task.id),'chip '+taskState(task)+(ui.taskId===task.id?' selected':''),'chip:'+task.id);
     b.title=taskNumbers.get(task.id)+' · '+task.id+' · '+task.title+' · '+label(taskState(task));b.setAttribute('aria-pressed',String(ui.taskId===task.id));return b;
   }
+  function associationLabel(status){return language.text({'starting':'任务已预留，正在完成启动校验','startup-failed':'启动失败，原会话已结束','startup-overdue':'启动关联超时，检查原会话启动错误','startup-paused':'启动已暂停，保留原会话','ambiguous':'多个启动候选，需核对身份','unmapped':'未找到对应预留；先确认是否属于本团队'}[status]??'核对原会话与任务记录');}
   function renderExecutionNotice(){
     const notice=$('executionNotice');if(!notice)return;
     const uiVersion=document.querySelector('meta[name="team-workspace-version"]')?.content;
     const mismatch=/^\d+\.\d+\.\d+$/.test(uiVersion??'')&&current.pluginVersion&&uiVersion!==current.pluginVersion;
     const gap=current.registrationGap;
-    notice.hidden=!mismatch&&!gap?.count;$('showRegistration').hidden=!!mismatch||!gap?.count;
-    $('executionNoticeTitle').textContent=language.text(mismatch?'插件连接尚未更新':'执行记录待关联');
-    $('executionNoticeText').textContent=mismatch?language.text('面板与连接版本不一致，请重新加载插件连接。')+' '+uiVersion+' / '+current.pluginVersion:gap?.count?gap.count+language.text(' 个原生会话尚未关联到任务。面板进度可能不完整，请先核对已有交付，避免重复执行。'):'';
+    notice.hidden=!mismatch&&!gap?.count&&!gap?.pendingCount;$('showRegistration').hidden=!!mismatch||!gap?.count;
+    $('executionNoticeTitle').textContent=language.text(mismatch?'插件连接尚未更新':gap?.count?'执行关联需核对':'成员正在关联任务');
+    $('executionNoticeText').textContent=mismatch?language.text('面板与连接版本不一致，请重新加载插件连接。')+' '+uiVersion+' / '+current.pluginVersion:gap?.count?gap.count+language.text(' 个会话需要核对关联原因，避免重复执行。')+' '+(gap.records??[]).map(r=>(r.taskId?r.taskId+' · ':'')+associationLabel(r.status)+(r.reason?' · '+r.reason:'')).join('；'):gap?.pendingCount?language.text('任务已预留，成员正在完成启动校验。校验通过后才领取任务内容，无需补登记。'):'';
   }
   async function showRegistrationRecords(){
     const id=current?.team.id;if(!id)return;
@@ -355,7 +368,7 @@ export function setupTeamView(app){
       const data=await call('read_team_usage',{teamId:id,view:'full'});if(current?.team.id!==id)return;
       const rows=(data.usage?.contexts??[]).filter(c=>c.kind==='unregistered-native');
       $('teamRecords').open=true;
-      $('recordOutput').textContent=language.text('这些会话只统计用量，尚未登记任务。核对已有交付后补登记，不要重复执行。')+'\n'+rows.map(c=>c.threadId+' · '+(c.totalTokens==null?language.text('用量未知'):c.totalTokens.toLocaleString()+' tokens')).join('\n');
+      $('recordOutput').textContent=language.text('这些会话只统计用量，尚未登记任务。核对已有交付后补登记，不要重复执行。')+'\n'+rows.map(c=>c.threadId+' · '+(c.association?.taskId?c.association.taskId+' · ':'')+associationLabel(c.association?.status)+(c.association?.reason?' · '+c.association.reason:'')+' · '+(c.totalTokens==null?language.text('用量未知'):c.totalTokens.toLocaleString()+' tokens')).join('\n');
       $('recordOutput').scrollIntoView({block:'nearest'});$('recordOutput').focus({preventScroll:true});
     }catch(e){errorState(e.message);}finally{$('showRegistration').disabled=false;}
   }
@@ -369,6 +382,7 @@ export function setupTeamView(app){
     else if(control==='halted'){state='halted';title=language.text('团队已停止');}
     else if(team.state==='archived'){state='accepted';title=language.text('团队已归档');}
     else if(team.state==='delivered'){state='accepted';title=language.text('已完成本批验收');}
+    else if(current.workflow?.waitBlocked){state='blocked';title=language.text(current.workflow?.idleBlockers?.length?'团队执行受阻':'团队启动受阻');}
     else if(current.workflow?.stage==='task-planning')title=language.text('等待 Leader 拆分任务');
     else if(issues.length){state='blocked';title=counted(issues.length,' 项任务需要处理','task needs attention','tasks need attention');task=issues[0];}
     else if(unknown.length){state='unknown';title=counted(unknown.length,' 项状态待核对','state to verify','states to verify');task=unknown[0];}
@@ -380,10 +394,11 @@ export function setupTeamView(app){
     else if(reserved.length){title=counted(reserved.length,' 项等待派发','task awaiting dispatch','tasks awaiting dispatch');task=reserved[0];}
     else if(tasks.some(t=>t.status==='running')){state='observed';title=language.text('等待执行记录');task=tasks.find(t=>t.status==='running');}
     else if(ready.length){state='ready';title=counted(ready.length,' 项任务已就绪','task ready','tasks ready');task=tasks.find(t=>t.id===ready[0].taskId);}
-    else if(tasks.length&&tasks.every(t=>['accepted','cancelled'].includes(t.status))){title=language.text('任务已结束，等待收尾');}
+    else if(scopedTasks().length&&tasks.every(t=>t.status==='accepted')){title=language.text('任务已结束，等待收尾');}
     else if(pending.length){title=language.text('等待前置条件');task=tasks.find(t=>t.id===pending[0].taskId);}
     $('overviewStatus').dataset.state=state;$('overviewHeadline').textContent=title;
     $('overviewTask').hidden=!task;$('overviewTask').textContent=task?(taskNumbers.get(task.id)??task.id)+' · '+task.title:'';
+    if($('overviewBlocker')){const blockers=[...(current.workflow?.startupBlockers??[]),...(current.workflow?.idleBlockers??[])];$('overviewBlocker').hidden=!blockers.length;$('overviewBlocker').textContent=blockers.map(b=>(b.taskId?b.taskId+'：':'')+[b.message,...(b.reasons??[]).map(r=>r.message)].filter(Boolean).join(' · ')).join('；');}
   }
   function filteredTasks(){
     const query=$('taskSearch').value.trim().toLowerCase(),status=$('taskStatusFilter').value;
@@ -425,6 +440,7 @@ export function setupTeamView(app){
       const head=node('div',undefined,'member-head'),avatar=node('div',m.role.slice(0,1)||String(i+1),'avatar');avatar.setAttribute('aria-hidden','true');
       const body=node('div',undefined,'member-info'),identity=button(roleLabel(m),()=>chooseMember(m.id),'member-name member-select','member:'+m.id);identity.title=memberName(team,m);
       identity.setAttribute('aria-pressed',String(ui.memberId===m.id));body.append(identity,node('span',m.responsibility,'responsibility'));
+      if(m.executionMode==='leader')body.append(node('span',language.text('主会话执行'),'model-tag'));
       const executions=memberExecutions(m,team.tasks,runs),latest=executions.toSorted((a,b)=>Date.parse(a.startedAt)-Date.parse(b.startedAt)).at(-1);
       if(latest?.model){const model=node('span',latest.model,'model-tag');model.title=latest.model;body.append(model);}
       const summary=memberWorkSummary({...team,tasks:visibleTasks()},m,runs,current.readiness),status=node('div',undefined,'member-state '+state);
@@ -457,9 +473,9 @@ export function setupTeamView(app){
     const matching=filteredTasks();
     const tasks=(query||status?matching:team.tasks.length>100?team.tasks.filter(t=>!['accepted','cancelled'].includes(t.status)).concat(team.tasks.filter(t=>['accepted','cancelled'].includes(t.status)).slice(-60)):matching).slice(-100),byId=new Map(tasks.map(t=>[t.id,t])),ranks=new Map(),rows=new Map(),positions=new Map();
     const cardWidth=160,cardHeight=76,columnStep=186,rowStep=88;
-    function rank(id,seen=new Set()){if(ranks.has(id))return ranks.get(id);if(seen.has(id))return 0;seen.add(id);const t=byId.get(id),r=t?.dependencies.length?1+Math.max(...t.dependencies.map(d=>rank(d.taskId,new Set(seen)))):0;ranks.set(id,r);return r;}
+    function rank(id,seen=new Set()){if(ranks.has(id))return ranks.get(id);if(seen.has(id))return 0;seen.add(id);const dependencies=byId.get(id)?.dependencies.filter(d=>byId.has(d.taskId))??[],r=dependencies.length?1+Math.max(...dependencies.map(d=>rank(d.taskId,new Set(seen)))):0;ranks.set(id,r);return r;}
     for(const t of tasks){const col=rank(t.id),row=rows.get(col)??0;positions.set(t.id,{x:col*columnStep,y:row*rowStep});rows.set(col,row+1);}
-    const focused=ui.taskId,related=focused?dependencyFamily(tasks,focused):null,graph=$('dependencyGraph'),parallel=tasks.every(t=>!t.dependencies.length);
+    const focused=ui.taskId,related=focused?dependencyFamily(tasks,focused):null,graph=$('dependencyGraph'),parallel=tasks.every(t=>!t.dependencies.some(d=>byId.has(d.taskId)));
     $('dependencyTitle').textContent=parallel?language.text('并行任务'):language.text('任务依赖');
     $('dependencyHint').textContent=ui.taskId?language.text('已固定 ')+ui.taskId+language.text(' · 再次点击或 Escape 取消'):language.text('点击查看详情 · 前置满足后解锁');
     graph.classList.toggle('parallel',parallel);graph.style.setProperty('--task-node-width',cardWidth+'px');graph.style.setProperty('--task-node-height',cardHeight+'px');
@@ -518,6 +534,7 @@ export function setupTeamView(app){
     field(language.text('等待条件'),relationship.waiting.length?relationship.waiting.map(d=>d.taskId+' · '+d.memberLabel+language.text(' · 等待')+(d.when==='accepted'?language.text('验收'):d.when==='delivered'?language.text('有效交付'):language.text('提交'))).join('；'):language.text('前置已满足'));
     field(language.text('完成后解锁'),relationship.downstream.map(d=>d.id+' · '+d.memberLabel+'（'+(d.when==='accepted'?language.text('验收后'):d.when==='delivered'?language.text('有效交付后'):language.text('提交后'))+'）').join('；')||language.text('无后续依赖'));
     if(task.blockReason)field(language.text('阻塞原因'),task.blockReason);
+    if(attempt?.settlementException)field(language.text('交付登记受阻'),attempt.settlementException.reason);
     if(task.supersededBy)field(language.text('修复替代'),task.supersededBy+language.text('（原交付和审查证据保留）'));
     if(task.repairRound)field(language.text('审查轮次'),language.text('第 ')+task.repairRound+language.text(' 轮'));
     if(task.contract){field(language.text('阶段'),task.contract.stage);field(language.text('写入范围'),(task.contract.inScope??[]).join('；')||language.text('无'));field(language.text('排除范围'),(task.contract.outOfScope??[]).join('；')||language.text('无'));field(language.text('验证命令'),(task.contract.verify??[]).join('；')||language.text('源代码审查'));}
@@ -526,7 +543,7 @@ export function setupTeamView(app){
     for(const criterion of task.acceptanceCriteria??[])field(criterion.id,criterion.description);
     box.append(dl);
     if(task.status==='submitted')box.append(node('p',task.attempts.at(-1)?.acceptanceException?language.text('验收异常：')+task.attempts.at(-1).acceptanceException.reason:language.text(task.kind==='review'?'审核已提交，等待插件校验登记。':'成员已交付，等待独立审核。'),'muted'));
-    if(task.attempts.at(-1)?.acceptance)box.append(node('p',language.text('独立审核通过 · 插件校验已登记'),'muted'));
+    if(attempt?.acceptance)box.append(node('p',language.text(task.status==='accepted'&&attempt.id===task.attempts.at(-1)?.id?'独立审核通过 · 插件校验已登记':'保留历史验收记录，当前任务尚未验收'),'muted'));
     if(attempt)box.append(node('p',language.text('所选执行：第 ')+attempt.number+language.text(' 轮 · ')+memberName(current.team,executor)+(attempt.id===task.attempts.at(-1)?.id&&task.memberId===executor.id?language.text(' · 当前轮次'):language.text(' · 历史轮次')),'muted'));
     const note=observationNote(current.runs.find(r=>r.taskId===task.id&&r.attemptId===attempt?.id));if(note)box.append(node('p',note,'observation-note'));
     for(const e of task.evidence){const el=node('div',undefined,'evidence');el.append(node('small',language.text('第 ')+e.attempt+language.text(' 轮交付')),node('p',cleanDelivery(e.summary)));box.append(el);}
@@ -628,6 +645,16 @@ export function setupTeamView(app){
   function loseLiveStatus(message,{error=new Error(message),retainFresh=false}={}){if(current){current={...current,runs:current.runs.map(r=>['inProgress','starting','unknown'].includes(r.status)?failedRunObservation(r,error,{kind:error.observationIssueKind??'transport-unavailable',retainFresh}):r)};render();}$('syncState').textContent=message;}
   function expireActivity(){if(current&&renderedActivity!==activitySignature())render();}
   function errorState(message){$('errorState').hidden=false;$('errorText').textContent=message;$('loadingState').hidden=true;}
+  function syncObservedProgress(data){
+    const key=viewingHistory?null:panelProgressKey(data);
+    if(!linked||!key||progressSyncRequest||progressSyncKey===key)return;
+    const request={key,teamId:data.team.id,generation:connectionGeneration};progressSyncRequest=request;progressSyncKey=key;
+    void (async()=>{
+      try{const updated=await call('sync_team_progress',{teamId:request.teamId,revision:data.team.revision});if(linked&&request.generation===connectionGeneration&&current?.team.id===request.teamId)await accept(updated);}
+      catch(e){if(linked&&request.generation===connectionGeneration&&current?.team.id===request.teamId)errorState(language.text('进度登记失败，原执行记录已保留：')+e.message);}
+      finally{if(progressSyncRequest===request)progressSyncRequest=null;}
+    })();
+  }
   function requestDetails(data){
     targetTeamId=data.team.id;
     const target={teamId:data.team.id,revision:data.team.revision,detailToken:data.detailToken,generation:connectionGeneration};
@@ -668,7 +695,7 @@ export function setupTeamView(app){
     current={...current,team,runs,pluginVersion:data.pluginVersion??current.pluginVersion,registrationGap:data.registrationGap===undefined?current.registrationGap:data.registrationGap,stateDetailToken:data.detailToken,usage:data.usage??current.usage,workflow:data.workflow??current.workflow,readiness:data.readiness??current.readiness,observedAt:data.observedAt,observationMode:data.observationMode,latestStateAt:Math.max(current.latestStateAt??0,Date.parse(data.observedAt)||0),
       messages:current.messages?.map(m=>({...m,stale:stale(m)})),checkpoints:current.checkpoints?.map(c=>({...c,stale:stale(c)||(c.contractRevision??1)!==(team.tasks.find(t=>t.id===c.taskId)?.contractRevision??1)}))};
     validateSelection(team);
-    if(before.pluginVersion!==current.pluginVersion||JSON.stringify(before.registrationGap)!==JSON.stringify(current.registrationGap)||before.team.revision!==team.revision||runSignature(before.runs)!==runSignature(runs)||JSON.stringify(before.usage)!==JSON.stringify(current.usage))render();
+    if(before.pluginVersion!==current.pluginVersion||JSON.stringify(before.registrationGap)!==JSON.stringify(current.registrationGap)||before.team.revision!==team.revision||runSignature(before.runs)!==runSignature(runs)||JSON.stringify(before.usage)!==JSON.stringify(current.usage)||JSON.stringify(before.workflow)!==JSON.stringify(current.workflow))render();
   }
   async function accept(data){
     if(!data)return;const generation=connectionGeneration;
@@ -689,7 +716,7 @@ export function setupTeamView(app){
       }
       const pending=data.kind!=='team-state'||current?.team.id!==data.team.id||!current?.detailToken||current.detailToken!==data.detailToken;
       if(pending)requestDetails(data);
-      $('errorState').hidden=true;$('syncState').textContent=pending?language.text('状态已更新，详情同步中…'):language.text('最近成功同步 ')+new Date(data.observedAt).toLocaleTimeString()+language.text(' · 宿主公开执行记录快照');return;
+      $('errorState').hidden=true;$('syncState').textContent=pending?language.text('状态已更新，详情同步中…'):language.text('最近成功同步 ')+new Date(data.observedAt).toLocaleTimeString()+language.text(' · 宿主公开执行记录快照');syncObservedProgress(data);return;
     }
     if(data.kind==='team-detail'){
       if(current?.team.id===data.team.id&&data.team.revision<current.team.revision)return;
@@ -702,6 +729,7 @@ export function setupTeamView(app){
       current={...data,runs,latestStateAt:Math.max(changedTeam?0:current?.latestStateAt??0,Date.parse(data.observedAt)||0)};
       if(!same)render();$('errorState').hidden=true;$('loadingState').hidden=true;
       $('syncState').textContent=language.text('最近成功同步 ')+new Date(data.observedAt).toLocaleTimeString()+language.text(' · 宿主公开执行记录快照');
+      syncObservedProgress(data);
     }
   }
   async function poll(){
@@ -715,7 +743,7 @@ export function setupTeamView(app){
   }
   async function reconnect(){
     if(loading)return;loading=true;linked=true;navigationBusy=false;clearTimeout(timer);
-    const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('retryConnection').disabled=true;
+    const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;progressSyncRequest=null;progressSyncKey=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('retryConnection').disabled=true;
     try{const data=await call('open_team_workspace');if(generation===connectionGeneration){await accept(data);$('errorState').hidden=true;}}
     catch(e){if(generation===connectionGeneration)errorState(e.message);}
     finally{loading=false;$('retryConnection').disabled=false;if(linked&&generation===connectionGeneration)timer=setTimeout(poll,pollDelay());}
@@ -742,12 +770,12 @@ export function setupTeamView(app){
   $('showRecovery').onclick=()=>void showRecord('read_team_recovery');
   $('showDiagnostics').onclick=()=>{if(current){$('teamRecords').open=true;const ids=new Set(visibleTasks().map(t=>t.id)),stages=(current.diagnostics?.stages??[]).filter(s=>ids.has(s.taskId)).map(s=>s.taskId+language.text(' · 预留到绑定 ')+(s.reservationToBindMs??language.text('未知'))+language.text(' ms · 执行 ')+(s.executionMs??language.text('未知'))+' ms'),metrics=current.qualityMetrics;const summary=metrics?[language.text('审查执行 ')+metrics.reviewDispatches,language.text('实际派发 ')+(metrics.executionDispatches??0),language.text('验证复用 ')+(metrics.reusedVerificationCount??0),language.text('相同候选重复验证 ')+(metrics.repeatedVerificationCount??0),language.text('已观察执行时长 ')+(metrics.observedExecutionMs??language.text('未知'))+' ms']:[];$('recordOutput').textContent=[...summary,...stages].join('\n')||language.text('尚无可计算的执行时间记录。');}};
   $('downloadReport').onclick=()=>{if(!report)return;const url=URL.createObjectURL(new Blob([report.text],{type:report.mimeType})),a=document.createElement('a');a.href=url;a.download=report.filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-  return {accept,setLanguage:value=>language.set(value),connect:async()=>{linked=true;const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('loadingState').hidden=!current;$('emptyState').hidden=true;
+  return {accept,setLanguage:value=>language.set(value),connect:async()=>{linked=true;const generation=++connectionGeneration;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;progressSyncRequest=null;progressSyncKey=null;wakeRequested=false;clearInterval(expiryTimer);expiryTimer=setInterval(expireActivity,1000);$('loadingState').hidden=!current;$('emptyState').hidden=true;
     try{const data=await call('open_team_workspace');if(linked&&generation===connectionGeneration)await accept(data);}
     catch(e){if(linked&&generation===connectionGeneration)errorState(e.message);}
     if(linked&&generation===connectionGeneration)void poll();
-  },disconnect:()=>{linked=false;connectionGeneration++;selectionGeneration++;navigationBusy=false;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;clearTimeout(timer);clearInterval(expiryTimer);loseLiveStatus(language.text('宿主连接中断，执行状态待核对。'));errorState(language.text('宿主连接中断，显示内容可能已过期。'));},
-  close:()=>{memberGoals.close(false);actionTooltips.close();extras.close();language.close();saveScroll();linked=false;connectionGeneration++;detailsRequest=null;detailsWanted=null;clearTimeout(timer);clearInterval(expiryTimer);window.removeEventListener('scroll',saveScroll);$('dependencyGraph').parentElement.removeEventListener('scroll',saveScroll);document.removeEventListener('toggle',onToggle,true);document.removeEventListener('keydown',onKey);document.removeEventListener('scroll',onInnerScroll,true);document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('focus',onVisible);}};
+  },disconnect:()=>{linked=false;connectionGeneration++;selectionGeneration++;navigationBusy=false;polling=null;detailsRequest=null;detailsWanted=null;navigationRead=null;progressSyncRequest=null;progressSyncKey=null;clearTimeout(timer);clearInterval(expiryTimer);loseLiveStatus(language.text('宿主连接中断，执行状态待核对。'));errorState(language.text('宿主连接中断，显示内容可能已过期。'));},
+  close:()=>{memberGoals.close(false);actionTooltips.close();extras.close();language.close();saveScroll();linked=false;connectionGeneration++;detailsRequest=null;detailsWanted=null;progressSyncRequest=null;progressSyncKey=null;clearTimeout(timer);clearInterval(expiryTimer);window.removeEventListener('scroll',saveScroll);$('dependencyGraph').parentElement.removeEventListener('scroll',saveScroll);document.removeEventListener('toggle',onToggle,true);document.removeEventListener('keydown',onKey);document.removeEventListener('scroll',onInnerScroll,true);document.removeEventListener('visibilitychange',onVisible);window.removeEventListener('focus',onVisible);}};
 }
 
 // The editor lives outside the polling renderer so status updates cannot replace
@@ -1044,7 +1072,7 @@ export function setupTeamLanguage(){
     "已完成":"Completed",
 
     '调整角色目标':'Edit role goal','编辑角色目标':'Edit role goal','角色目标':'Role goal','修改说明（可选）':'Change note (optional)','保存目标':'Save goal','正在保存…':'Saving…','重新读取目标':'Reload goal','当前版本':'Current version','修改记录':'Change history','修改前':'Before','修改后':'After','正在读取角色目标…':'Loading role goal…','保存后用于后续派发，当前任务继续按原约定执行。':'Applies to future dispatches. Current tasks keep their existing instructions.','编辑后用于后续派发，保留当前任务约定':'Edit the goal for future dispatches; current task instructions are preserved','用户在团队面板调整角色目标':'User edited the role goal in the team panel','角色目标数据无效，请重新读取。':'Invalid role goal data. Reload to continue.','保存结果未确认，请重试或重新读取目标。':'Save result is unconfirmed. Retry or reload the goal.','角色目标已被修改，草稿已保留。请重新读取最新目标后再编辑。':'The goal has changed. Your draft is preserved. Reload the latest goal before editing.',
-    '团队工作台':'Team Workspace','当前目标':'Current goal','整体进度':'Overall progress','任务':'Tasks','运行说明':'Run notes','运行限制':'Execution limits','没有匹配的任务':'No matching tasks','当前仅显示前 100 项，请搜索或筛选更多任务。':'Showing the first 100 tasks. Search or filter for more.','刷新':'Refresh','展开完整目标':'Expand full goal','详情':'Details','关闭详情':'Close details','添加说明':'Add note','团队成员':'Team members','团队状态':'Team status','等待计划确认':'Awaiting plan approval',' 项任务需要处理':' tasks need attention',' 项任务执行中':' tasks running',' 项等待独立审查':' awaiting independent review',' 项等待派发':' awaiting dispatch','等待执行记录':'Awaiting execution records',' 项任务已就绪':' tasks ready','任务已结束，等待收尾':'Tasks settled, awaiting wrap-up','等待前置条件':'Awaiting dependencies','状态':'Status','当前关注':'Current focus','已就绪，等待派发':'Ready, awaiting dispatch','新任务派发已暂停':'Dispatch paused','查看详情':'View details',
+    '团队执行受阻':'Team execution blocked','团队启动受阻':'Team startup blocked','团队工作台':'Team Workspace','当前目标':'Current goal','整体进度':'Overall progress','任务':'Tasks','运行说明':'Run notes','运行限制':'Execution limits','没有匹配的任务':'No matching tasks','当前仅显示前 100 项，请搜索或筛选更多任务。':'Showing the first 100 tasks. Search or filter for more.','刷新':'Refresh','展开完整目标':'Expand full goal','详情':'Details','关闭详情':'Close details','添加说明':'Add note','团队成员':'Team members','团队状态':'Team status','等待计划确认':'Awaiting plan approval',' 项任务需要处理':' tasks need attention',' 项任务执行中':' tasks running',' 项等待独立审查':' awaiting independent review',' 项等待派发':' awaiting dispatch','等待执行记录':'Awaiting execution records',' 项任务已就绪':' tasks ready','任务已结束，等待收尾':'Tasks settled, awaiting wrap-up','等待前置条件':'Awaiting dependencies','状态':'Status','当前关注':'Current focus','已就绪，等待派发':'Ready, awaiting dispatch','新任务派发已暂停':'Dispatch paused','查看详情':'View details',
     '停止':'Stop','继续执行':'Continue','正在提交…':'Submitting…','等待执行':'Awaiting execution','执行状态与操作':'Execution status and actions','操作说明（可选）':'Note (optional)','补充说明（可选）':'Add a note (optional)','恢复选项与说明':'Resume options and note','继续待执行任务':'Continue waiting tasks',' 项中断任务将重试':' stopped tasks will be retried','；可在恢复选项中调整。':'; adjust in resume options.','，保留已完成的交付。':'; completed deliveries are preserved.','停止会保留进度与交付记录。':'Stopping preserves progress and deliveries.','正在结束成员任务，进度与记录会保留。':'Ending member tasks. Progress and records will be preserved.','进度与交付记录已保留。':'Progress and deliveries have been preserved.',
     '查看计划':'View plan','收起计划':'Hide plan','团队计划':'Team plan','团队变更':'Team change','已读取确认记录。':'Approval record loaded.','更多设置':'More settings','用户在团队面板点击停止':'User clicked Stop in the team panel','用户在团队面板点击继续执行':'User clicked Continue in the team panel','正在通知主会话结束成员任务…':'Notifying the leader to end member tasks…','正在通知主会话继续执行…':'Notifying the leader to continue…',' 项任务将重试':' tasks will be retried','因停止而中断':'Interrupted by team stop',
     '历史与模板':'History & profiles','语言':'Language','刷新团队':'Refresh team','收起面板':'Collapse panel','切换团队':'Switch team','团队历史':'Team history','团队模板':'Team profiles','返回当前团队':'Current team','关闭':'Close','更多历史':'More history',
@@ -1113,6 +1141,7 @@ export function setupTeamLanguage(){
   "最多 8 个活跃岗位。": "At most 8 active roles.",
   "新岗位": "New role",
   "请填写职责": "Enter responsibility",
+  "主会话执行": "Leader execution",
   "请填写设置理由": "Enter the reason",
   "交付、验收与依赖 · ": "Deliveries, acceptance and dependencies · ",
   "优先级 ": "Priority ",
@@ -1331,8 +1360,9 @@ export function setupTeamLanguage(){
   "宿主连接中断，显示内容可能已过期。": "Host connection lost; displayed content may be stale.",
   "保留现有阶段": "Keep existing stage"
 });
+  Object.assign(dictionary,{'执行关联需核对':'Check execution association','成员正在关联任务':'Linking members to tasks',' 个会话需要核对关联原因，避免重复执行。':' conversations need association checks; avoid repeating work.','任务已预留，成员正在完成启动校验。校验通过后才领取任务内容，无需补登记。':'Tasks are reserved. Members receive work after startup authentication; no recovery registration is needed.','启动关联超时，检查原会话启动错误':'Startup linking is overdue; inspect the original conversation error','启动已暂停，保留原会话':'Startup is paused; preserve the original conversation','多个启动候选，需核对身份':'Multiple launch candidates; verify identity','未找到对应预留；先确认是否属于本团队':'No matching reservation; verify whether this conversation belongs to the team','核对原会话与任务记录':'Verify the original conversation and task records','任务已预留，正在完成启动校验':'Task reserved; authenticating startup'});
   Object.assign(dictionary,{'累计处理 ':'Processed total ',' · 缓存输入 ':' · cached input ',' · 新增输入 ':' · uncached input ',' · 输出 ':' · output ','插件连接尚未更新':'Plugin connection needs reloading','执行记录待关联':'Execution records need linking','面板与连接版本不一致，请重新加载插件连接。':'Panel and connection versions differ. Reload the plugin connection.',' 个原生会话尚未关联到任务。面板进度可能不完整，请先核对已有交付，避免重复执行。':' native conversations are not linked to tasks. Progress may be incomplete; check existing deliveries before repeating work.','这些会话只统计用量，尚未登记任务。核对已有交付后补登记，不要重复执行。':'These conversations contribute usage only. Register existing deliveries after verification; do not repeat completed work.','用量未知':'Usage unknown'});
-  Object.assign(dictionary,{"重新连接": "Reconnect", "团队跟随当前对话": "The team follows this conversation", "当前主会话担任 Leader，成员接受任务，这里显示团队执行。": "This conversation is the Leader. Members receive tasks; their execution appears here.", "确认只授权执行；任务仍须独立审查与验收。": "Approval authorizes execution. Independent review and acceptance remain required.", "队": "T", "主会话 · Leader": "Current conversation · Leader", "拆解 · 派发 · 汇总": "Plan · dispatch · integrate", "总进度": "Overall progress", "受阻": "Blocked", "用量与运行记录": "Usage and execution records", "查看耗时": "View timings", "查看接续状态": "View recovery", "保存报告": "Save report", "成员": "Members", "收起": "Collapse", "能力说明": "Capability details"});
+  Object.assign(dictionary,{'交付登记受阻':'Delivery registration blocked','保留历史验收记录，当前任务尚未验收':'Historical acceptance retained; current task is not accepted','进度登记失败，原执行记录已保留：':'Progress registration failed; original execution records are retained: ',"重新连接": "Reconnect", "团队跟随当前对话": "The team follows this conversation", "当前主会话担任 Leader，成员接受任务，这里显示团队执行。": "This conversation is the Leader. Members receive tasks; their execution appears here.", "确认只授权执行；任务仍须独立审查与验收。": "Approval authorizes execution. Independent review and acceptance remain required.", "队": "T", "主会话 · Leader": "Current conversation · Leader", "拆解 · 派发 · 汇总": "Plan · dispatch · integrate", "总进度": "Overall progress", "受阻": "Blocked", "用量与运行记录": "Usage and execution records", "查看耗时": "View timings", "查看接续状态": "View recovery", "保存报告": "Save report", "成员": "Members", "收起": "Collapse", "能力说明": "Capability details"});
   Object.assign(dictionary,{'待 Leader 接收':'Awaiting Leader settlement','本目标 ':'Current goal ',' 次执行 · 历史 ':' executions · history ',' 次 · 查看轮次':' executions · view attempts','累计 ':'Total ',' 次执行 · 查看轮次':' executions · view attempts','已加载 ':'Loaded ',' 条执行记录；完整记录按需读取。':' execution records; full records available on demand.'});
   const reverse=new Map(Object.entries(dictionary).map(([a,b])=>[b,a]));
   let initialized=false,locale='zh-CN';try{locale=localStorage.getItem('team-workspace:locale')==='en'?'en':'zh-CN';}catch{}

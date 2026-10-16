@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtemp,mkdir,writeFile,rm,symlink} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {evidencePage,acceptanceEvidence} from '../src/team-evidence.mjs';
+import {buildHandoff} from '../src/team-checkpoints.mjs';
 import {LeaderEngine} from '../src/leader-engine.mjs';
 import {workflowActions} from '../src/team-workflow.mjs';
 import {coordinationResponse} from '../src/team-coordination-response.mjs';
@@ -13,18 +15,19 @@ import {randomUUID} from 'node:crypto';
 import {dispatchBlockers} from '../src/team.mjs';
 
 const passed=()=>({summary:'Independently verified saved candidate',decision:'accept',reason:'Exact candidate and required criteria verified',checks:[{name:'behavior',criterionId:'AC',status:'PASS',evidence:'Host npm test exited 0, saved log; inspected src/a.mjs'}],findings:[]});
-async function fixture(t,{stage='implementation',next=false,sourceOnly=false,future=false}={}){
+const rework=()=>({...passed(),decision:'rework',reason:'Required behavior is incorrect',checks:[{name:'behavior',criterionId:'AC',status:'FAIL',evidence:'Independent source inspection identifies incorrect value'}],findings:[{id:'F1',severity:'high',status:'open',description:'Incorrect required value'}]});
+async function fixture(t,{stage='implementation',next=false,sourceOnly=false,future=false,modern=false,autoRepair=false,maxReviewRounds=3}={}){
   const root=await mkdtemp(join(tmpdir(),'reviewer-acceptance-'));t.after(()=>rm(root,{recursive:true,force:true}));
   const cwd=join(root,'project');await mkdir(join(cwd,'src'),{recursive:true});await writeFile(join(cwd,'src/a.mjs'),'export const value=1;');
   const runs=new Map(),observer={calls:0,async inspect(l,p,thread,marker){this.calls++;assert.equal(l,'leader');assert.equal(p,cwd);const run=runs.get(marker);assert.equal(run.threadId,thread);return structuredClone(run);}};
   const engine=new LeaderEngine({root:join(root,'records'),observer});t.after(()=>engine.close());
-  const work={id:'work',title:'Deliver',goal:'Requested behavior',acceptance:'AC checked',acceptanceCriteria:[{id:'AC',description:'Required behavior'}],memberId:'dev',kind:'work',...(sourceOnly?{validationMode:'source-only'}:{}),dependencies:[],contract:{stage,inScope:['src'],outOfScope:[],verify:sourceOnly?[]:['npm test'],coverageOf:[]}};
+  const work={id:'work',title:'Deliver',goal:'Requested behavior',acceptance:'AC checked',acceptanceCriteria:[{id:'AC',description:'Required behavior'}],memberId:'dev',kind:'work',...(modern?{qualityMode:'strict'}:{}),...(sourceOnly?{validationMode:'source-only'}:{}),dependencies:[],contract:{stage,inScope:['src'],outOfScope:[],verify:sourceOnly?[]:['npm test'],coverageOf:[]}};
   const review={id:'review',title:'Review',goal:'Check candidate',acceptance:'Independent proof',memberId:'qa',kind:'review',reviewOfTaskId:'work',dependencies:[{taskId:'work',when:'submitted'}]};
   const tasks=[work,review];if(next)tasks.push({id:'next',title:'Downstream',goal:'Follow approved result',acceptance:'Proof',memberId:'dev',kind:'work',dependencies:[{taskId:'work',when:'accepted'}]},{...review,id:'next_review',reviewOfTaskId:'next',dependencies:[{taskId:'next',when:'submitted'}]});
   if(future)tasks.push({id:'integration',title:'Joint acceptance',goal:'Real API and browser check',acceptance:'Future execution required',acceptanceCriteria:[{id:'G6',description:'Real API, browser and release checks'}],memberId:'dev',kind:'work',dependencies:[{taskId:'work',when:'accepted'}],contract:{stage:'integration',inScope:['src'],outOfScope:[],verify:['npm test'],coverageOf:[]}},{...review,id:'integration_review',reviewOfTaskId:'integration',dependencies:[{taskId:'integration',when:'submitted'}]});
-  const team=await engine.planOnce('owner',{cwd,threadId:'leader'},{goal:'Validated delivery',execute:true,plan:{members:[{id:'dev',role:'Developer',responsibility:'Implement',reason:'Source work',writeScopes:['src']},{id:'qa',role:'Reviewer',responsibility:'Independent review',reason:'Verify',writeScopes:[]}],tasks}});
+  const team=await engine.planOnce('owner',{cwd,threadId:'leader'},{goal:'Validated delivery',execute:true,policy:{autoRepair,maxReviewRounds},plan:{members:[{id:'dev',role:'Developer',responsibility:'Implement',reason:'Source work',writeScopes:['src']},{id:'qa',role:'Reviewer',responsibility:'Independent review',reason:'Verify',writeScopes:[]}],tasks}});
   async function execute(taskId,output,{commands,settle=true}={}){
-    const latest=await engine.native('owner',team.id),c=await engine.claim('owner',team.id,latest.revision,taskId),d=c.dispatch,thread='child-'+taskId;
+    const latest=await engine.native('owner',team.id),c=await engine.claim('owner',team.id,latest.revision,taskId),d=c.dispatch,thread='child-'+taskId+'-'+d.attemptId;
     if(typeof output==='function')output=output(d);
     const run={threadId:thread,turnId:d.attemptId,status:'completed',source:'native-thread-persisted-snapshot',outputs:[{text:typeof output==='string'?output:JSON.stringify(output)}],commands:commands??(taskId==='work'?[{command:'npm test',status:'completed',exitCode:0,output:'passed'}]:[])};
     runs.set(d.marker,run);const b=await engine.bind('owner',team.id,c.team.revision,taskId,d.attemptId,thread);
@@ -41,6 +44,40 @@ test('settlement atomically accepts independent PASS and unlocks the next task; 
   const restarted=new LeaderEngine({root:join(f.root,'records'),observer:f.observer});t.after(()=>restarted.close());const before=await restarted.native('owner',f.team.id),calls=f.observer.calls;
   await restarted.settle('owner',f.team.id,1,'review',a.id);await restarted.acceptReview('owner',f.team.id,1,'review',a.id,'accept','Legacy duplicate call');
   assert.equal(f.observer.calls,calls);assert.deepEqual(await restarted.native('owner',f.team.id),before);
+});
+test('single reviewer rework creates bounded repair and fresh independent review, retaining original evidence through closure',async t=>{
+ const f=await fixture(t,{modern:true,autoRepair:true});const original=await f.submitWork(),done=await f.execute('review',rework());
+ assert.equal(done.team.tasks[0].status,'cancelled');assert.equal(done.team.tasks[1].status,'accepted');assert.equal(done.team.tasks[1].attempts[0].acceptance,undefined);assert.equal(done.team.tasks[1].attempts[0].acceptanceException,undefined);
+ assert.deepEqual(done.team.tasks[0].evidence,original.team.tasks[0].evidence);assert.equal(done.team.tasks[1].attempts[0].reworkRegistration.targetAttemptId,original.team.tasks[0].attempts[0].id);
+ const repair=done.team.tasks.find(t=>t.kind==='work'&&t.repairRootTaskId==='work'),review=done.team.tasks.find(t=>t.reviewOfTaskId===repair.id);
+ assert.ok(repair&&review);assert.equal(repair.contract.stage,'repair');assert.equal(repair.repairRound,2);
+ const calls=f.observer.calls,replay=await f.engine.repairDelivery('owner',f.team.id,1,'work','Retry lost registration response');assert.equal(replay.team.tasks.length,4);assert.equal(f.observer.calls,calls);
+ await writeFile(join(f.cwd,'src/a.mjs'),'export const value=2;');
+ await f.execute(repair.id,{summary:'Fixed F1',changedPaths:['src/a.mjs'],verificationInputs:['src'],acceptanceResults:[{criterionId:'AC',status:'PASS',evidence:'Host npm test passed'}],commandsRun:['npm test']},{commands:[{command:'npm test',status:'completed',exitCode:0}]});
+ const verified=await f.execute(review.id,{...passed(),findings:[{id:'F1',severity:'high',status:'resolved',description:'Incorrect required value',resolutionEvidence:'Independent source reinspection confirms corrected value and existing native test evidence'}]});
+ assert.equal(verified.team.tasks.find(t=>t.id===repair.id).status,'accepted');assert.equal(verified.team.findings[0].status,'resolved');
+ const closed=await f.engine.finish('owner',f.team.id,verified.team.revision,'Close reviewed repaired goal',[{name:'Final controlled integration verification',status:'PASS',evidence:'Controlled native host fixture confirms repaired src/a.mjs and terminal npm test exit 0'}]);assert.equal(closed.team.state,'delivered');assert.equal(closed.team.tasks[1].evidence.length,1);assert.equal(closed.team.tasks[0].attempts.length,1);
+});
+test('single rework without automatic repairs offers explicit repair and cannot bypass real review or exceed the round limit',async t=>{
+ const f=await fixture(t,{modern:true,maxReviewRounds:1});await f.submitWork();const done=await f.execute('review',rework());
+ assert.equal(done.team.tasks[0].status,'blocked');const action=done.workflow.actions.find(a=>a.taskId==='work');assert.equal(action.type,'review-round-limit');assert.equal(action.requiresUserDecision,true);assert.equal(action.tool,undefined);assert.equal(action.limit,1);
+ const blocked=await f.engine.repairDelivery('owner',f.team.id,done.team.revision,'work','Apply original-scope repair');assert.equal(blocked.team.tasks.length,2);assert.match(blocked.team.tasks[0].blockReason,/round limit/);
+});
+test('verification-only rework routes to existing upstream owner and preserves findings for the next joint review',async t=>{
+ const f=await fixture(t,{modern:true,autoRepair:true,future:true});await f.submitWork();await f.execute('review',passed());
+ let team=await f.engine.native('owner',f.team.id);await f.engine.store.update(team.id,'owner',team.revision,t=>{t.tasks.find(x=>x.id==='integration').qualityMode='strict';t.tasks.find(x=>x.id==='integration').contract.inScope=[];});
+ const submit=()=>f.execute('integration',{summary:'Joint verification',changedPaths:[],verificationInputs:['src'],acceptanceResults:[{criterionId:'G6',status:'PASS',evidence:'Native joint npm test exit 0'}],commandsRun:['npm test']},{commands:[{command:'npm test',status:'completed',exitCode:0}]});
+ await submit();const failed=await f.execute('integration_review',{...rework(),checks:[{name:'joint',criterionId:'G6',status:'FAIL',evidence:'Independent inspection found incorrect upstream value'}]});
+ assert.equal(failed.team.tasks.find(t=>t.id==='integration').status,'blocked');assert.equal(failed.team.tasks.length,4);
+ await assert.rejects(()=>f.engine.repairDelivery('owner',team.id,failed.team.revision,'integration','Repair'),/no write scope/);
+ const routed=await f.engine.repairDelivery('owner',team.id,failed.team.revision,'integration','Fix the existing source owner','work'),repair=routed.team.tasks.find(t=>t.repairRootTaskId==='work'&&t.kind==='work'),review=routed.team.tasks.find(t=>t.reviewOfTaskId===repair.id);
+ assert.equal(routed.team.tasks.find(t=>t.id==='integration').status,'waiting');assert.equal(routed.team.findings[0].rootTaskId,'integration');assert.equal(routed.team.repairRoutings.length,1);assert.deepEqual(routed.team.tasks.find(t=>t.id==='integration').dependencies,[{taskId:repair.id,when:'accepted'}]);
+ const replay=await f.engine.repairDelivery('owner',team.id,1,'integration','Fix the existing source owner','work');assert.equal(replay.team.tasks.length,6);
+ await writeFile(join(f.cwd,'src/a.mjs'),'export const value=2;');
+ await f.execute(repair.id,{summary:'Fixed original source',changedPaths:['src/a.mjs'],verificationInputs:['src'],acceptanceResults:[{criterionId:'AC',status:'PASS',evidence:'Native npm test passed'}],commandsRun:['npm test']},{commands:[{command:'npm test',status:'completed',exitCode:0}]});await f.execute(review.id,passed());
+ await submit();const done=await f.execute('integration_review',{...passed(),checks:[{name:'joint',criterionId:'G6',status:'PASS',evidence:'Independent inspection of changed upstream candidate and existing native joint test'}],findings:[{id:'F1',severity:'high',status:'resolved',description:'Incorrect required value',resolutionEvidence:'Independent joint reinspection confirms fixed behavior'}]});
+ assert.equal(done.team.tasks.find(t=>t.id==='integration').status,'accepted');assert.equal(done.team.findings[0].status,'resolved');assert.equal(done.team.tasks.find(t=>t.id==='integration').attempts.length,2);
+ const closed=await f.engine.finish('owner',team.id,done.team.revision,'Close verified joint repair');assert.equal(closed.team.state,'delivered');
 });
 
 const phaseVerdict=()=>({...passed(),checks:[...passed().checks,{name:'Future real API, browser and Docker',criterionId:'G6',status:'NOT_RUN',evidence:'Owned by the confirmed downstream integration contract; no real execution is claimed'}]});
@@ -279,4 +316,70 @@ test('cold reload rejects changed scope/report ownership and retains the frozen 
 test('many incidental errors produce a bounded preview with access to all original command evidence',async t=>{
  const f=await fixture(t,{future:true}),commands=Array.from({length:40},(_,i)=>({command:'rg optional-'+i+' src',status:'failed',exitCode:1})),saved=await seedOldScopeRejection(f,{waiting:true,commands}),preview=await f.engine.reconcileReview('owner',saved.id,saved.revision,{taskId:'review',attemptId:saved.tasks[1].attempts[0].id,requestId:randomUUID(),note:'Read saved exceptions'});
  assert.equal(preview.unresolvedCommandCount,40);assert.equal(preview.unresolvedCommands.length,8);assert.equal(preview.hasMoreCommands,true);assert.equal(preview.evidenceAccess.section,'commands');assert.ok(Buffer.byteLength(JSON.stringify(preview))<6000);assert.equal((await f.engine.native('owner',saved.id)).tasks[1].attempts[0].observation.commands.length,40);
+});
+
+test('downstream reads exact accepted dependency provenance without extra observation, review or execution',async t=>{
+ const f=await fixture(t,{next:true});await f.submitWork();const done=await f.execute('review',passed()),calls=f.observer.calls;
+ const saved=structuredClone(done.team),page=evidencePage(saved,{taskId:'work',section:'acceptance'}),proof=JSON.parse(page.text);
+ assert.equal(proof.recorded,true);assert.equal(proof.savedEvidenceMatchesReceipt,true);assert.equal(proof.currentCandidateVerified,false);assert.equal(proof.verdict.decision,'accept');assert.equal(proof.receipt.targetAttemptId,saved.tasks[0].attempts[0].id);
+ assert.equal(buildHandoff(saved,'next').dependencies[0].acceptanceReference.section,'acceptance');assert.equal(f.observer.calls,calls);assert.deepEqual(saved,done.team);
+ let text='',offset=0,cursor;do{const p=evidencePage(saved,{taskId:'work',section:'acceptance',limit:512,offset,cursor});text+=p.text;offset=p.nextOffset;cursor=p.cursor;if(!p.hasMore)break;}while(true);assert.deepEqual(JSON.parse(text),proof);
+ const modified=structuredClone(saved);modified.tasks[1].evidence[0].summary=JSON.stringify({...passed(),reason:'Changed after registration'});assert.equal(JSON.parse(evidencePage(modified,{taskId:'work',section:'acceptance'}).text).savedEvidenceMatchesReceipt,false);
+ const missing=structuredClone(saved);delete missing.tasks[0].attempts[0].acceptance;assert.equal(JSON.parse(evidencePage(missing,{taskId:'work',section:'acceptance'}).text).recorded,false);
+ const foreign=structuredClone(saved);foreign.tasks[0].attempts[0].acceptance.targetTaskId='next';assert.throws(()=>evidencePage(foreign,{taskId:'work',section:'acceptance'}),/does not bind/);
+ const batch=structuredClone(saved),review=batch.tasks[1],a=review.attempts[0];review.reviewOfTaskIds=['work','foreign'];review.evidence[0].summary=JSON.stringify({summary:'Batch',decision:'accept',targets:[{...passed(),taskId:'work',attemptId:batch.tasks[0].attempts[0].id},{...passed(),taskId:'foreign',attemptId:'foreign',reason:'FOREIGN PRIVATE TARGET'}]});
+ const selected=acceptanceEvidence(batch,batch.tasks[0],batch.tasks[0].attempts[0]);assert.equal(selected.verdict.taskId,'work');assert.equal(JSON.stringify(selected).includes('FOREIGN PRIVATE TARGET'),false);assert.equal(selected.savedEvidenceMatchesReceipt,false);
+});
+
+test('current accepted-candidate proof checks exact saved scope and receipt without commands, review or state mutation',async t=>{
+ const {verifyCandidateInputs}=await import('../src/candidate-verification.mjs');const f=await fixture(t);await f.submitWork();const done=await f.execute('review',passed()),saved=structuredClone(done.team),before=structuredClone(saved),calls=f.observer.calls;
+ const proof=await verifyCandidateInputs(saved,{taskId:'work'});assert.equal(proof.acceptedCandidateVerified,true);assert.equal(proof.matchesSavedInputs,true);assert.equal(proof.currentContractMatches,true);assert.deepEqual(saved,before);assert.equal(f.observer.calls,calls);
+ for(const mutate of [t=>t.tasks[0].status='waiting',t=>t.tasks[1].status='waiting',t=>t.tasks[1].attempts.push({...t.tasks[1].attempts[0],id:'new-review-attempt'}),t=>t.tasks[0].contractRevision=2]){
+  const reopened=structuredClone(saved);mutate(reopened);const result=await verifyCandidateInputs(reopened,{taskId:'work'});assert.equal(result.matchesSavedInputs,true);assert.equal(result.acceptedCandidateVerified,false);
+ }
+ const altered=structuredClone(saved);altered.tasks[1].evidence[0].summary=JSON.stringify({...passed(),reason:'Tampered receipt evidence'});assert.equal((await verifyCandidateInputs(altered,{taskId:'work'})).acceptedCandidateVerified,false);
+ await writeFile(join(f.cwd,'src/a.mjs'),'export const value=2;');const changed=await verifyCandidateInputs(saved,{taskId:'work'});assert.equal(changed.verified,true);assert.equal(changed.matchesSavedInputs,false);assert.equal(changed.acceptedCandidateVerified,false);assert.deepEqual(saved,before);assert.equal(f.observer.calls,calls);
+});
+
+test('panel progress synchronization registers saved terminal work and independent PASS without dispatch or final closure',async t=>{
+ const f=await fixture(t,{next:true}),bound=await f.submitWork({settle:false}),work=await f.engine.syncProgress('owner',f.team.id,bound.team.revision);
+ assert.equal(work.team.tasks[0].status,'submitted');assert.equal(work.team.tasks[1].attempts.length,0);assert.equal(work.dispatches,undefined);assert.equal(work.progressSync.startsModels,false);
+ const reviewed=await f.execute('review',passed(),{settle:false}),done=await f.engine.syncProgress('owner',f.team.id,reviewed.team.revision);
+ assert.equal(done.team.tasks[0].status,'accepted');assert.equal(done.team.tasks[1].status,'accepted');assert.equal(done.team.tasks[2].status,'waiting');assert.equal(done.team.tasks[2].attempts.length,0);assert.equal(done.team.state,'active');assert.equal(done.team.finalAcceptance,undefined);assert.equal(done.dispatches,undefined);
+ const replay=await f.engine.syncProgress('owner',f.team.id,done.team.revision);assert.equal(replay.progressSync.reason,'nothing-to-register');assert.equal(replay.team.revision,done.team.revision);assert.deepEqual(replay.team.tasks,done.team.tasks);
+});
+test('panel registration keeps unknown/malformed deliveries, stale revisions and concurrent stops safe',async t=>{
+ for(const kind of ['unknown','malformed','stale','stopped','stop-race'])await t.test(kind,async t=>{
+  const f=await fixture(t),bound=await f.execute('work',kind==='malformed'?'Original malformed report':{summary:'Delivered',changedPaths:['src/a.mjs'],verificationInputs:['src'],acceptanceResults:[{criterionId:'AC',status:'PASS',evidence:'npm test passed'}]},{settle:false});
+  if(kind==='unknown')f.runs.get(bound.team.tasks[0].attempts[0].marker).status='unknown';
+  let revision=bound.team.revision;
+  if(kind==='stale')revision--;
+  if(kind==='stopped'){const stopped=await f.engine.stop('owner',f.team.id,revision,{requestId:randomUUID(),reason:'User stop'});revision=stopped.team.revision;}
+  if(kind==='stop-race'){const advance=f.engine.advance.bind(f.engine);f.engine.advance=async(...args)=>{await f.engine.stop('owner',f.team.id,revision,{requestId:randomUUID(),reason:'Concurrent stop'});return advance(...args);};}
+  const done=await f.engine.syncProgress('owner',f.team.id,revision);assert.equal(done.team.tasks[0].status,'running');assert.equal(done.team.tasks[0].attempts.length,1);assert.equal(done.team.tasks[1].attempts.length,0);assert.equal(done.dispatches,undefined);
+  if(['stopped','stop-race'].includes(kind)){assert.equal(done.team.state,'stopping');assert.equal(done.team.dispatchPaused,true);}
+  if(kind==='malformed'){assert.equal(done.advancement.partial,true);assert.equal(done.team.tasks[0].attempts[0].observation.outputs[0].text,'Original malformed report');const again=await f.engine.syncProgress('owner',f.team.id,done.team.revision);assert.equal(again.team.revision,done.team.revision);assert.equal(again.team.events.filter(e=>e.type==='settlement-exception').length,1);}
+ });
+});
+
+test('explicit finishReady settles the final independent review and closes with unchanged original evidence',async t=>{
+ const f=await fixture(t,{stage:'integration'});await f.submitWork();const bound=await f.execute('review',passed(),{settle:false});
+ const done=await f.engine.advance('owner',f.team.id,bound.team.revision,{finishReady:true});
+ assert.equal(done.team.state,'delivered');assert.equal(done.advancement.errors.length,0);
+ assert.ok(done.team.tasks.every(t=>t.status==='accepted'&&t.attempts.length===1));
+ assert.equal(done.team.finalAcceptance.reusedEvidence.length,1);assert.equal(done.team.tasks[0].attempts[0].observation.commands.length,1);
+ const again=await f.engine.advance('owner',f.team.id,done.team.revision,{finishReady:true});assert.deepEqual(again.team.finalAcceptance,done.team.finalAcceptance);
+});
+test('finishReady remains opt-in and preserves failures, pause, missing integration and changed-candidate gates',async t=>{
+ for(const kind of ['default','paused','missing-integration','changed-candidate','failed-review'])await t.test(kind,async t=>{
+  const f=await fixture(t,{stage:kind==='missing-integration'?'implementation':'integration'});await f.submitWork();
+  const verdict=passed();if(kind==='failed-review')verdict.checks[0].status='FAIL';
+  let saved=(await f.execute('review',verdict)).team;
+  if(kind==='paused'){await f.engine.store.update(saved.id,'owner',saved.revision,t=>{t.dispatchPaused=true;});saved=await f.engine.native('owner',saved.id);}
+  if(kind==='changed-candidate')await writeFile(join(f.cwd,'src/a.mjs'),'export const value=99;');
+  const result=await f.engine.advance('owner',saved.id,saved.revision,kind==='default'?{}:{finishReady:true});
+  assert.equal(result.team.finalAcceptance,undefined);assert.notEqual(result.team.state,'delivered');
+  if(['missing-integration','changed-candidate'].includes(kind))assert.equal(result.advancement.errors[0].operation,'finish');
+  assert.ok(result.team.tasks.every(t=>t.attempts.length===1));
+ });
 });

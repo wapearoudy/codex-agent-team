@@ -35,20 +35,47 @@ test('DSH shell marker cannot establish success and metadata takes precedence',(
 });
 async function nativeUiFixture(dependencies=()=>({})){
   let entry;runInNewContext(await readFile(new URL('../integrations/deepseek-harness/client.js',import.meta.url),'utf8'),{window:{__ModuleLoader__:{load:value=>{entry=value;}}}});
-  const ui=entry.factory(dependencies),opened=[],slots=[];
+  const ui=entry.factory(dependencies),opened=[],slots=[],panels=[],tabs=[];
   const state={projectionsBySession:{lead:{values:{agentTeam:{members:[{id:'lead',name:'lead'},{id:'member-id',name:'developer'}],tasks:[{id:'task-1',ownerName:'developer'}]}}}}};
-  let retained=1,bound=true,parent='lead';
-  const ctx={sessions:{list:{getSnapshot:()=>state},binding:()=>bound?{session:{getSnapshot:()=>({subagent:{address:{parentSessionId:parent}}})}}:undefined,retainInfo:()=>({getSnapshot:()=>({retainedBy:{mainView:retained}})})},uiWorkspace:{openSession:target=>opened.push(target)},slots:{inject:(_name,fn)=>fn(),register:(spec,component)=>slots.push({spec,component})}};
-  ui.apply(ctx);return {ui,ctx,state,opened,slot:slots[0],retain:value=>{retained=value;},bind:value=>{bound=value;},parent:value=>{parent=value;}};
+  let retained=1,bound=true,parent='lead',mounted='lead';
+  const ctx={effect:fn=>fn(),sidebarRight:{mounted:{getSnapshot:()=>mounted},openTab:kind=>panels.push(kind)},sidebarRightTabs:{register:spec=>{tabs.push(spec);return()=>{};}},sessions:{list:{getSnapshot:()=>state},binding:()=>bound?{session:{getSnapshot:()=>({subagent:{address:{parentSessionId:parent}}})}}:undefined,retainInfo:()=>({getSnapshot:()=>({retainedBy:{mainView:retained}})})},uiWorkspace:{openSession:target=>opened.push(target)},slots:{inject:(_name,fn)=>fn(),register:(spec,component)=>slots.push({spec,component})}};
+  ui.apply(ctx);return {ui,ctx,state,opened,panels,tabs,slots,slot:slots.find(slot=>slot.spec.name==='conversation.session.header.actions'),retain:value=>{retained=value;},bind:value=>{bound=value;},parent:value=>{parent=value;},mount:value=>{mounted=value;}};
 }
 const engineView=()=>({schemaVersion:1,source:'team-workspace-engine',host:'deepseek-harness',sessionId:'lead',observedAt:new Date().toISOString(),team:{id:'fixed-team',revision:7,goal:'Real engine records',state:'running',members:[{id:'dev',name:'developer',role:'developer',nativeSessionId:'native-child',bindingVerified:true}],tasks:[{id:'engine-task',title:'Engine-owned task',status:'running',ownerMemberId:'dev',blockedBy:[]}]}});
-test('DSH header renders engine member status and stable task number without native running state',async()=>{
+test('DSH right panel renders engine member status and stable task number without native running state',async()=>{
   const react={createElement:(type,props,...children)=>typeof type==='function'?type(props):{type,props,children},useState:initial=>[typeof initial==='boolean'?true:initial,()=>{}],useEffect:()=>{}};
   const f=await nativeUiFixture(()=>react),value=engineView();
   value.team.members[0].status='submitted';value.team.tasks[0].number=17;
-  const tree=f.ui.TeamWorkspace({sessionId:'lead',useSession:()=>undefined,useSessions:selector=>selector({phase:'ready',projectionsBySession:{lead:{values:{teamWorkspace:value}}}}),useSessionStatus:selector=>selector(new Map()),openMember:()=>true,openOwner:()=>true});
+  const tree=f.ui.TeamPanel({sessionId:'lead',useTabInfo:()=>({tab:{visible:true}}),useSession:()=>undefined,useSessions:selector=>selector({phase:'ready',projectionsBySession:{lead:{values:{teamWorkspace:value}}}}),useSessionStatus:selector=>selector(new Map()),openMember:()=>true,openOwner:()=>true});
   const text=JSON.stringify(tree);
-  assert.ok(text.includes('submitted'));assert.ok(!text.includes('状态未知'));assert.ok(text.includes('t17 · Engine-owned task'));
+  assert.ok(text.includes('待审查'));assert.ok(!text.includes('状态未知'));assert.ok(text.includes('t17 · Engine-owned task'));
+  assert.equal(tree.type,'section');assert.equal(tree.props.style.position,undefined);
+});
+test('DSH panel excludes cancelled tasks from display and progress without rewriting projections',async()=>{
+ const react={createElement:(type,props,...children)=>typeof type==='function'?type(props):{type,props,children},useState:initial=>[initial,()=>{}],useEffect:()=>{}},f=await nativeUiFixture(()=>react),value=engineView();
+ value.team.tasks=[...Array.from({length:3},(_,i)=>({id:'removed-'+i,title:'Cancelled task '+i,status:'cancelled',number:i+1})),...Array.from({length:9},(_,i)=>({id:'accepted-'+i,title:'Accepted task '+i,status:'accepted',number:i+4}))];const before=structuredClone(value);
+ const render=()=>f.ui.TeamPanel({sessionId:'lead',useTabInfo:()=>({tab:{visible:true}}),useSession:()=>undefined,useSessions:selector=>selector({phase:'ready',projectionsBySession:{lead:{values:{teamWorkspace:value}}}}),useSessionStatus:selector=>selector(new Map()),openMember:()=>true,openOwner:()=>true});
+ const text=JSON.stringify(render());assert.ok(text.includes('9/9 已验收'));assert.ok(!text.includes('Cancelled task'));assert.ok(text.includes('t4 · Accepted task 0'));assert.deepEqual(value,before);
+ value.team.tasks.forEach(task=>task.status='cancelled');const empty=JSON.stringify(render());assert.ok(empty.includes('0/0 已验收'));assert.ok(empty.includes('暂无任务。'));assert.equal(value.team.tasks.length,12);
+});
+test('DSH team entry opens registered host sidebar without navigating or duplicating its own floating view',async()=>{
+  const f=await nativeUiFixture(),actions=f.slot.spec.inject();
+  assert.equal(f.tabs.length,1);assert.equal(f.tabs[0].kind,'team-workspace');
+  assert.ok(f.slots.some(slot=>slot.spec.name==='sidebar.right.pane.tab'&&slot.spec.key===f.tabs[0].id&&slot.component===f.ui.TeamPanel));
+  assert.equal(actions.openPanel('lead'),true);assert.equal(actions.openPanel('lead'),true);
+  assert.deepEqual(JSON.parse(JSON.stringify(f.panels)),['team-workspace','team-workspace']);
+  assert.deepEqual(f.opened,[]);
+  f.mount('other');assert.equal(actions.openPanel('lead'),false);
+  f.mount('lead');f.retain(0);assert.equal(actions.openPanel('lead'),false);
+  f.retain(1);f.bind(false);assert.equal(actions.openPanel('lead'),false);
+  assert.equal(f.panels.length,2);
+});
+test('DSH task detail expansion does not invoke member navigation',async()=>{
+  const react={createElement:(type,props,...children)=>typeof type==='function'?type(props):{type,props,children},useState:initial=>[initial,()=>{}],useEffect:()=>{}};
+  const f=await nativeUiFixture(()=>react),value=engineView();let opened=0;
+  const tree=f.ui.TeamPanel({sessionId:'lead',useTabInfo:()=>({tab:{visible:true}}),useSession:()=>undefined,useSessions:selector=>selector({phase:'ready',projectionsBySession:{lead:{values:{teamWorkspace:value}}}}),useSessionStatus:selector=>selector(new Map()),openMember:()=>{opened++;},openOwner:()=>{opened++;}});
+  const find=node=>node&&typeof node==='object'?(node.type==='summary'?node:node.children?.map(find).find(Boolean)):null;
+  const summary=find(tree);assert.ok(summary);assert.equal(summary.props.onClick,undefined);assert.equal(opened,0);
 });
 test('DSH independent engine projection supersedes official tasks and rejects stale identity',async()=>{
   const f=await nativeUiFixture(),actions=f.slot.spec.inject(),value=engineView();

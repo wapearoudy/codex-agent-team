@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp} from 'node:fs/promises';
+import {mkdtemp,mkdir} from 'node:fs/promises';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import {randomUUID} from 'node:crypto';
@@ -36,7 +36,7 @@ async function fixture({contextChars=24000}={}){
 test('completed task history is never reused for another task; the role, workspace and historical evidence survive restart',async()=>{
   const f=await fixture(),first=await f.claim();await f.complete(first,'native-a');const before=await f.saved();
   await f.engine.store.update(f.team.id,'owner',before.revision,t=>{t.members[0].workspace={mode:'git-worktree',path:f.root+'/worktree'};t.tasks[0].evidence[0].summary='UNNECESSARY_LOG_'.repeat(6000);});
-  const next=await f.claim('b');assert.equal(next.dispatch.action,'spawn-native-member');assert.equal(next.dispatch.existingThreadId,null);assert.equal(next.dispatch.spawnOptions.fork_turns,'none');assert.equal(next.dispatch.contextIsolation.generation,2);assert.match(next.dispatch.taskName,/_ctx_2_[a-f0-9]{32}$/);assert.ok(next.dispatch.taskName.length<=64);assert.notEqual(first.dispatch.taskName,next.dispatch.taskName);assert.equal(next.dispatch.workspace.path,f.root+'/worktree');
+  await mkdir(f.root+'/worktree');const next=await f.claim('b');assert.equal(next.dispatch.action,'spawn-native-member');assert.equal(next.dispatch.existingThreadId,null);assert.equal(next.dispatch.spawnOptions.fork_turns,'none');assert.equal(next.dispatch.contextIsolation.generation,2);assert.match(next.dispatch.taskName,/_ctx_2_[a-f0-9]{32}$/);assert.ok(next.dispatch.taskName.length<=64);assert.notEqual(first.dispatch.taskName,next.dispatch.taskName);assert.equal(next.dispatch.workspace.path,f.root+'/worktree');
   assert.equal(next.team.members[0].id,'dev');assert.equal(next.team.contextHistory[0].threadId,'native-a');assert.equal(next.team.tasks[0].attempts[0].agentThreadId,'native-a');assert.equal(next.team.tasks[0].status,'submitted');assert.equal(next.team.tasks[0].evidence[0].summary.length,96000);
   assert.ok(next.dispatch.prompt.length<=24000);assert.equal(next.dispatch.contextBudget.chars,next.dispatch.prompt.length);assert.ok(next.dispatch.prompt.includes('read_team_context'));assert.ok(!next.dispatch.prompt.includes('UNNECESSARY_LOG_'.repeat(1000)));assert.ok(next.dispatch.prompt.includes('Preserve the exact requirement for b'));
   const restarted=new LeaderEngine({root:f.root,observer:f.observer}),replay=await restarted.claim('owner',f.team.id,next.team.revision,'b');assert.equal(replay.dispatch.attemptId,next.dispatch.attemptId);assert.equal(replay.dispatch.taskName,next.dispatch.taskName);assert.equal(replay.team.contextHistory.length,1);

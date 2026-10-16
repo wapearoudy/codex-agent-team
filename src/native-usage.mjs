@@ -12,8 +12,9 @@ export async function observeTeamUsage(observer,team){
   const rpc=await observer.connect(),{thread:leader}=await rpc.call('thread/read',{threadId:team.leaderThreadId,includeTurns:false});
   if(leader?.id!==team.leaderThreadId||await realpath(leader.cwd)!==await realpath(team.projectPath))throw new Error('Leader usage identity mismatch');
   const window=usageWindow(team),registered=new Set(registeredContextIds(team)),contexts=[];
-  const measure=async(thread,kind)=>{try{return {threadId:thread.id,kind,...await observer.publicFeed.usageWindow(thread,window)};}catch(error){return {threadId:thread.id,kind,usage:null,complete:false,reason:error.message};}};
+  const measure=async(thread,kind)=>{try{return {threadId:thread.id,kind,agentPath:thread.source?.subAgent?.thread_spawn?.agent_path??thread.source?.subagent?.thread_spawn?.agent_path??thread.agentPath??null,createdAt:created(thread),parentAgentPath:leader.source?.subAgent?.thread_spawn?.agent_path??leader.source?.subagent?.thread_spawn?.agent_path??'/root',...await observer.publicFeed.usageWindow(thread,window)};}catch(error){return {threadId:thread.id,kind,usage:null,complete:false,reason:error.message};}};
   contexts.push(await measure(leader,'leader'));
+  registered.delete(team.leaderThreadId); // Logical Leader executor is already measured above.
   let candidates=[...registered],discoveryComplete=true,excludedCount=0;
   try{
     const {thread:snapshot}=await rpc.call('thread/read',{threadId:team.leaderThreadId,includeTurns:true});

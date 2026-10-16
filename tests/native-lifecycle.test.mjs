@@ -33,6 +33,32 @@ test('inherited parent metadata does not replace the native child file identity'
 const nowMs=Date.parse('2026-10-07T09:00:00.000Z');
 const timestamp=offset=>new Date(nowMs+offset).toISOString();
 const event=(type,offset,turn_id='turn',extra={})=>({timestamp:timestamp(offset),type:'event_msg',payload:{type,turn_id,...extra}});
+test('Leader activity expiry is explicit and cannot bypass real abort or latest-turn identity',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'leader-expiry-'));
+ const thread={id:'leader',cwd:root,turns:[{id:'turn',status:'interrupted',items:[]}]};let evidence={status:'unknown',source:'persisted-native-activity-stale'};
+ const observer=new NativeMembers({rpcFactory:()=>({async connect(){},async close(){},async call(){return{thread};}}),lifecycleReader:async()=>evidence});
+ await assert.rejects(()=>observer.inspectLeader('leader',root,'turn'),e=>e.code==='LEADER_ACTIVITY_STALE');
+ evidence={status:'interrupted',source:'persisted-turn-aborted'};await assert.rejects(()=>observer.inspectLeader('leader',root,'turn'),e=>e.code!=='LEADER_ACTIVITY_STALE');
+ evidence={status:'inProgress',source:'persisted-native-activity'};assert.equal((await observer.inspectLeader('leader',root,'turn')).status,'inProgress');await assert.rejects(()=>observer.inspectLeader('leader',root,'other'),/exact bound/);await observer.close();
+});
+test('explicit historical cooperative stop retains exact terminal history; work and submission still require latest turn',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'leader-history-'));
+ const old={id:'old',status:'completed',items:[{type:'commandExecution',id:'old-command',cwd:root,command:'cat loader.js',status:'completed',exitCode:0}]};
+ const current={id:'current',status:'inProgress',items:[]},thread={id:'leader',cwd:root,turns:[old,current]};
+ let evidence={status:'interrupted',source:'persisted-turn-aborted'};
+ const observer=new NativeMembers({rpcFactory:()=>({async connect(){},async close(){},async call(){return{thread};}}),lifecycleReader:async()=>evidence});
+ await assert.rejects(()=>observer.inspectLeader('leader',root,'old'),/exact bound/);
+ await assert.rejects(()=>observer.inspectLeader('leader',root,'old',{allowStopped:true}),/exact bound/);
+ const saved=await observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true});
+ assert.equal(saved.turnId,'old');assert.equal(saved.latestTurnId,'current');assert.equal(saved.status,'completed');assert.equal(saved.latestNativeStatus,'inProgress');assert.equal(saved.historicalStopOnly,true);assert.deepEqual(saved.commands.map(c=>c.commandId),['old-command']);
+ await assert.rejects(()=>observer.inspectLeader('leader',root,'missing',{allowStopped:true,allowHistoricalStop:true}),/exact bound/);
+ for(const bad of [{...old,status:'inProgress'},{...old,status:'unknown'},{...old,items:[{...old.items[0],exitCode:null}]}]){thread.turns[0]=bad;await assert.rejects(()=>observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true}),/terminal|unknown/);}
+ thread.turns[0]=old;current.items=[{type:'commandExecution',status:'inProgress',exitCode:null}];await assert.rejects(()=>observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true}),/pending/);current.items=[];
+ old.status='interrupted';evidence={status:'unknown',source:'persisted-native-activity-stale'};await assert.rejects(()=>observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true}),/unknown/);
+ evidence={status:'interrupted',source:'persisted-turn-aborted'};assert.equal((await observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true})).status,'interrupted');
+ thread.cwd=await mkdtemp(join(tmpdir(),'foreign-leader-'));await assert.rejects(()=>observer.inspectLeader('leader',root,'old',{allowStopped:true,allowHistoricalStop:true}),/identity/);await observer.close();
+});
+
 async function activityFixture(rows){
   const root=await mkdtemp(join(tmpdir(),'native-activity-')),path=join(root,'child.jsonl');
   await writeFile(path,[{type:'session_meta',payload:{id:'child'}},...rows].map(r=>JSON.stringify(r)).join('\n')+'\n');

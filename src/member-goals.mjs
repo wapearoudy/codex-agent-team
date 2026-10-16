@@ -41,7 +41,7 @@ export function memberGoalDetail(team,memberId,{historyLimit=10}={}){
 }
 export function validateMemberGoals(team){
   if(team.memberGoalChanges===undefined&&!team.members.some(m=>m.goalRevision))return;
-  if(!['0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(team.memberGoalChanges)||team.memberGoalChanges.length>200)throw new Error('角色目标修订需要 Team Workspace 0.15.0');
+  if(!['0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.48','0.40.49','0.40.50','0.40.51','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(team.memberGoalChanges)||team.memberGoalChanges.length>200)throw new Error('角色目标修订需要 Team Workspace 0.15.0');
   const ids=new Set();
   for(const member of team.members){let revision=1,goal;
     for(const row of team.memberGoalChanges.filter(r=>r.memberId===member.id)){

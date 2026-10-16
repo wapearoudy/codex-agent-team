@@ -46,7 +46,7 @@ export function validateReviewReconciliations(team){
   for(const task of team.tasks)for(const a of task.attempts??[]){
     if(a.reviewReconciliations===undefined)continue;
     const records=a.reviewReconciliations;
-    if(!['0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion)||task.kind!=='review'||!Array.isArray(records)||records.length>10||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid saved review reconciliation audit');
+    if(!['0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.48','0.40.49','0.40.50','0.40.51','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion)||task.kind!=='review'||!Array.isArray(records)||records.length>10||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid saved review reconciliation audit');
     for(const r of records){
       const {integrityHash,...body}=r,dependency=a.dependencyAttempts?.find(d=>d.taskId===task.reviewOfTaskId);
       if(integrityHash!==evidenceHash(body)||r.source!=='plugin-saved-review-registration'||!uuid(r.requestId)||! /^[a-f0-9]{64}$/.test(r.requestHash)||r.taskId!==task.id||r.attemptId!==a.id||r.targetTaskId!==task.reviewOfTaskId||r.targetAttemptId!==dependency?.attemptId||!['waiting','submitted'].includes(r.originalStatus)||r.originalEvidenceHash!==evidenceHash(task.evidence.findLast(e=>e.attemptId===a.id)?.summary)||r.originalException?.source!=='plugin-quality-checks'||r.originalException.attemptId!==a.id||!r.note?.trim()||!Number.isFinite(Date.parse(r.at)))throw new Error('Invalid saved review registration receipt');

@@ -13,7 +13,11 @@ with native subagent delegation and the `send_message` / `interrupt_agent`
 controls. Use the host's configured provider and model defaults.
 
 The `./client` browser export registers **团队工作区** in the native conversation
-header. Its own `teamWorkspace` projection reads the authenticated current
+header. Clicking it opens a native tab in the host’s right Sidebar, with the
+conversation making room beside it. The host owns resize, collapse, tab close,
+and narrow-screen fullscreen. Repeated opens reuse the page in the active pane.
+Task details expand inside the panel; owner buttons navigate to member sessions.
+Its own `teamWorkspace` projection reads the authenticated current
 Leader's engine team, stable task IDs, and verified member session bindings.
 The public SDK folds complete `team-workspace/state` non-surface events; they
 do not enter model history. Live root agents are polled serially every two
@@ -36,11 +40,11 @@ model route, authority inheritance, or cross-Claude/OpenCode execution is implie
 
 ## Native installation
 
-In the DSH plugin manager, enter `agent-team-deepseek-harness@0.39.0` after this
+In the DSH plugin manager, enter `agent-team-deepseek-harness@0.40.57` after this
 version is published to npm. For an existing CLI profile:
 
 ```text
-dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.39.0
+dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.40.57
 dsh --profile <existing-profile> --dump-config
 ```
 

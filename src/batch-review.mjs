@@ -1,8 +1,10 @@
+import {executionCompleted} from './leader-execution.mjs';
 import {parseReview,assertReviewPass} from './quality-gates.mjs';
 import {assertContractPass,recordFindings,planRepair} from './team-quality.mjs';
 import {assertEvidenceSnapshot,acceptedEvidenceHash} from './evidence-snapshot.mjs';
 import {reviewTargetIds,commandClassification} from './quality-policy.mjs';
 import {requireTeamVersion} from './team-version.mjs';
+import {assertReviewAssurance} from './review-assurance.mjs';
 
 export async function applyBatchReview(engine,team,review,attemptId,note){
   const a=review.attempts.at(-1),ids=reviewTargetIds(review);
@@ -15,14 +17,15 @@ export async function applyBatchReview(engine,team,review,attemptId,note){
   const candidates=[];
   for(const id of ids){
     const target=team.tasks.find(t=>t.id===id),b=target?.attempts.at(-1),result=verdict.targets.find(v=>v.taskId===id),dependency=a.dependencyAttempts?.find(d=>d.taskId===id);
-    if(target?.status!=='submitted'||review.memberId===target.memberId||!b?.agentThreadId||a.agentThreadId===b.agentThreadId||b.observation?.status!=='completed'||b.observation.threadId!==b.agentThreadId||dependency?.attemptId!==b.id||(dependency.contractRevision??1)!==(target.contractRevision??1)||result.attemptId!==b.id||!['accept','rework'].includes(result.decision)||!result.reason?.trim()||!Array.isArray(result.findings))throw new Error('Batch verdict must bind every distinct delivery and exact current attempt');
+    if(target?.status!=='submitted'||review.memberId===target.memberId||!b?.agentThreadId||a.agentThreadId===b.agentThreadId||!executionCompleted(b)||b.observation.threadId!==b.agentThreadId||dependency?.attemptId!==b.id||(dependency.contractRevision??1)!==(target.contractRevision??1)||result.attemptId!==b.id||!['accept','rework'].includes(result.decision)||!result.reason?.trim()||!Array.isArray(result.findings))throw new Error('Batch verdict must bind every distinct delivery and exact current attempt');
+    assertReviewAssurance(review,target,result,team);
     if(result.decision==='accept'){
       assertReviewPass(result,a.observation.commands??[],target.acceptanceCriteria??[],[],{verificationCommands:target.contract?.verify??[],workspace:b.evidenceSnapshot?.workspace,scopedChecks:true});
       const verification=assertContractPass(target);if(verification)Object.assign(b.delivery,verification);
-      await assertEvidenceSnapshot(team,target);
       const owner=team.members.find(m=>m.id===target.memberId);
       if(owner.workspace?.mode==='git-worktree'){const candidate=await engine.worktrees.inspect(team,owner.id);if(candidate.dirty||candidate.head!==b.candidate?.head||candidate.workspace.path!==b.candidate?.path)throw new Error('Batch candidate changed after submission');}
-    }else if(!result.findings.length)throw new Error('Rework requires concrete findings');
+    }else if(!result.findings.some(f=>f.status==='open'))throw new Error('Rework requires concrete open findings');
+    await assertEvidenceSnapshot(team,target);
     candidates.push({target,b,result});
   }
   const at=new Date().toISOString();
@@ -38,7 +41,7 @@ export async function applyBatchReview(engine,team,review,attemptId,note){
   a.commandObservations=(a.observation.commands??[]).flatMap((c,index)=>{const p=commandClassification(c,candidates.flatMap(x=>x.target.contract?.verify??[]),candidates[0]?.b.evidenceSnapshot?.workspace);return p.expectedExitCodes?.includes(c.exitCode)&&c.exitCode!==0?[{commandIndex:index,...p,status:c.status,exitCode:c.exitCode}]:[];});
   review.status='accepted';review.updatedAt=at;review.completedTargets=ids;
   delete a.acceptanceException;requireTeamVersion(team,'0.37.0');
-  for(const {target,result} of candidates.filter(x=>x.result.decision==='rework'))if(team.policy?.autoRepair)planRepair(team,review,target,result.reason,{retainReview:true});
+  for(const {target,result} of candidates.filter(x=>x.result.decision==='rework'))if(team.policy?.autoRepair&&!team.dispatchPaused&&(!team.executionControl||team.executionControl.status==='active')&&!(target.contract&&['integration','verification'].includes(target.contract.stage)&&!target.contract.inScope?.length))planRepair(team,review,target,result.reason,{retainReview:true});
   team.events.push({type:'batch-review-registered',taskId:review.id,accepted:a.batchAcceptances.length,rework:candidates.length-a.batchAcceptances.length,at});
   return true;
 }

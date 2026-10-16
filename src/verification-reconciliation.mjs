@@ -2,6 +2,7 @@ import {readFile,lstat,realpath} from 'node:fs/promises';
 import {join,relative,isAbsolute,posix} from 'node:path';
 import {createHash} from 'node:crypto';
 import {safeQualityPath,parseDelivery} from './team-quality.mjs';
+import {resolveDeliveryReceipt} from './delivery-preflight.mjs';
 import {captureEvidenceSnapshot,assertEvidenceSnapshot,evidenceHash} from './evidence-snapshot.mjs';
 import {assertObservationTurn,attemptTurnIds} from './turn-association.mjs';
 import {registrationOptions} from './native-registration.mjs';
@@ -96,7 +97,11 @@ export async function reconcileVerification(engine,owner,id,revision,input){
   // still the immutable original, including whitespace and the raw envelope.
   const raw=a.observation.outputs?.at(-1)?.text??report?.references?.find(r=>typeof r.rawDelivery==='string')?.rawDelivery??report?.summary;
   if(run.outputs?.at(-1)?.text!==raw)throw new Error('Original native report changed; preserve it and resolve the exception');
-  const original=parseDelivery(raw,a.marker),base=await realpath(team.members.find(m=>m.id===task.memberId).workspace?.path??team.projectPath);
+  // A compact final response is an authenticated reference to the member's
+  // immutable draft, not the actual quality report. Use the same exact-turn,
+  // contract and content-hash resolver as settlement; never caller-supplied JSON.
+  const original=parseDelivery(resolveDeliveryReceipt(task,run,raw),a.marker),base=await realpath(team.members.find(m=>m.id===task.memberId).workspace?.path??team.projectPath);
+  if(!Array.isArray(original?.acceptanceResults))throw new Error('Original authenticated delivery has no acceptance results; preserve the report and resolve its format');
   const rows=run.turnHistory??[run],saved=a.turnHistory??a.observation.turnHistory??[a.observation],commands=[];
   for(const wanted of input.commands){
     const row=rows.find(r=>r.turnId===wanted.turnId),old=saved.find(r=>r.turnId===wanted.turnId);
@@ -142,11 +147,11 @@ export async function reconcileVerification(engine,owner,id,revision,input){
 export function validateVerificationReconciliations(team){
   for(const task of team.tasks)for(const a of task.attempts??[]){
     const records=a.verificationReconciliations;if(records===undefined)continue;
-    if(!['0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(records)||records.length>30||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid historical verification audit version or requests');
+    if(!['0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.48','0.40.49','0.40.50','0.40.51','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion)||!Array.isArray(records)||records.length>30||new Set(records.map(r=>r.requestId)).size!==records.length)throw new Error('Invalid historical verification audit version or requests');
     for(const r of records){
       const {integrityHash,...body}=r;
       if(integrityHash!==evidenceHash(body)||!uuid(r.requestId)||!sha(r.requestHash)||r.source!=='plugin-reconciled-native-verification'||r.taskId!==task.id||r.attemptId!==a.id||r.threadId!==a.agentThreadId||r.turnId!==a.turnId||r.marker!==a.marker||r.contractRevision!==(a.contractRevision??1)||r.candidateFingerprint!==a.evidenceSnapshot?.fingerprint||!sha(r.originalReportHash)||!Number.isFinite(Date.parse(r.at))||r.inputSnapshot?.source!=='plugin-declared-input-content-hash'||!sha(r.inputSnapshot.fingerprint)||r.inputSnapshot.workspace!==a.evidenceSnapshot.workspace||!Array.isArray(r.inputSnapshot.roots)||r.inputSnapshot.roots.some(p=>!safeQualityPath(p))||!r.commands?.length||r.commands.some(c=>c.originThreadId!==a.agentThreadId||!attemptTurnIds(a).includes(c.turnId)||!c.commandId||!isAbsolute(c.cwd??'')||c.source!=='reconciled-native-command'||c.status!=='completed'||c.exitCode!==0))throw new Error('Invalid historical native verification evidence');
-      for(const c of r.commands.filter(c=>c.verificationBinding))if(!['0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion)||!verifiedInitializationBinding(c,c.verificationBinding.required,{workspace:r.inputSnapshot.workspace}))throw new Error('Invalid declared initialization binding; preserve evidence and upgrade');
+      for(const c of r.commands.filter(c=>c.verificationBinding))if(!['0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.48','0.40.49','0.40.50','0.40.51','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion)||!verifiedInitializationBinding(c,c.verificationBinding.required,{workspace:r.inputSnapshot.workspace}))throw new Error('Invalid declared initialization binding; preserve evidence and upgrade');
     }
   }
 }

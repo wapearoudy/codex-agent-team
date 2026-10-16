@@ -1,5 +1,7 @@
 # Team Workspace 0.32.1 协议细则
 
+Codex 路由说明：本文列出的业务 API 名称（包括兼容操作 `wait_team_event`）通过实际暴露的 `team_leader` 工具的 `operation` 调用，不要求在 ALL_TOOLS 中单独发现同名工具。等待优先执行返回的 `waitInvocation`；冷缓存用返回的 `waitCall`，均走 `next_team_step` 与 `wait:true`。缺少独立别名不等于缺少能力；真实错误仍保留并停止，不重新派发或为登记重跑测试。
+
 当前主会话是 Leader，沿用当前项目、用户目标和已有授权。每个项目一个固定团队，岗位身份固定，同一时刻仅有一个当前执行会话。已结算任务的下一次派发使用独立原生会话，旧线程保留为只读历史；活动或未知轮次不能替换。插件保存业务协议并观察原生记录，不启动另一个协调模型。只查看时调用 open_team_workspace / read_team，不派发工作。
 
 ## 工具入口

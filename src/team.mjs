@@ -1,7 +1,10 @@
+import {executionCompleted,validateLeaderExecutions} from './leader-execution.mjs';
+import {startupConflict} from './team-startup.mjs';
 import {validateTaskPhases} from './task-phases.mjs';
 import {validateVerificationReconciliations} from './verification-reconciliation.mjs';
 import {validateReviewerAcceptance} from './reviewer-acceptance.mjs';
 import {validateSettlementExceptions} from './settlement-exception.mjs';
+import {validateDeliveryReconciliations} from './delivery-reconciliation.mjs';
 import {recoverableReview} from './review-recovery.mjs';
 import {validateReviewReconciliations} from './review-reconciliation.mjs';
 import {validateRetirement} from './team-retirement.mjs';
@@ -56,9 +59,13 @@ export function validatePlan(plan,{allowEmpty=plan.taskPlanning==='leader'}={}) 
     if(!memberIds.has(t.memberId)) throw new Error(`Task ${t.id} has no valid member`);
     if(members.find(m=>m.id===t.memberId).removedAt&&!['accepted','cancelled'].includes(t.status))throw new Error('Unfinished tasks cannot belong to removed members');
     if(t.validationMode!==undefined&&!['execute','source-only'].includes(t.validationMode))throw new Error('Invalid task validation mode');
+    if(t.executionMode!==undefined&&!['member','leader'].includes(t.executionMode))throw new Error('Invalid execution mode');
+    if(t.executionMode==='leader'&&(t.kind!=='work'||qualityMode(t)!=='standard'||t.riskFlags?.length||(t.validationMode??'execute')!=='execute'||!t.contract?.verify?.length||!tasks.some(r=>r.kind==='review'&&r.memberId!==t.memberId&&reviewTargetIds(r).includes(t.id)&&!members.find(m=>m.id===r.memberId)?.writeScopes.length)))throw new Error('Leader execution requires a bounded standard contract and a distinct read-only native review');
     if(t.acceptanceCriteria!==undefined&&(!Array.isArray(t.acceptanceCriteria)||!t.acceptanceCriteria.length||t.acceptanceCriteria.length>30||t.acceptanceCriteria.some(c=>!c||typeof c.id!=='string'||!c.id.trim()||typeof c.description!=='string'||!c.description.trim())||new Set(t.acceptanceCriteria.map(c=>c.id)).size!==t.acceptanceCriteria.length))throw new Error('Acceptance criteria need unique IDs and descriptions');
     if(t.timeoutSeconds!==undefined&&(!Number.isInteger(t.timeoutSeconds)||t.timeoutSeconds<60||t.timeoutSeconds>7200))throw new Error('Task timeout must be 60–7200 seconds');
     if(t.kind==='review'&&typeof t.reviewOfTaskId!=='string')throw new Error(`Review task ${t.id} must identify its implementation task`);
+    if(t.reviewScopePolicy!==undefined&&(t.kind!=='review'||t.reviewScopePolicy!=='task-owned-v1'||t.reviewEvidencePolicy!=='contract-linked-v1'))throw new Error('Invalid current-task review scope policy');
+    if(t.reviewEvidencePolicy!==undefined&&(t.kind!=='review'||t.reviewEvidencePolicy!=='contract-linked-v1'))throw new Error('Invalid independent review evidence policy');
     if(t.qualityMode!==undefined&&!QUALITY_MODES.includes(t.qualityMode)||t.riskFlags?.some(x=>!RISK_FLAGS.includes(x))||t.riskFlags?.length&&qualityMode(t)!=='strict')throw new Error('Invalid task quality policy');
     if(t.riskFlags?.length&&(!t.contract||!t.acceptanceCriteria?.length||(t.validationMode??'execute')!=='execute'||!t.contract.verify?.length))throw new Error('High-risk changes need an executable contract, required criteria and verification commands');
     if(!Array.isArray(t.dependencies)||t.dependencies.some(d=>!d||typeof d.taskId!=='string'||!['submitted','accepted','delivered'].includes(d.when))) throw new Error(`Task ${t.id} has invalid dependencies`);
@@ -92,17 +99,19 @@ export function createTeam({projectId,projectPath,goal,plan,maxParallel=3,taskPl
   const time=now(),members=plan.members.map(m=>({...structuredClone(m),status:'planned',agentThreadId:null,lastActivityAt:time}));
   return {id:randomUUID(),projectId,projectPath,goal:goal.trim(),state:'planned',dispatchPaused:false,maxParallel,
     ...(taskPlanning==='leader'?{taskPlanning,requiresTeamWorkspaceVersion:'0.18.0'}:plan.goalCriteria||plan.tasks.some(t=>t.contract)?{requiresTeamWorkspaceVersion:'0.10.0'}:{}),
+    ...(plan.tasks.some(t=>t.reviewScopePolicy)?{requiresTeamWorkspaceVersion:'0.40.48'}:plan.tasks.some(t=>t.deliveryReadinessPolicy)?{requiresTeamWorkspaceVersion:'0.40.45'}:plan.tasks.some(t=>t.reviewEvidencePolicy)?{requiresTeamWorkspaceVersion:'0.40.42'}:{}),
     ...(plan.goalCriteria?{goalCriteria:structuredClone(plan.goalCriteria)}:{}),createdAt:time,updatedAt:time,members,tasks:plan.tasks.map(t=>({...structuredClone(t),status:'waiting',attempt:0,attempts:[],evidence:[],blockReason:null,createdAt:time,updatedAt:time})),events:[{at:time,type:'team-planned'}]};
 }
 
 function addEvent(team,type,details={}){const at=now();team.updatedAt=at;team.events.push({at,type,...details});if(team.mode!=='host-leader')team.events=team.events.slice(-500);}
-export function deliveryReady(task){if(!task||!['submitted','accepted'].includes(task.status)||task.attempts?.at(-1)?.observation?.status!=='completed')return false;try{assertContractPass(task);return true;}catch{return false;}}
+export function deliveryReady(task){if(!task||!['submitted','accepted'].includes(task.status)||!executionCompleted(task.attempts?.at(-1)))return false;try{assertContractPass(task);return true;}catch{return false;}}
 function dependenciesReady(team,task){return task.dependencies.every(d=>{const pre=team.tasks.find(t=>t.id===d.taskId);return d.when==='delivered'?deliveryReady(pre):d.when==='submitted'?['submitted','accepted'].includes(pre.status):pre.status==='accepted';});}
 function conflict(a,b){const normalize=p=>p.replaceAll('\\','/').replace(/\/$/,'').toLowerCase();const A=(a.writeScopes??[]).map(normalize),B=(b.writeScopes??[]).map(normalize);if(A.length&&B.length&&a.workspace?.mode==='git-worktree'&&b.workspace?.mode==='git-worktree'&&a.workspace.path!==b.workspace.path)return false;if(!A.length&&!B.length)return false;return !A.length||!B.length||A.some(x=>B.some(y=>x==='.'||y==='.'||x===y||x.startsWith(y+'/')||y.startsWith(x+'/')));}
 
 export function consumedAttempts(task){return task.attempts?.length?task.attempts.filter(a=>a.state!=='released'&&!(a.state==='handed-off'&&a.phaseHandoff?.status==='completed')).length:task.attempt??0;}
 export function dispatchBlockers(team,task){
   const reasons=[],add=(code,message,taskId)=>reasons.push({code,message,...(taskId?{taskId}:{})});
+  const startup=startupConflict(team);if(startup)reasons.push(startup);
   if(task.status!=='waiting')add('task-state',`任务当前为 ${task.status}，不能重复派发`);
   if(task.status==='waiting'&&recoverableReview(team,task))add('saved-review','已有完成的独立审查被插件登记异常阻塞；先 reconcile_team_review 复用原证据，不要重复派发');
   if(requiredRosterMembers(team,[task.id]).some(m=>team.memberStartup==='on-demand'?m.agentThreadId&&!m.rosterVerified:!m.agentThreadId&&!m.contextGeneration||!m.rosterVerified))add('member-initialization','请先完成负责岗位及初始团队成员的原生初始化与绑定');
@@ -137,7 +146,7 @@ export function schedule(team){
     const member=team.members.find(m=>m.id===task.memberId);
     if(dispatchBlockers(team,task).length)continue;
     const attempt={id:randomUUID(),memberId:task.memberId,number:task.attempt+1,state:'running',agentThreadId:null,startedAt:now(),endedAt:null,summary:null,
-      ...(task.contractRevision?{contractRevision:task.contractRevision}:{}),qualityPolicy:task.qualityMode?{mode:task.qualityMode,batchId:task.batchId??null,riskFlags:task.riskFlags??[]}:undefined,dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null,contractRevision:team.tasks.find(t=>t.id===d.taskId).contractRevision??1}))};
+      contractRevision:task.contractRevision??1,qualityPolicy:task.qualityMode?{mode:task.qualityMode,batchId:task.batchId??null,riskFlags:task.riskFlags??[]}:undefined,dependencyAttempts:task.dependencies.map(d=>({taskId:d.taskId,attemptId:team.tasks.find(t=>t.id===d.taskId).attempts.at(-1)?.id??null,contractRevision:team.tasks.find(t=>t.id===d.taskId).contractRevision??1}))};
     task.attempt++;task.status='running';task.blockReason=null;task.attempts.push(attempt);task.updatedAt=now();
     member.status='starting';member.lastActivityAt=now();selected.push(task);addEvent(team,'task-dispatched',{taskId:task.id,attemptId:attempt.id,memberId:member.id});
   }
@@ -166,7 +175,7 @@ export function reviewTask(team,reviewTaskId,{attemptId,decision,note}){
   for(const id of affected){const down=team.tasks.find(x=>x.id===id);if(['accepted','submitted','blocked'].includes(down.status)){down.status='waiting';down.blockReason=`Upstream task ${target.id} returned for rework; previous evidence retained`;down.updatedAt=now();}}
   addEvent(team,'task-rework-requested',{taskId:target.id,reviewTaskId,attempt:target.attempt,invalidatedTaskIds:[...affected]});return [...affected];
 }
-export function validateTeam(team){if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateControl(team);validatePlanReview(team);validatePlan(team);validateBatches(team);validateQualityAttempts(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
+export function validateTeam(team){if(team.tasks.some(t=>t.reviewScopePolicy)&&!['0.40.48','0.40.49','0.40.50','0.40.51','0.40.52','0.40.53','0.40.54','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Current-task review ownership requires Team Workspace 0.40.48');if(team.tasks.some(t=>t.reviewEvidencePolicy==='contract-linked-v1')&&!['0.40.42','0.40.43','0.40.44','0.40.45','0.40.46','0.40.47','0.40.48','0.40.49','0.40.50','0.40.51','0.40.52','0.40.53','0.40.54','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Contract-linked independent reviews require Team Workspace 0.40.42');if(team.requiresTeamWorkspaceVersion&&!['0.10.0','0.11.0','0.12.0','0.13.0','0.14.0','0.15.0','0.16.0','0.17.0','0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.46','0.40.47','0.40.48','0.40.49','0.40.50','0.40.51','0.40.52','0.40.53','0.40.54','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion))throw new Error('Unsupported Team Workspace version; preserve data and upgrade');if(team.taskPlanning!==undefined&&(team.taskPlanning!=='leader'||!['0.18.0','0.21.0','0.24.0','0.29.0','0.30.0','0.31.0','0.32.0','0.33.0','0.34.0','0.35.0','0.37.0','0.38.0','0.39.0','0.40.0','0.40.9','0.40.42','0.40.43','0.40.44','0.40.45','0.40.46','0.40.47','0.40.48','0.40.49','0.40.50','0.40.51','0.40.52','0.40.53','0.40.54','0.40.55','0.40.56','0.40.57'].includes(team.requiresTeamWorkspaceVersion)))throw new Error('Team formation requires Team Workspace 0.18.0');validateLeaderExecutions(team);validateControl(team);validatePlanReview(team);validatePlan(team);validateBatches(team);validateQualityAttempts(team);for(const t of team.tasks)if(!allowedStatuses.has(t.status))throw new Error(`Invalid task status: ${t.status}`);validateTurnAssociations(team);validateNativeRegistrations(team);validateDeferredReviews(team);validateReviewerAcceptance(team);validateReviewReconciliations(team);validateSettlementExceptions(team);validateDeliveryReconciliations(team);validateMailbox(team);validateCheckpoints(team);validateTaskContexts(team);validateTaskPhases(team);validateVerificationReconciliations(team);validateMemberGoals(team);validateRoster(team);validateRetirement(team);return true;}
 
 export class TeamStore {
   constructor(root=join(homedir(),'.codex','team-workspace','teams')){this.root=resolve(root);this.archive=new TeamArchive(join(this.root,'archives'));}

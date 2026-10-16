@@ -1,6 +1,6 @@
 {
   "name": "agent-team-deepseek-harness",
-  "version": "0.39.5",
+  "version": "0.40.57",
   "description": "Team Workspace: native DSH team delegation, task state and independent review",
   "type": "module",
   "main": "./dist/index.mjs",
@@ -10,12 +10,49 @@
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
-  "files": ["dist/index.mjs", "dist/client.js", "dist/server.cjs", "cordis.patch.yml", "README.md"],
-  "engines": {"node": ">=22"},
-  "publishConfig": {"access": "public", "registry": "https://registry.npmjs.org/"},
-  "repository": {"type": "git", "url": "git+https://github.com/wapearoudy/codex-agent-team.git", "directory": "integrations/deepseek-harness"},
+  "files": [
+    "dist/index.mjs",
+    "dist/client.js",
+    "dist/server.cjs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wapearoudy/codex-agent-team.git",
+    "directory": "integrations/deepseek-harness"
+  },
   "homepage": "https://github.com/wapearoudy/codex-agent-team#readme",
-  "bugs": {"url": "https://github.com/wapearoudy/codex-agent-team/issues"},
-  "keywords": ["dsh-plugin", "deepseek-harness", "agent-team", "cordis"],
-  "dsh": {"bundle": {"patch": "./cordis.patch.yml"}, "client": {"platform": "web", "inject": ["@deepseek-ai/dsh-api-session-controller", "@deepseek-ai/dsh-client-locale", "@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-primitives", "@deepseek-ai/dsh-client-ui-workspace"]}}
+  "bugs": {
+    "url": "https://github.com/wapearoudy/codex-agent-team/issues"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-team",
+    "cordis"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    }
+  }
 }

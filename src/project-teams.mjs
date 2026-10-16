@@ -1,3 +1,4 @@
+import {assertStartupConfiguration} from './team-startup.mjs';
 import {createHash,randomUUID} from 'node:crypto';
 import {join,resolve} from 'node:path';
 import {DurableStore} from './durable-store.mjs';
@@ -41,14 +42,14 @@ export class ProjectTeams {
     const saved=await this.leader.store.get(team.id,owner);
     return {kind:'team-archive',teamId:saved.id,revision:saved.revision,archival:saved.archival,replayed:request.replayed};
   });}
-  async plan(owner,context,args){return this.registry.transaction(async data=>{
+  async plan(owner,context,args){assertStartupConfiguration(args);return this.registry.transaction(async data=>{
     const existing=await this.candidate(owner,context,data);
     const team=existing??await this.leader.planOnce(owner,context,{...args,initializeMembers:true});
     data.projects[this.key(context)]={teamId:team.id,ownerId:owner,leaderThreadId:team.leaderThreadId};
     return {team,reused:!!existing};
   });}
-  async rebuild(owner,context,args){const result=await this.registry.transaction(async data=>{
-    data.rebuilds??={};const key=createHash('sha256').update(owner+':'+args.requestId).digest('hex'),hash=createHash('sha256').update(JSON.stringify({cwd:pathKey(context.cwd),goal:args.goal,plan:args.plan,execute:args.execute,maxParallel:args.maxParallel,approvalMode:args.approvalMode,memberStartup:args.memberStartup,executionAuthorization:args.executionAuthorization,policy:args.policy,brief:args.brief})).digest('hex');
+  async rebuild(owner,context,args){assertStartupConfiguration(args);const result=await this.registry.transaction(async data=>{
+    data.rebuilds??={};const key=createHash('sha256').update(owner+':'+args.requestId).digest('hex'),hash=createHash('sha256').update(JSON.stringify({cwd:pathKey(context.cwd),goal:args.goal,plan:args.plan,execute:args.execute,maxParallel:args.maxParallel,approvalMode:args.approvalMode,memberStartup:args.memberStartup,startupProtocol:args.startupProtocol,executionAuthorization:args.executionAuthorization,policy:args.policy,brief:args.brief})).digest('hex');
     if(data.rebuilds[key]){if(data.rebuilds[key].hash!==hash)throw new Error('Rebuild request ID already has different contents');return {team:await this.leader.store.get(data.rebuilds[key].teamId,owner),reused:false};}
     const existing=await this.candidate(owner,context,data);
     if(existing?.tasks.some(t=>t.status==='running'))throw new Error('Stop and settle all existing native attempts before explicitly rebuilding this project team');

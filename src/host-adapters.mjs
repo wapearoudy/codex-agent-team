@@ -56,7 +56,7 @@ class BridgeRpc{
 class BridgeMembers extends NativeMembers{
   constructor(bridge){
     const rpc=new BridgeRpc(bridge);
-    super({rpcFactory:()=>rpc,publicFeed:{read:async(thread,turnId)=>{
+    super({rpcFactory:()=>rpc,identityLookup:async()=>({ids:[],complete:false,reason:'Codex identity index does not apply to this host'}),publicFeed:{read:async(thread,turnId)=>{
       const turn=(await bridge.readThread(thread.id)).turns?.find(t=>t.id===turnId);
       return {events:turn?.activity??[],cursor:turn?.activity?.length??0,usage:turn?.usage??null,source:'native-host-events'};
     }},lifecycleReader:async(thread,turnId)=>(await bridge.readThread(thread.id)).turns?.find(t=>t.id===turnId)?.statusEvidence??null});

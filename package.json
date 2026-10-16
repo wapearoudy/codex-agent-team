@@ -1,6 +1,6 @@
 {
   "name": "codex-agent-team",
-  "version": "0.39.5",
+  "version": "0.40.57",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,6 +11,7 @@
     "package:dsh": "node scripts/dsh-npm.mjs pack",
     "verify:dsh-package": "node scripts/verify-dsh-npm.mjs",
     "publish:dsh": "node scripts/dsh-npm.mjs publish",
+    "verify:dsh-published": "node scripts/dsh-npm.mjs verify",
     "doctor": "node scripts/doctor.mjs"
   },
   "engines": {
