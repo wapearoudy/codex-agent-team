@@ -1,6 +1,6 @@
 {
   "name": "agent-team-opencode",
-  "version": "0.40.57",
+  "version": "0.40.58",
   "type": "module",
   "main": "./dist/index.mjs",
   "exports": "./dist/index.mjs"

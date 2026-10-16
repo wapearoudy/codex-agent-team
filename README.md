@@ -1,4 +1,6 @@
-# codex-agent-team 0.40.57
+# codex-agent-team 0.40.58
+
+0.40.58 修正发布验证环境：受控 MCP 测试使用独立的 Codex 会话目录，POSIX 命令准备测试明确标注平台限制。Windows 的原生日志替代路径与拒绝 POSIX 包装检查保持，不改变业务启动、验证和独立审核门禁。
 
 0.40.57 强制核对原生启动参数，按当前任务合同限定独立审核范围，并支持空启动失败后的安全恢复绑定。原生会话刚创建但尚未落盘时，在可信时间范围内等待，不重复派发或提前授予权限。例行推进保留游标并处理并发登记；原报告、失败、中断与验证证据全部保留。
 
@@ -34,7 +36,7 @@
 
 ## DSH npm 分发
 
-DeepSeekHarness 的正式安装入口为 npm 包 [`agent-team-deepseek-harness`](https://www.npmjs.com/package/agent-team-deepseek-harness)。本次版本为 `0.40.57`，发布后可通过 `dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.40.57` 安装。包包含编译后的原生入口和 MCP 服务，使用包名加载，DSH 插件管理器自动登记 bundle。ZIP 仅保留为开发暂存产物。
+DeepSeekHarness 的正式安装入口为 npm 包 [`agent-team-deepseek-harness`](https://www.npmjs.com/package/agent-team-deepseek-harness)。本次版本为 `0.40.58`，发布后可通过 `dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.40.58` 安装。包包含编译后的原生入口和 MCP 服务，使用包名加载，DSH 插件管理器自动登记 bundle。ZIP 仅保留为开发暂存产物。
 
 发布准备命令为 `npm run build`、`npm run package:dsh`、`npm run verify:dsh-package`。最后一项在隔离的 DSH_HOME 中使用真实 `dsh plugin add` 安装生成的 `.tgz`、核对自动 bundle 登记、配置组合、导出和六个原生工具，全程不启动模型。登录并完成 npm 发布认证后执行 `npm run publish:dsh`，发布脚本核对同一包的安装证据与远端 integrity，拒绝覆盖不同内容的已有版本。npm 接受上传后立即保存回执；索引尚未可用时有限等待，不重复上传。等待结束后仍未可用，执行 `npm run verify:dsh-published` 继续只读核验。
 

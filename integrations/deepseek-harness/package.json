@@ -1,6 +1,6 @@
 {
   "name": "agent-team-deepseek-harness",
-  "version": "0.40.57",
+  "version": "0.40.58",
   "description": "Team Workspace: native DSH team delegation, task state and independent review",
   "type": "module",
   "main": "./dist/index.mjs",

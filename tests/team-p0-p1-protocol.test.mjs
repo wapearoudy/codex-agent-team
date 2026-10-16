@@ -1,16 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp,writeFile,chmod,readdir} from 'node:fs/promises';
+import {mkdtemp,mkdir,writeFile,chmod,readdir,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {TeamStore} from '../src/team.mjs';
 import {Client} from '@modelcontextprotocol/sdk/client/index.js';
 import {StdioClientTransport} from '@modelcontextprotocol/sdk/client/stdio.js';
-test('public MCP tools validate real catalog routes, stage roster-only profiles, and stop/resume with authenticated project metadata',{skip:process.platform==='win32'?'Controlled host fixture uses a POSIX executable script':false},async()=>{
+test('public MCP tools validate real catalog routes, stage roster-only profiles, and stop/resume with authenticated project metadata',{skip:process.platform==='win32'?'Controlled host fixture uses a POSIX executable script':false},async t=>{
  const root=await mkdtemp(join(tmpdir(),'p0-p1-protocol-')),binary=join(root,'host.mjs'),project=root;
+ t.after(()=>rm(root,{recursive:true,force:true}));
+ const codexHome=join(root,'controlled-codex');await mkdir(join(codexHome,'sessions'),{recursive:true});
  await writeFile(binary,`#!${process.execPath}\nimport readline from 'node:readline';for await(const line of readline.createInterface({input:process.stdin})){const q=JSON.parse(line);if(q.id===undefined)continue;let result;if(q.method==='initialize')result={userAgent:'controlled-host'};else if(q.method==='model/list')result={data:[{model:'controlled-host-model',displayName:'Controlled Host Model',supportedReasoningEfforts:[{reasoningEffort:'low'}],defaultReasoningEffort:'low'}],nextCursor:null};else if(q.method==='thread/read')result={thread:{id:q.params.threadId,cwd:${JSON.stringify(project)},turns:[]}};else{process.stdout.write(JSON.stringify({id:q.id,error:{code:-1,message:'Unexpected RPC '+q.method}})+'\\n');continue;}process.stdout.write(JSON.stringify({id:q.id,result})+'\\n');}`);await chmod(binary,0o755);
- const client=new Client({name:'controlled-protocol-not-desktop',version:'1'}, {capabilities:{}}),transport=new StdioClientTransport({command:process.execPath,args:[resolve('plugins/team-workspace-probe/dist/server.cjs')],cwd:root,env:{...process.env,TEAM_WORKSPACE_CODEX_BINARY:binary,TEAM_WORKSPACE_DATA_ROOT:join(root,'records')},stderr:'pipe'});
+ const client=new Client({name:'controlled-protocol-not-desktop',version:'1'}, {capabilities:{}}),transport=new StdioClientTransport({command:process.execPath,args:[resolve('plugins/team-workspace-probe/dist/server.cjs')],cwd:root,env:{...process.env,CODEX_HOME:codexHome,TEAM_WORKSPACE_CODEX_BINARY:binary,TEAM_WORKSPACE_DATA_ROOT:join(root,'records')},stderr:'pipe'});
  try{await client.connect(transport);const call=async(name,args={})=>{const r=await client.callTool({name,arguments:args,_meta:{threadId:'controlled-leader'}});if(r.isError)throw new Error(r.content[0].text);return r.structuredContent;};
  const directory=await call('team_leader',{operation:'directory'});assert.ok(directory.operations.includes('plan_team'));assert.ok(!directory.operations.includes('start_execution_probe'));const schema=await call('team_leader',{operation:'describe',toolName:'plan_team'});assert.equal(schema.inputSchema.properties.execute.type,'boolean');await assert.rejects(()=>call('team_member',{operation:'plan_team',arguments:{}}),/not available/);
  const catalog=await call('team_leader',{operation:'read_team_model_catalog'});assert.deepEqual(catalog.models[0].supportedReasoningEfforts,['low']);

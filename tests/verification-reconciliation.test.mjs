@@ -167,7 +167,7 @@ test('prepared proof accepts an additional host shell wrapper and legacy metadat
 });
 
 
-test('compound evidence repair reuses one saved independent review, retains changed preparation truth, and rejects stale candidates',async t=>{
+test('compound evidence repair reuses one saved independent review, retains changed preparation truth, and rejects stale candidates',{skip:process.platform==='win32'?'Fixture requires POSIX native command preparation; Windows rejects this capability explicitly':false},async t=>{
   const f=await fixture(t,{compound:true,outerShell:true,compactReceipt:true});await f.reviewWork();const before=await f.saved();
   assert.equal(before.tasks[0].status,'submitted');assert.ok(before.tasks[1].attempts[0].acceptanceException);
   const metaPath=join(f.engine.root,'command-logs',f.team.id,f.input.attemptId,f.preparation.requestId+'.json'),meta=await readFile(metaPath);

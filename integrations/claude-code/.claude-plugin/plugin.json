@@ -1,6 +1,6 @@
 {
   "name": "team-workspace",
-  "version": "0.40.57",
+  "version": "0.40.58",
   "description": "Native team workspace with verified Claude Agent progress",
   "author": {
     "name": "agent-team"

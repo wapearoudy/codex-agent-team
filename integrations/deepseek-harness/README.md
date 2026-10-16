@@ -40,11 +40,11 @@ model route, authority inheritance, or cross-Claude/OpenCode execution is implie
 
 ## Native installation
 
-In the DSH plugin manager, enter `agent-team-deepseek-harness@0.40.57` after this
+In the DSH plugin manager, enter `agent-team-deepseek-harness@0.40.58` after this
 version is published to npm. For an existing CLI profile:
 
 ```text
-dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.40.57
+dsh plugin --profile <existing-profile> add agent-team-deepseek-harness@0.40.58
 dsh --profile <existing-profile> --dump-config
 ```
 
